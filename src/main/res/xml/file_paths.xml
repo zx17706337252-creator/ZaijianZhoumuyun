@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Phase 18 · FileProvider 路径配置
+    ─────────────────────────────────────────────────────────────
+    files-path name="exports"   → filesDir/exports/
+      file_export 工具生成的 .txt / .md 文件。
+
+    files-path name="notes"     → filesDir/notes/
+      note_save 工具写入的笔记文件。
+
+    files-path name="reminders" → filesDir/reminders/
+      reminder 工具写入的 JSON 提醒文件。
+
+    files-path name="builds"    → filesDir/builds/
+      BuildApkDownloadTool 解压后的 APK 文件（供安装）。
+
+    L-2 修复：删除原 <cache-path name="cache" path="."/>。
+    该条目把整个 cacheDir 根暴露给 FileProvider，但经核查全项目
+    没有任何代码通过 FileProvider 共享 cacheDir 内的文件。
+    若将来需要，按实际子目录精确声明（不得用 path="."）。
+-->
+<paths>
+    <files-path name="exports"   path="exports/" />
+    <files-path name="notes"     path="notes/" />
+    <files-path name="reminders" path="reminders/" />
+    <files-path name="builds"    path="builds/" />
+</paths>

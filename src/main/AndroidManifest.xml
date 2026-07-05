@@ -1,0 +1,122 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- 网络权限：API 调用 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!-- Phase 31：读取外部文件（知识库文件导入，Android 12 及以下需要此权限） -->
+    <!-- Android 13+ 使用分类型权限（READ_MEDIA_*），此处保留通用权限作为兼容 -->
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+
+    <!-- 聊天背景图：Android 13+ 读取相册图片权限（Android 12 及以下无此权限，系统自动忽略） -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+
+    <!-- Phase 20 §D：精确闹钟权限 -->
+    <!-- P-16 修复：补充 USE_EXACT_ALARM（API 33+ 声明即得），与 SCHEDULE_EXACT_ALARM 双声明不冲突。
+         运行时仍用 canScheduleExactAlarms() 复查，未授权时降级为 setAndAllowWhileIdle。 -->
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <!-- Phase 20 §D：发送通知权限（Android 13+ 需要运行时授权） -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- D-7 fix: 设备重启后恢复每日修炼闹钟 -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <application
+        android:name=".ZaijianApp"
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.ZaijianZhoumuyun"
+        android:usesCleartextTraffic="false"
+        android:networkSecurityConfig="@xml/network_security_config">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:configChanges="orientation|screenSize|screenLayout|fontScale"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@style/Theme.ZaijianZhoumuyun">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!--
+                UI M5 修复：原通知点击跳转用自定义 action（com.zaijian.zhoumuyun.action.OPEN_ROUTE）
+                + extra 传路由字符串，只能由本 App 自己构造的显式 Intent 触发，
+                不是 Android 认可的"深链接"——无法用 adb / 其他来源以标准 Uri 唤起，
+                也无法借助 Navigation 的 deepLinks 声明做校验。
+                改为标准 ACTION_VIEW + zaijian:// scheme：
+                  zaijian://chat/{characterId}      打开指定角色聊天页
+                  zaijian://tasks?jobId={jobId}     打开任务中心
+                  zaijian://schedule/{characterId}  打开指定角色的个人日程页（U2 修复）
+            -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="zaijian" />
+            </intent-filter>
+        </activity>
+
+        <!--
+            Phase 18：FileProvider — file_export 工具生成的文件共享
+            权限：${applicationId}.fileprovider
+            根路径：filesDir/exports/（对应 file_paths.xml 中的 files-path）
+        -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
+        <!--
+            Phase 20 §D：ReminderReceiver — AlarmManager 触发时发送系统通知
+        -->
+        <receiver
+            android:name=".data.agent.ReminderReceiver"
+            android:exported="false" />
+
+        <!--
+            D-7 fix：PracticeAlarmReceiver — 每日修炼 AlarmManager 到点后投递 WorkManager 任务
+        -->
+        <receiver
+            android:name=".data.agent.PracticeAlarmReceiver"
+            android:exported="false" />
+
+        <!--
+            D-7 fix：BootReceiver — 设备重启后恢复每日修炼闹钟（AlarmManager 重启后全清）
+        -->
+        <receiver
+            android:name=".data.agent.BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+
+        <!--
+            Phase 30 方案六：ZaijianMessagingService — FCM 推送服务
+            处理 token 刷新 + 前台消息接收
+        -->
+        <service
+            android:name=".data.push.ZaijianMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+
+    </application>
+
+</manifest>
