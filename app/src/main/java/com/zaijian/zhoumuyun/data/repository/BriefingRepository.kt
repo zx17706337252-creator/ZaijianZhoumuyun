@@ -141,8 +141,15 @@ class BriefingRepository(
         val tensionThreshold       = 60
 
         entries.forEach { entry ->
-            if ((entry.daysSinceContact ?: 0) >= noContactThresholdDays) {
-                items += BriefingAttentionItem.NoContact(entry.character, entry.daysSinceContact!!)
+            val days = entry.daysSinceContact
+            if (days == null) {
+                // 从未联系过——比"N天没联系"更需要关注，不能用 ?: 0 兜底成
+                // "0天没联系"（那样反而会被 >= 7 的判断排除在外，见本函数
+                // 历史缺陷记录）。用独立的 NeverContacted 分支表达，不塞进
+                // NoContact.days 编一个不成立的数字。
+                items += BriefingAttentionItem.NeverContacted(entry.character)
+            } else if (days >= noContactThresholdDays) {
+                items += BriefingAttentionItem.NoContact(entry.character, days)
             }
             if (entry.isPregnant) {
                 items += BriefingAttentionItem.Pregnancy(entry.character)

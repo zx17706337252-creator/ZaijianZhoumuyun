@@ -55,7 +55,12 @@ fun BriefingScreen(
         item { BriefingIntroSection(periodStart = data.periodStart, periodEnd = data.periodEnd) }
 
         if (data.attentionItems.isNotEmpty()) {
-            item { BriefingAttentionSection(items = data.attentionItems) }
+            item {
+                BriefingAttentionSection(
+                    items = data.attentionItems,
+                    modifier = Modifier.padding(horizontal = Spacing.screenHorizontal, vertical = Spacing.xs),
+                )
+            }
         }
 
         items(data.characters, key = { it.character.id }) { entry ->
@@ -65,7 +70,12 @@ fun BriefingScreen(
             )
         }
 
-        item { BriefingRankingSection(ranking = data.affectionRanking) }
+        item {
+            BriefingRankingSection(
+                ranking = data.affectionRanking,
+                modifier = Modifier.padding(horizontal = Spacing.screenHorizontal, vertical = Spacing.xs),
+            )
+        }
 
         item {
             Button(

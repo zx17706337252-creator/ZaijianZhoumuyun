@@ -37,15 +37,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.ChevronRight
-import androidx.compose.material.icons.outlined.Code
-import androidx.compose.material.icons.outlined.Description
-import androidx.compose.material.icons.outlined.Email
-import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.StarBorder
-import androidx.compose.material.icons.outlined.TableChart
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.foundation.text.BasicTextField
@@ -125,11 +120,11 @@ import androidx.compose.material3.FilterChip
 internal data class ToolItem(val icon: ImageVector, val label: String)
 
 internal val toolItems = listOf(
-    ToolItem(Icons.Outlined.Search,      "搜索"),
-    ToolItem(Icons.Outlined.Description, "文件"),
-    ToolItem(Icons.Outlined.Code,        "代码"),
-    ToolItem(Icons.Outlined.TableChart,  "表格"),
-    ToolItem(Icons.Outlined.Email,       "邮件"),
+    ToolItem(com.zaijian.zhoumuyun.ui.design.AppIcons.ToolSearch,      "搜索"),
+    ToolItem(com.zaijian.zhoumuyun.ui.design.AppIcons.ToolDescription, "文件"),
+    ToolItem(com.zaijian.zhoumuyun.ui.design.AppIcons.ToolCode,        "代码"),
+    ToolItem(com.zaijian.zhoumuyun.ui.design.AppIcons.ToolTable,       "表格"),
+    ToolItem(com.zaijian.zhoumuyun.ui.design.AppIcons.ToolEmail,       "邮件"),
 )
 
 internal val skillTags = listOf("写作", "逻辑推理", "情绪陪伴", "信息整理", "头脑风暴")
@@ -268,21 +263,15 @@ internal fun ToolsPanel(
                         modifier            = Modifier.weight(1f),
                         horizontalAlignment = Alignment.CenterHorizontally,
                     ) {
-                        Box(
-                            modifier = Modifier
-                                .size(48.dp)
-                                .clip(RoundedCornerShape(Radius.sm))
-                                .background(accentLight)
-                                .clickable { /* 工具能力展示，对话中按需触发 */ },
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Icon(
-                                imageVector        = tool.icon,
-                                contentDescription = tool.label,
-                                tint               = accentColor,
-                                modifier           = Modifier.size(22.dp),
-                            )
-                        }
+                        com.zaijian.zhoumuyun.ui.design.IconBadge(
+                            icon               = tool.icon,
+                            contentDescription = tool.label,
+                            tint               = accentColor,
+                            background         = accentLight,
+                            size               = 22.dp,
+                            badgeSize          = 48.dp,
+                            modifier           = Modifier.clickable { /* 工具能力展示，对话中按需触发 */ },
+                        )
                         Spacer(Modifier.height(4.dp))
                         Text(
                             text  = tool.label,

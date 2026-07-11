@@ -26,6 +26,18 @@
 `Splash → Briefing → World` 的开场流程已接通。沙盒环境无 Android SDK，
 `compileDebugKotlin`/`assembleDebug` 编译验证仍需本地 Gradle 完成。
 
+**5 步落地之后的离线简报卡片视觉改版**（本次补记，此前进度表遗漏未记录）：
+在 4.10.4 五步施工全部完成、方案本体验收通过之后，另有一轮独立的视觉细节
+打磨，未反映在本进度表中，现补记：
+- 简报卡片改为 `accentWash` 底色渲染（角色主题色的极浅背景铺色），替换
+  此前的纯色卡片背景
+- 角色卡内部由纵向堆叠改为横向布局（头像 + 信息并排），提升单屏信息密度
+- `daysSinceContact`（多久没聊）字段接入"需要关注"区块的实际展示，此前
+  仅在 Repository 层聚合、未在 UI 呈现
+- 亲密度排行榜去掉写死的 `take(5)` 截断，改为展示完整排行（原设计稿的
+  `take(5)` 建议保留在方案 4.10.3 正文中作为历史设计记录，不回改方案原文，
+  仅此处记录实际施工已采用的做法）
+
 **第二节「逐模块具体改法」施工进度**（本次新增）：
 
 | 模块 | 状态 |
@@ -33,21 +45,81 @@
 | 2.1 任务页顶部（`TaskCenterScreen.kt`） | ✅ 已完成——删除「目标」按钮；「项目」「日程」升级为 `WorldCard` 预览卡，显示真实数据（活跃项目数+完成率、今日待办数） |
 | 2.2 "我"页进化项目卡 | ✅ 已完成——直接砍掉（2.1 的项目预览卡已覆盖同样作用，避免同一信息在多个 Tab 重复摆放） |
 | 2.3 圆桌入口 | 不做（用户明确跳过） |
-| 2.4 图标统一收口 | 🔶 基础设施已搭建，示范迁移 1 处，其余 139 处留待后续逐步迁移 |
+| 2.4 图标统一收口 | ✅ 已完成——139 处裸引用全部 30 个文件逐处人工判断完毕，实际迁移 7 处，其余 132 处按判断原则确认应保留裸引用（非遗漏，详见下方结论） |
 | 2.5 全项目 token 审查 | 暂不做 |
 
-2.4 说明：全项目 `Icons.Outlined.XXX` 直接引用共 141 处，分布在 30 个文件、
-69 种不同图标，一次性全改风险高、验证难度大，方案原文本身也是"逐步收拢"。
+2.4 说明：全项目 `Icons.Outlined.XXX` 直接引用共 139 处，分布在 30 个文件、
+一次性全改风险高、验证难度大，方案原文本身也是"逐步收拢"。
 本次新建 `ui/design/AppIcons.kt`（单一文件，未按模块拆分），包含：
 - `AppIcons` object：图标常量收拢入口，目前收拢了 `Folder`/`CalendarMonth`
-  两个（本次示范迁移实际用到的），新增时照此格式追加，一次迁移一处即可
+  （此前示范迁移）+ `ToolSearch`/`ToolDescription`/`ToolCode`/`ToolTable`/
+  `ToolEmail`（本轮新增，`CharacterDetailAbility` 工具能力网格固定枚举）
 - `IconBadge` composable：图标 + `Radius.xs` 圆角小色块背景的可复用组件，
   背景色默认 `colors.accentSoft`，语义色场景可传入对应
   `Palette.SemanticXxx.copy(alpha = 0.12f)`
 
-示范迁移：2.1 任务页「项目/日程」预览卡的图标，从裸 `Icon`（默认无背景）
-改为 `IconBadge`（色块背景），图标引用改用 `AppIcons.Folder`/
-`AppIcons.CalendarMonth`。其余 139 处引用未动，留待后续按同样模式逐步迁移。
+**判断原则**（本轮迁移与跳过均按此逐处人工判断，非批量替换）：
+- **迁移为 `IconBadge`**：卡片/区块标题行的独立视觉锚点图标、统计项图标、
+  设置列表的分类前导图标、原本就是手写 `Box+clip+background+Icon` 拼出来的
+  伪 IconBadge（应直接替换为组件）
+- **保留裸 `Icon`**：工具栏/导航栏/`IconButton` 内的操作图标（编辑/删除/更多/
+  返回等）、复选框/星级评分等有状态的交互控件、行内小号（≤14dp）区块微标签
+  （紧跟文字、不独立成视觉焦点）、已经处于自带背景色的行/卡片/按钮内部的图标
+  （再套色块会双重叠加）、`AsyncImage` 的 `error` 占位 Painter（非 `Icon`
+  组件，类型不兼容）、圆形按钮类图标（`IconBadge` 固定用 `Radius.xs` 圆角，
+  与圆形徽标形状不符，套用会造成视觉倒退）
+
+**第 1 批（10 个文件）实际迁移**：仅 `FileVaultScreen.kt` 1 处（文件类型
+图标，原为手写 Box 包裹，现改用 `IconBadge`；同时顺手修复 `fileIcon()`
+死代码 bug——原 `when` 两个分支返回同一图标，所有文件类型视觉上无法区分，
+已按 xlsx/csv/pdf/md/txt/html/json/xml 分三类给出有区分度的图标）；其余 9
+个文件（`BreathingAvatar`/`CommonDialogs`/`MansionHeader`/
+`SharedScheduleComponents`/`AppNavigation`/`GlobalScheduleScreen`/
+`PersonalScheduleScreen`/`ProjectDetailScreen`/`TaskCenterScreen`）逐处核实
+后确认均为应保留裸引用的场景，未做改动。
+
+**第 2 批（9 个文件）实际迁移**：`LearningGoalScreen.kt` 1 处
+（`ProjectGrowthCard` 标题行图标）、`JudgeProfileScreen.kt` 1 处（裁判统计
+区块 `Gavel` 图标）、`CharacterDetailAbility.kt` 1 处（工具能力网格，同时
+新增 `AppIcons` 5 个工具图标常量）；其余 6 个文件
+（`SpecialtyEvolutionScreen`/`CompetitionScreen`/`CharacterDetailGoal`/
+`CharacterDetailMemory`/`CharacterDetailRelationship`/`CharacterDetailHeader`）
+逐处核实后确认均为应保留裸引用的场景。
+
+**第 3 批（10 个文件）实际迁移**：`ChatSettingsSheet.kt` 共 4 处（角色档案/
+聊天背景/清空对话/关联项目四个设置列表条目，统一用角色 `accentColor`
+主题化，清空对话单独用 `Palette.SemanticDanger` 区分破坏性操作，避免和
+普通导航项混淆）。其余 9 个文件（`RoundtableSettingsSheet`/
+`RoundtableOverlays`/`RoundtableMemberStrip`/`RoundtableInputBar`/
+`RoundtableHeader`/`RoundtableBubble`/`ChatHeader`/`ChatInputBar`/
+`ChatMessageBubble`/`ProfileAiConfigSection`）逐处核实后确认均为应保留裸
+引用的场景，未做改动——其中新出现的两类典型跳过场景：
+- **分段控件（Segmented Control）内的图标**：`ChatHeader.ModeChip`、
+  `RoundtableSettingsSheet.ScheduleModeOption` 一类"选中态自带整行背景色"
+  的切换控件，图标套 `IconBadge` 会与控件自身选中态背景双重叠加，视觉变脏
+- **`AsyncImage` 的 `error` 占位 Painter**：`rememberVectorPainter(Icons
+  .Outlined.Person)` 类写法本质是图片加载失败时的占位画笔，类型是
+  `Painter` 不是 `ImageVector`，与 `Icon`/`IconBadge` 的组件签名不兼容，
+  全项目此类写法（`RoundtableOverlays`/`RoundtableMemberStrip`/
+  `RoundtableBubble`/`ChatMessageBubble`/`RoundtableSettingsSheet` 共 5 处）
+  均保持原状
+
+**2.4 收口结论**：全部 30 个文件、139 处裸引用逐处人工判断完毕，累计迁移
+7 处（`FileVaultScreen` 1、`LearningGoalScreen` 1、`JudgeProfileScreen` 1、
+`CharacterDetailAbility` 1、`ChatSettingsSheet` 4），其余 132 处保留裸引用。
+**保留不是遗漏**，是按以下原则逐处核实后的结论：
+- 工具栏/导航栏/`IconButton` 操作图标（编辑/删除/更多/返回/关闭/发送等）
+- 有状态交互控件（复选框、星级评分、开关类切换）
+- 行内小号（≤16dp）区块微标签，紧跟文字、不独立成视觉焦点
+- 已处于自带背景色的行/卡片/按钮/分段控件内部的图标（双重叠加会变脏）
+- 圆形按钮类图标（`IconBadge` 固定 `Radius.xs` 圆角，与圆形徽标形状冲突）
+- `AsyncImage` 的 `error` 占位 Painter（类型不兼容，非 `Icon` 组件）
+若后续要交互样式改版（例如把某类工具栏图标也统一收进色块风格），需要的是
+新一轮产品侧的样式决策，而不是本次「收口」范围内遗留的技术债。
+
+示范迁移（历史）：2.1 任务页「项目/日程」预览卡的图标，从裸 `Icon`（默认无
+背景）改为 `IconBadge`（色块背景），图标引用改用 `AppIcons.Folder`/
+`AppIcons.CalendarMonth`。
 
 2.1 完成后额外清理的死代码：`TaskCenterScreen` 的 `onNavigateToGoals` 参数、
 `AppNavigation.kt` 里配套的 `showGoalsCharacterPicker` 状态与其触发的

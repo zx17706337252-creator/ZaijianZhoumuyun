@@ -27,6 +27,8 @@ fun BriefingAttentionSection(items: List<BriefingAttentionItem>, modifier: Modif
                 val text = when (item) {
                     is BriefingAttentionItem.NoContact ->
                         "${item.character.name}：已经 ${item.days} 天没有联系了"
+                    is BriefingAttentionItem.NeverContacted ->
+                        "${item.character.name}：还没有联系过"
                     is BriefingAttentionItem.Pregnancy ->
                         "${item.character.name}：怀孕中，记得多关心"
                     is BriefingAttentionItem.Tension -> {

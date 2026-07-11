@@ -34,6 +34,8 @@ data class BriefingCharacterEntry(
 
 sealed class BriefingAttentionItem {
     data class NoContact(val character: CharacterConfig, val days: Long) : BriefingAttentionItem()
+    /** 该角色自生成/注册以来从未有过消息记录——与 NoContact 是不同语义，不能塞进 days 字段填数字表达。 */
+    data class NeverContacted(val character: CharacterConfig) : BriefingAttentionItem()
     data class Pregnancy(val character: CharacterConfig) : BriefingAttentionItem()
     data class Tension(val fromId: String, val toId: String, val tension: Int) : BriefingAttentionItem()
     data class RelationWorsened(val fromId: String, val toId: String, val description: String) : BriefingAttentionItem()

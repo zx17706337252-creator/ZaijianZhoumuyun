@@ -211,11 +211,12 @@ internal fun ChatSettingsSheet(
                 verticalAlignment          = Alignment.CenterVertically,
                 horizontalArrangement      = Arrangement.spacedBy(Spacing.md),
             ) {
-                Icon(
-                    imageVector        = Icons.Outlined.AccountCircle,
+                com.zaijian.zhoumuyun.ui.design.IconBadge(
+                    icon               = Icons.Outlined.AccountCircle,
                     contentDescription = null,
-                    tint               = colors.textSecondary,
-                    modifier           = Modifier.size(20.dp),
+                    tint               = accentColor,
+                    background         = accentColor.copy(alpha = 0.12f),
+                    size               = 20.dp,
                 )
                 Column(modifier = Modifier.weight(1f)) {
                     Text(text = "查看角色档案", style = type.body, color = colors.textPrimary)
@@ -237,11 +238,12 @@ internal fun ChatSettingsSheet(
                 verticalAlignment     = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(Spacing.md),
             ) {
-                Icon(
-                    imageVector        = Icons.Outlined.Wallpaper,
+                com.zaijian.zhoumuyun.ui.design.IconBadge(
+                    icon               = Icons.Outlined.Wallpaper,
                     contentDescription = null,
-                    tint               = colors.textSecondary,
-                    modifier           = Modifier.size(20.dp),
+                    tint               = accentColor,
+                    background         = accentColor.copy(alpha = 0.12f),
+                    size               = 20.dp,
                 )
                 Column(modifier = Modifier.weight(1f)) {
                     Text(text = "更换聊天背景", style = type.body, color = colors.textPrimary)
@@ -273,11 +275,12 @@ internal fun ChatSettingsSheet(
                 verticalAlignment     = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(Spacing.md),
             ) {
-                Icon(
-                    imageVector        = Icons.Outlined.DeleteSweep,
+                com.zaijian.zhoumuyun.ui.design.IconBadge(
+                    icon               = Icons.Outlined.DeleteSweep,
                     contentDescription = null,
-                    tint               = colors.textSecondary,
-                    modifier           = Modifier.size(20.dp),
+                    tint               = Palette.SemanticDanger,
+                    background         = Palette.SemanticDanger.copy(alpha = 0.10f),
+                    size               = 20.dp,
                 )
                 Column(modifier = Modifier.weight(1f)) {
                     Text(text = "清空对话记录", style = type.body, color = colors.textPrimary)
@@ -331,11 +334,12 @@ internal fun ChatSettingsSheet(
                     verticalAlignment     = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(Spacing.md),
                 ) {
-                    Icon(
-                        imageVector        = Icons.Outlined.FolderOpen,
+                    com.zaijian.zhoumuyun.ui.design.IconBadge(
+                        icon               = Icons.Outlined.FolderOpen,
                         contentDescription = null,
-                        tint               = colors.textSecondary,
-                        modifier           = Modifier.size(20.dp),
+                        tint               = accentColor,
+                        background         = accentColor.copy(alpha = 0.12f),
+                        size               = 20.dp,
                     )
                     Column(modifier = Modifier.weight(1f)) {
                         Text(text = "关联项目", style = type.body, color = colors.textPrimary)

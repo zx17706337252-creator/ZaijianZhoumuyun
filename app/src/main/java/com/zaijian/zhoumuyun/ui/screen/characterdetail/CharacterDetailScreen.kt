@@ -93,6 +93,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.zaijian.zhoumuyun.data.model.CharacterConfig
+import com.zaijian.zhoumuyun.data.model.DaughterDataException
 import com.zaijian.zhoumuyun.data.model.DefaultCharacters
 import com.zaijian.zhoumuyun.data.model.DefaultPresenceStates
 import com.zaijian.zhoumuyun.data.model.FloorEnum
@@ -166,8 +167,19 @@ fun CharacterDetailScreen(
             // 触达持久化层。现改用 AppContainer 共享的 daughterCharacterRepo
             // （与 ChatViewModel/RoundtableViewModel 各自持有的同构造参数实例
             // 语义等价，只是不再各处重复构造）。
-            daughterCharacter = com.zaijian.zhoumuyun.data.AppContainer.instance
-                .daughterCharacterRepo.getCharacterConfig(characterId)
+            //
+            // 防御性保护：getCharacterConfig() 女儿数据损坏时抛 DaughterDataException
+            // （见 DaughterCharacterEntity.toDaughterCharacterData() 的校验规则）。
+            // 两条写入路径均已补齐校验，正常流程不应再产生这类坏数据；这里捕获
+            // 只是最后一道防线——daughterCharacter 保持 null，走下面已有的
+            // "角色不存在"兜底页面，而不是让整个详情页崩溃。
+            daughterCharacter = try {
+                com.zaijian.zhoumuyun.data.AppContainer.instance
+                    .daughterCharacterRepo.getCharacterConfig(characterId)
+            } catch (e: DaughterDataException) {
+                ZLog.e("CharacterDetailScreen", "characterId=$characterId 女儿数据损坏，无法加载", e)
+                null
+            }
         }
         daughterLookupDone = true
     }

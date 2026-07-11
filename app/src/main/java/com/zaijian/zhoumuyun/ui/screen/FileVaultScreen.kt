@@ -25,10 +25,14 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Delete
 import com.zaijian.zhoumuyun.ui.design.WorldCard
+import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.FolderOpen
+import androidx.compose.material.icons.outlined.PictureAsPdf
 import androidx.compose.material.icons.outlined.Share
+import androidx.compose.material.icons.outlined.TableChart
+import com.zaijian.zhoumuyun.ui.design.IconBadge
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -457,21 +461,14 @@ private fun VaultFileCard(
             modifier = Modifier.padding(horizontal = Spacing.md, vertical = Spacing.sm),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-        // 文件类型图标
-        Box(
-            modifier = Modifier
-                .size(40.dp)
-                .clip(RoundedCornerShape(Radius.sm))
-                .background(colors.bgBase),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(
-                imageVector        = fileIcon(vaultFile.extension),
-                contentDescription = null,
-                tint               = colors.accent,
-                modifier           = Modifier.size(22.dp),
-            )
-        }
+        // 文件类型图标（2.4 图标统一收口：手写 Box+clip+background 迁移为 IconBadge）
+        IconBadge(
+            icon               = fileIcon(vaultFile.extension),
+            contentDescription = null,
+            background         = colors.bgBase,
+            size               = 22.dp,
+            badgeSize          = 40.dp,
+        )
 
         Spacer(Modifier.width(Spacing.sm))
 
@@ -564,7 +561,12 @@ private fun EmptyVaultHint() {
 //  辅助：文件扩展名 → 图标
 // ─────────────────────────────────────────────────────────────
 
-private fun fileIcon(ext: String) = when (ext) {
-    "md", "txt", "html", "csv", "json", "xml" -> Icons.Outlined.Description
-    else                                        -> Icons.Outlined.Description
+// bug 顺手修复：原实现两个分支返回同一图标，when 的扩展名分支形同虚设，
+// 所有文件类型在列表里视觉上无法区分。按实际会出现的扩展名（见 VaultFile.
+// extension 用法，第291行）分三类给出有区分度的图标。
+private fun fileIcon(ext: String) = when (ext.lowercase()) {
+    "xlsx", "csv"        -> Icons.Outlined.TableChart
+    "pdf"                 -> Icons.Outlined.PictureAsPdf
+    "md", "txt", "html", "json", "xml" -> Icons.Outlined.Code
+    else                  -> Icons.Outlined.Description
 }

@@ -517,11 +517,11 @@ private fun ProjectGrowthCard(
                 modifier          = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Icon(
-                    imageVector        = Icons.Outlined.Spa,
+                com.zaijian.zhoumuyun.ui.design.IconBadge(
+                    icon               = Icons.Outlined.Spa,
                     contentDescription = null,
                     tint               = growthGreen,
-                    modifier           = Modifier.size(14.dp),
+                    size               = 14.dp,
                 )
                 Spacer(Modifier.width(Spacing.xs))
                 Text(

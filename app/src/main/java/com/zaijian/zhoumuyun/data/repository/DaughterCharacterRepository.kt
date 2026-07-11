@@ -3,6 +3,9 @@ package com.zaijian.zhoumuyun.data.repository
 import com.zaijian.zhoumuyun.data.db.dao.DaughterCharacterDao
 import com.zaijian.zhoumuyun.util.ZLog
 import com.zaijian.zhoumuyun.data.db.entity.DaughterCharacterEntity
+import com.zaijian.zhoumuyun.data.model.DaughterCustomEnums
+import com.zaijian.zhoumuyun.data.model.DaughterDataException
+import com.zaijian.zhoumuyun.data.model.DaughterStateLayer
 import com.zaijian.zhoumuyun.data.model.toCharacterConfig
 import com.zaijian.zhoumuyun.data.model.toDaughterCharacterData
 import kotlinx.coroutines.flow.Flow
@@ -76,13 +79,54 @@ class DaughterCharacterRepository(
     }
 
     /**
-     * 运行时更新 StateLayer（情绪引擎调用）。
+     * 运行时更新 StateLayer（情绪引擎调用，目前尚无实际调用方——
+     * 情绪引擎本身还未接入，这是预留接口）。
      * 只写 stateLayerJson 列，不碰 identity 和枚举词库。
+     *
+     * 写入前校验（补齐，原先直接透传给 DAO，完全绕开 D4 生成器那套
+     * key 存在性校验）：解析新 stateLayerJson，并用这一行已有的
+     * customEnumsJson 做跨对象校验，规则与
+     * [DaughterCharacterEntity.toDaughterCharacterData]（读库端）、
+     * [com.zaijian.zhoumuyun.data.manager.DaughterCharacterGenerator.parseAndValidate]
+     * （D4 生成器写库端）完全一致——三处校验口径必须对齐，否则会重新
+     * 出现"能写进去、读出来才报错"的同类问题。
      *
      * @param motherCharacterId 母亲 characterId
      * @param stateLayerJson    序列化后的新 StateLayer JSON 字符串
+     * @throws DaughterDataException stateLayerJson 解析失败、四个索引 key
+     *         （maskKey/primaryEmotionKey/currentNeedKey/currentFearKey）
+     *         非空校验不通过，或任一 key 在这个女儿现有的 customEnums
+     *         对应数组中找不到匹配项；motherCharacterId 查不到女儿记录
+     *         （理论上不应发生——调用方应该只对已生成的女儿调用此方法）。
+     *         校验失败时不会写库，调用方需要自行决定重试或放弃这次更新，
+     *         不能吞掉异常静默跳过——静默跳过会让情绪引擎以为更新成功了。
      */
     suspend fun updateStateLayer(motherCharacterId: Int, stateLayerJson: String) {
+        val newStateLayer = DaughterStateLayer.fromJson(stateLayerJson)
+
+        val existing = dao.getByMother(motherCharacterId)
+            ?: throw DaughterDataException(
+                "updateStateLayer: motherCharacterId=$motherCharacterId 查不到女儿记录"
+            )
+        val customEnums = DaughterCustomEnums.fromJson(existing.customEnumsJson)
+
+        if (customEnums.findMask(newStateLayer.maskKey) == null)
+            throw DaughterDataException(
+                "updateStateLayer: maskKey='${newStateLayer.maskKey}' 不在 customEnums.maskStates 中"
+            )
+        if (customEnums.findEmotion(newStateLayer.primaryEmotionKey) == null)
+            throw DaughterDataException(
+                "updateStateLayer: primaryEmotionKey='${newStateLayer.primaryEmotionKey}' 不在 customEnums.emotionStates 中"
+            )
+        if (customEnums.findNeed(newStateLayer.currentNeedKey) == null)
+            throw DaughterDataException(
+                "updateStateLayer: currentNeedKey='${newStateLayer.currentNeedKey}' 不在 customEnums.needStates 中"
+            )
+        if (customEnums.findFear(newStateLayer.currentFearKey) == null)
+            throw DaughterDataException(
+                "updateStateLayer: currentFearKey='${newStateLayer.currentFearKey}' 不在 customEnums.fearStates 中"
+            )
+
         dao.updateStateLayer(motherCharacterId, stateLayerJson)
     }
 

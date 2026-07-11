@@ -426,11 +426,12 @@ private fun JudgeDetailContent(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
                 ) {
-                    Icon(
-                        Icons.Outlined.Gavel,
+                    com.zaijian.zhoumuyun.ui.design.IconBadge(
+                        icon               = Icons.Outlined.Gavel,
                         contentDescription = null,
-                        tint     = Palette.Gold,
-                        modifier = Modifier.size(16.dp),
+                        tint               = Palette.Gold,
+                        background         = Palette.Gold.copy(alpha = 0.12f),
+                        size               = 16.dp,
                     )
                     Text(
                         text  = "已主持 ${profile.judgeCount} 次竞赛 · $stageLabel",

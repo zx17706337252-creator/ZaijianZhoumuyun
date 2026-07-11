@@ -54,6 +54,7 @@ import com.zaijian.zhoumuyun.data.manager.DaughterCharacterGenerator
 import com.zaijian.zhoumuyun.data.manager.DaughterIdAllocator
 import com.zaijian.zhoumuyun.data.model.AgentRelationStage
 import com.zaijian.zhoumuyun.data.model.ChatMode
+import com.zaijian.zhoumuyun.data.model.DaughterDataException
 import com.zaijian.zhoumuyun.data.model.DefaultCharacters
 import com.zaijian.zhoumuyun.data.model.isDaughterMother
 import com.zaijian.zhoumuyun.data.model.toDaughterCharacterData
@@ -360,8 +361,20 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         loadMessages(characterId)
         registerCharacterTools()
         viewModelScope.launch(Dispatchers.IO) {
+            // 防御性保护：daughterRepo.getCharacterConfig() 在女儿数据损坏时会抛
+            // DaughterDataException（见 DaughterCharacterEntity.toDaughterCharacterData()
+            // 的校验规则）。写库端（DaughterCharacterGenerator.parseAndValidate()）和
+            // updateStateLayer() 两条写入路径均已补齐同款 key 存在性校验，正常流程下
+            // 不应再产生这类坏数据；这里的 try-catch 是最后一道防线，避免万一真的
+            // 出现损坏数据时，打开聊天页面直接让协程崩溃——降级为 character=null，
+            // 走后面 uiState 的既有"角色不存在"处理路径，而不是让用户看到崩溃。
             val char = DefaultCharacters.find { it.id == characterId }
-                ?: daughterRepo.getCharacterConfig(characterId)
+                ?: try {
+                    daughterRepo.getCharacterConfig(characterId)
+                } catch (e: DaughterDataException) {
+                    ZLog.e("ChatViewModel", "characterId=$characterId 女儿数据损坏，无法加载", e)
+                    null
+                }
             _uiState.update { it.copy(
                 character   = char,
                 // UI M3 修复：初始化时从 PresenceEngine 缓存读取当前心情，后续由 stripMoodTag 路径实时更新。
@@ -1058,58 +1071,67 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             }
                         }
                         // ── 检查5a：D5 关系阶段引擎 ─────────────────────────────────
-                        if (capturedCharId >= 1000) {
-                            val transitionResult = agentRelationEngine.onInteractionComplete(
-                                daughterId    = capturedCharId,
-                                userText      = capturedText,
-                                assistantText = capturedReply,
-                            )
-                            if (transitionResult is StageTransitionResult.Upgraded) {
-                                ZLog.i(
-                                    "ChatViewModel",
-                                    "D5 升阶：daughterId=${transitionResult.daughterId} → ${transitionResult.newStage}",
+                        // 整段包 try-catch：内部涉及多次女儿数据读取
+                        // （isThirdGeneration/getCharacterConfig/isAllSlotsLocked 等），
+                        // 理论上走到这里的 daughterId 数据应该完好（她能正常对话，
+                        // 说明数据本身可用），但作为最后一道防线，任一环节异常
+                        // 都不应该连累后面完全独立的"D3 didAsk 判定"逻辑。
+                        try {
+                            if (capturedCharId >= 1000) {
+                                val transitionResult = agentRelationEngine.onInteractionComplete(
+                                    daughterId    = capturedCharId,
+                                    userText      = capturedText,
+                                    assistantText = capturedReply,
                                 )
-                                if (transitionResult.newStage == AgentRelationStage.STAGE_3_SEEKING) {
-                                    val daughterId = transitionResult.daughterId
-                                    val isAlreadyGen3 = daughterRepo.isThirdGeneration(daughterId)
-                                    if (!isAlreadyGen3) {
-                                        val allLocked = pregnancyAnswerRepo.isAllSlotsLocked(daughterId)
-                                        if (allLocked) {
-                                            val motherConfig = daughterRepo.getCharacterConfig(daughterId)
-                                            if (motherConfig != null) {
-                                                val lockedAnswers = PregnancyAnswerRepository.ALL_SLOTS
-                                                    .mapNotNull { slot ->
-                                                        val ans = pregnancyAnswerRepo.getLockedAnswer(
-                                                            motherCharacterId = daughterId,
-                                                            questionType      = slot.questionType,
-                                                            slotIndex         = slot.slotIndex,
-                                                        )
-                                                        if (ans != null) {
-                                                            "slot_${slot.questionType.name}_${slot.slotIndex}" to ans
-                                                        } else null
-                                                    }.toMap()
-                                                viewModelScope.launch(Dispatchers.IO) {
-                                                    try {
-                                                        daughterGenerator.generateForMother(
-                                                            motherConfig  = motherConfig,
-                                                            lockedAnswers = lockedAnswers,
-                                                        )
-                                                    } catch (e: Exception) {
-                                                        ZLog.e("ChatViewModel", "D5→D4 第三代 generateForMother 失败", e)
-                                                        _uiState.update { it.copy(pendingDaughterGenerationError = "女儿生成失败：${e.message?.take(60) ?: "未知错误"}") }
+                                if (transitionResult is StageTransitionResult.Upgraded) {
+                                    ZLog.i(
+                                        "ChatViewModel",
+                                        "D5 升阶：daughterId=${transitionResult.daughterId} → ${transitionResult.newStage}",
+                                    )
+                                    if (transitionResult.newStage == AgentRelationStage.STAGE_3_SEEKING) {
+                                        val daughterId = transitionResult.daughterId
+                                        val isAlreadyGen3 = daughterRepo.isThirdGeneration(daughterId)
+                                        if (!isAlreadyGen3) {
+                                            val allLocked = pregnancyAnswerRepo.isAllSlotsLocked(daughterId)
+                                            if (allLocked) {
+                                                val motherConfig = daughterRepo.getCharacterConfig(daughterId)
+                                                if (motherConfig != null) {
+                                                    val lockedAnswers = PregnancyAnswerRepository.ALL_SLOTS
+                                                        .mapNotNull { slot ->
+                                                            val ans = pregnancyAnswerRepo.getLockedAnswer(
+                                                                motherCharacterId = daughterId,
+                                                                questionType      = slot.questionType,
+                                                                slotIndex         = slot.slotIndex,
+                                                            )
+                                                            if (ans != null) {
+                                                                "slot_${slot.questionType.name}_${slot.slotIndex}" to ans
+                                                            } else null
+                                                        }.toMap()
+                                                    viewModelScope.launch(Dispatchers.IO) {
+                                                        try {
+                                                            daughterGenerator.generateForMother(
+                                                                motherConfig  = motherConfig,
+                                                                lockedAnswers = lockedAnswers,
+                                                            )
+                                                        } catch (e: Exception) {
+                                                            ZLog.e("ChatViewModel", "D5→D4 第三代 generateForMother 失败", e)
+                                                            _uiState.update { it.copy(pendingDaughterGenerationError = "女儿生成失败：${e.message?.take(60) ?: "未知错误"}") }
+                                                        }
                                                     }
+                                                } else {
+                                                    ZLog.w("ChatViewModel", "D5 STAGE_3：daughterId=$daughterId 无法取得 CharacterConfig，跳过第三代生成")
                                                 }
                                             } else {
-                                                ZLog.w("ChatViewModel", "D5 STAGE_3：daughterId=$daughterId 无法取得 CharacterConfig，跳过第三代生成")
+                                                ZLog.i("ChatViewModel", "D5 STAGE_3：daughterId=$daughterId 槽位尚未全锁，等待 D3 收敛")
                                             }
                                         } else {
-                                            ZLog.i("ChatViewModel", "D5 STAGE_3：daughterId=$daughterId 槎位尚未全锁，等待 D3 收敛")
+                                            ZLog.i("ChatViewModel", "D5 STAGE_3：daughterId=$daughterId 已是第三代，不再生成下一代")
                                         }
-                                    } else {
-                                        ZLog.i("ChatViewModel", "D5 STAGE_3：daughterId=$daughterId 已是第三代，不再生成下一代")
                                     }
                                 }
                             }
+                        } catch (e: DaughterDataException) {
+                            ZLog.e("ChatViewModel", "D5 升阶检查中女儿数据异常，daughterId=$capturedCharId", e)
                         }
 
                         // ── D3 didAsk 判定：本轮注入了提问指令，确认 AI 是否真的把问题问出口 ──

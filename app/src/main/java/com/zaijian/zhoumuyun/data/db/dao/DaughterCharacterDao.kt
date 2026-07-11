@@ -49,9 +49,19 @@ interface DaughterCharacterDao {
     suspend fun upsert(entity: DaughterCharacterEntity)
 
     /**
-     * 只更新 StateLayer 列。
+     * 只更新 StateLayer 列（DAO 原始写入，不做任何校验）。
      * 运行时情绪引擎每次状态变更调用此方法，
      * 避免重写 identityJson 和 customEnumsJson（性能 + 安全）。
+     *
+     * 注意：这里直接接收裸 JSON 字符串写库，不校验 maskKey/
+     * primaryEmotionKey/currentNeedKey/currentFearKey 是否非空、
+     * 是否在这个女儿的 customEnums 中真实存在——这层校验在
+     * [com.zaijian.zhoumuyun.data.repository.DaughterCharacterRepository.updateStateLayer]
+     * 里做（需要先查出本行 customEnumsJson 做跨对象比对，DAO 层
+     * 拿不到这个上下文）。调用方必须经由 Repository 方法调用，
+     * 不要绕过 Repository 直接调用本方法，否则会重新打开写入坏
+     * key、绕过校验的口子（与 D4 生成器 parseAndValidate() 堵住的
+     * 是同一类问题）。
      */
     @Query(
         "UPDATE daughter_character SET stateLayerJson = :stateLayerJson " +

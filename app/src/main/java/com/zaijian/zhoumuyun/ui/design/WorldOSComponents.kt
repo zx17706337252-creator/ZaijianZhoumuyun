@@ -72,9 +72,12 @@ import com.zaijian.zhoumuyun.ui.theme.appSpring
  *
  *   L0 纸面底   —— 常态存在，bgElevated→bgCard 渐变
  *   L1 光斑     —— 常态存在，左上角径向光晕/天光，light/dark 强度不同（第7节数值表）
+ *   accentWash  —— 离线简报 UI 改版新增，仅 accentWash = true 且 ownerAccent != null 时
+ *                  显示，右上角 ownerAccent 双层径向晕染，模拟纸面渗染质感，默认关闭
  *   L2 黄铜细线 —— 常态存在，1px 描边
- *   L3 身份脊   —— 仅 ownerAccent != null 时显示，左侧 2px 竖线
- *   L4 蜡封角标 —— 仅 isMilestone = true 时显示，右上角 6px 绛红圆点
+ *   L3 身份脊   —— 仅 ownerAccent != null 时显示，左侧 2px 竖线（上深下浅渐变 + 投影）
+ *   L4 蜡封角标 —— 仅 isMilestone = true 时显示，右上角 6px 绛红圆点（同心圆投影）
+ *   顶部高光线 —— 仅 ownerAccent != null 时显示，卡片顶部居中的极细 accent 渐隐横线
  *   阴影        —— 常态存在，光照在 L2 之外另加一层投影，强调悬浮层次感
  *                  （与 L2 是互补关系，不是互斥替代，详见下方实现处注释）
  *
@@ -89,6 +92,11 @@ fun WorldCard(
     ownerAccent: Color? = null,
     isMilestone: Boolean = false,
     cornerRadius: Dp = Radius.md,
+    // 离线简报 UI 改版新增：右上角 accent 双层晕染，默认关闭，不影响已接入
+    // WorldCard 的其余 ~14 处调用点（均为具名参数调用）。仅在 accentWash = true
+    // 且 ownerAccent != null 时生效，模拟纸面渗染质感（双层不同扩散半径叠加），
+    // 而不是单层平铺色块。目前只有 BriefingCharacterCard 打开这个开关。
+    accentWash: Boolean = false,
     content: @Composable () -> Unit,
 ) {
     val colors = ZaijianTheme.colors
@@ -159,6 +167,43 @@ fun WorldCard(
                     radius = 480f,
                 )
             )
+            // accentWash：右上角 ownerAccent 双层径向晕染，扩散半径不同的两层
+            // 叠加模拟纸面渗染质感（比单层平铺色块更有层次），而不是替代 L1——
+            // L1 是左上角、中性色（accent/白）的常态光斑，这里是右上角、
+            // ownerAccent 专属色的额外一层，两者共存不冲突。
+            .then(
+                if (accentWash && ownerAccent != null) {
+                    Modifier.drawBehind {
+                        val corner = Offset(size.width, 0f)
+                        val washAlphaOuter = if (isDark) 0.16f else 0.10f
+                        val washAlphaInner = if (isDark) 0.10f else 0.06f
+                        drawRoundRect(
+                            brush = Brush.radialGradient(
+                                colors = listOf(
+                                    ownerAccent.copy(alpha = washAlphaOuter),
+                                    ownerAccent.copy(alpha = 0f),
+                                ),
+                                center = corner,
+                                radius = size.maxDimension * 0.75f,
+                            ),
+                            cornerRadius = androidx.compose.ui.geometry.CornerRadius(cornerRadius.toPx()),
+                        )
+                        drawRoundRect(
+                            brush = Brush.radialGradient(
+                                colors = listOf(
+                                    ownerAccent.copy(alpha = washAlphaInner),
+                                    ownerAccent.copy(alpha = 0f),
+                                ),
+                                center = corner,
+                                radius = size.maxDimension * 0.4f,
+                            ),
+                            cornerRadius = androidx.compose.ui.geometry.CornerRadius(cornerRadius.toPx()),
+                        )
+                    }
+                } else {
+                    Modifier
+                }
+            )
             .border(
                 width = 1.dp,
                 color = colors.accent.copy(alpha = l2Alpha),
@@ -167,13 +212,58 @@ fun WorldCard(
     ) {
         content()
 
+        // 卡片顶部极细 accent 高光线：模拟卡片"立起来"的边缘反光。
+        // 仅在 ownerAccent 非空时画（无主色时没有可用的高光颜色来源，
+        // 沿用 L3 身份脊同样的"仅角色专属卡片显示"范围，不影响无 ownerAccent
+        // 的调用点，如 BriefingAttentionSection/BriefingRankingSection）。
+        if (ownerAccent != null) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .fillMaxWidth()
+                    .height(1.dp)
+                    .background(
+                        Brush.horizontalGradient(
+                            colors = listOf(
+                                ownerAccent.copy(alpha = 0f),
+                                ownerAccent.copy(alpha = if (isDark) 0.5f else 0.35f),
+                                ownerAccent.copy(alpha = 0f),
+                            ),
+                        )
+                    )
+            )
+        }
+
+        // L3 身份脊：从纯色改为上深下浅渐变 + 一点投影，不再是死板的纯色 2px 线。
         if (ownerAccent != null) {
             Box(
                 modifier = Modifier
                     .align(Alignment.CenterStart)
                     .fillMaxHeight()
                     .width(2.dp)
-                    .background(ownerAccent)
+                    .background(
+                        Brush.verticalGradient(
+                            colors = listOf(
+                                ownerAccent,
+                                ownerAccent.copy(alpha = 0.55f),
+                            )
+                        )
+                    )
+                    .drawBehind {
+                        // 竖脊投影：向右侧扩散的一层淡淡阴影，加一点厚度感，
+                        // 不用独立阴影层（会影响卡片整体尺寸协商），画在脊本身范围内。
+                        drawRect(
+                            brush = Brush.horizontalGradient(
+                                colors = listOf(
+                                    ownerAccent.copy(alpha = 0.25f),
+                                    ownerAccent.copy(alpha = 0f),
+                                ),
+                                startX = 0f,
+                                endX = size.width * 6f,
+                            ),
+                            size = androidx.compose.ui.geometry.Size(size.width * 6f, size.height),
+                        )
+                    }
             )
         }
 
@@ -184,6 +274,21 @@ fun WorldCard(
                     .align(Alignment.TopEnd)
                     .offset(x = (-8).dp, y = 8.dp)
                     .size(6.dp)
+                    // 蜡封角标同心圆投影：两层逐渐扩散淡出的圆形描边，围绕蜡封本体，
+                    // 模拟"蜡封"凸起的立体质感，而不是单纯一个纯色小圆点。
+                    .drawBehind {
+                        val centerOffset = Offset(size.width / 2f, size.height / 2f)
+                        drawCircle(
+                            color = velvet.copy(alpha = 0.18f),
+                            radius = size.minDimension * 1.6f,
+                            center = centerOffset,
+                        )
+                        drawCircle(
+                            color = velvet.copy(alpha = 0.30f),
+                            radius = size.minDimension * 1.1f,
+                            center = centerOffset,
+                        )
+                    }
                     .clip(CircleShape)
                     .background(velvet)
                     .border(0.5.dp, velvet.copy(alpha = 0.4f), CircleShape)

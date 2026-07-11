@@ -7,7 +7,12 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.CalendarMonth
+import androidx.compose.material.icons.outlined.Code
+import androidx.compose.material.icons.outlined.Description
+import androidx.compose.material.icons.outlined.Email
 import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.outlined.TableChart
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -38,6 +43,15 @@ object AppIcons {
     // 新增图标常量时，照此处格式追加即可，一次迁移一处，不必成批处理。
     val Folder: ImageVector        = Icons.Outlined.Folder
     val CalendarMonth: ImageVector = Icons.Outlined.CalendarMonth
+
+    // 2.4 收口第二批：CharacterDetailAbility「可用工具」四列网格固定用到
+    // 的 5 个工具图标，本身就是一份固定枚举（ToolItem 列表），比起留在
+    // 调用处裸写更适合收进这里统一管理。
+    val ToolSearch: ImageVector      = Icons.Outlined.Search
+    val ToolDescription: ImageVector = Icons.Outlined.Description
+    val ToolCode: ImageVector        = Icons.Outlined.Code
+    val ToolTable: ImageVector       = Icons.Outlined.TableChart
+    val ToolEmail: ImageVector       = Icons.Outlined.Email
 }
 
 /**

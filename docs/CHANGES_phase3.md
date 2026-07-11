@@ -374,3 +374,181 @@ LLM 自由生成 JSON，`buildSystemPrompt()` 只是"要求"字段填满，没�
 - `BriefingViewModel`（4.7 节）
 - `ui/screen/briefing/` 四个 Compose 文件 + `BriefingScreen.kt`（4.10.3）
 - 导航接入（4.2 节）
+
+**以上列表已过时**：本次接手时确认上述四项在当前代码库中均已存在（`BriefingDataStore.kt`/
+`BriefingViewModel.kt`/`ui/screen/briefing/` 四个文件/`BriefingScreen.kt`），未做的事
+清单没有跟着更新，特此更正，避免误导下一次排查。
+
+---
+
+## 离线简报 UI 改版（按《离线简报 UI 改版交接文档》实现）
+
+用户反馈原版 `BriefingScreen` 三个问题：角色卡片挤成窄竖排、视觉单调、
+排行榜硬编码只显示前 5 名。本轮已在预览阶段（React/HTML 仿真）与用户
+来回确认 3 版，方案收敛为 `briefing_preview_v3.jsx`，本次落地为 Kotlin。
+
+### 改动
+
+- `app/src/main/java/com/zaijian/zhoumuyun/ui/design/WorldOSComponents.kt`
+- `app/src/main/java/com/zaijian/zhoumuyun/ui/screen/briefing/BriefingCharacterCard.kt`（整体重写）
+- `app/src/main/java/com/zaijian/zhoumuyun/ui/screen/briefing/BriefingRankingSection.kt`
+- `app/src/main/java/com/zaijian/zhoumuyun/ui/screen/BriefingScreen.kt`
+
+### 内容摘要
+
+1. **`WorldCard` 新增 `accentWash: Boolean = false` 参数**（默认关闭，不影响
+   已接入 `WorldCard` 的其余 ~14 处调用点，均为具名参数调用）。开启后在
+   卡片右上角叠加两层不同扩散半径的 `ownerAccent` 径向晕染
+   （`Brush.radialGradient(center = Offset(size.width, 0f), ...)`），模拟
+   纸面渗染质感。同时按交接文档"视觉分层加强"一节，扩展了 L3 身份脊
+   （纯色改为上深下浅渐变 + 投影）、新增卡片顶部极细 accent 高光线、
+   蜡封角标（L4）加同心圆投影——这三处仅在 `ownerAccent`/`isMilestone`
+   非空时渲染，不影响无 `ownerAccent` 的调用点（如 `BriefingAttentionSection`/
+   `BriefingRankingSection` 本身）。
+2. **`BriefingCharacterCard.kt` 整体重写**：布局从纯竖直堆叠改为
+   「头像（`BreathingAvatar`，`enableBreath = false`）+ 右侧信息列」横向布局，
+   `WorldCard` 加 `fillMaxWidth()` + `accentWash = true`。明确不使用
+   mood/energy（心情蜡烛）——`BriefingRepository` 走离线批量生成场景，
+   不会传入真实 `CharacterStateLayer`，`mood` 会退化成按时间规则瞎猜的
+   伪信息，用户已明确否决。改用 `entry.daysSinceContact`（真实字段）
+   展示"距上次联系天数"，`>= 7` 天（与 `BriefingRepository.
+   buildAttentionList()` 的 `noContactThresholdDays = 7L` 阈值一致）用
+   `Palette.SemanticReminder` 标出；`daysSinceContact` 为 `null`（从未联系）
+   单独文案"还没联系过"，`0` 显示"今天联系过"。任务数/评分收进同一行，
+   项目名仅非空时单独一行。
+3. **`BriefingRankingSection.kt` 去掉 `ranking.take(5)`**，改为展示 `ranking`
+   全部（数据层 `BriefingRepository.generateBriefing()` 本来就是"9位母亲 +
+   全部已注册女儿"，问题只在 UI 截断）。每行加角色专属色小圆点，前三名
+   名次数字用 `entry.character.accentColor` 高亮，其余用 `textSecondary`。
+4. **`BriefingScreen.kt`**：`BriefingAttentionSection`、`BriefingRankingSection`
+   两个 `item` 补上和角色卡一致的
+   `Modifier.padding(horizontal = Spacing.screenHorizontal, vertical = Spacing.xs)`
+   （原版这两处没传 modifier，会贴边）。
+
+### 明确未采纳的方向（用户已否决，不要在后续会话里重提）
+
+- 心情蜡烛（mood/energy）：离线简报场景下是伪信息，见上第2条。
+- "每日创作题目 + 全员排名评分"独立板块：用户原话"不急，先把简报卡片
+  这轮收尾，下次单独做"，这轮"距上次联系天数"占用的位置就是最终方案，
+  不是等这个新面板的临时占位。
+
+### 验证方式（尚未做，需要下一步走查）
+
+沙盒环境无网络，无法拉取 Android Gradle 依赖本地编译，本次改动只做了
+括号平衡自检（`{`/`}`、`(`/`)`、`[`/`]` 计数一致）和字段名/import 对照
+项目现有定义逐一核实，未实机编译。历史流程是提交后走 GitHub Actions CI，
+需要走一遍确认。预览稿的渐变/阴影具体数值（尤其是 accentWash 双层晕染
+半径、L3 竖脊投影扩散范围）大概率需要在真机上肉眼比对 `briefing_preview_v3.jsx`
+后微调，不假设 1:1 无损还原。
+
+---
+
+## 全量复核（v93-v99 + 离线简报 + UIUX 整合方案落地情况）
+
+对照本文件历史记录逐条核实代码现状，发现的问题和结论：
+
+### 已确认无问题
+- `AppContainer` 初始化时序（`AppDatabase.getInstance` → `AppContainer.init()` →
+  `sharedPresenceEngine` 赋值）与文档描述一致，无空指针/时序风险。
+- `PregnancyTriggerManager` 的功能性差异（`ChatViewModel` 传
+  `relationshipEngine`/`aiJudge`，`RoundtableViewModel` 不传）落地正确，
+  两参数均有 `null` 默认值，编译和运行时都不会出错。
+- `ProactiveMessageWorker` 独立构造一份 `PresenceEngine`——核实为有意设计
+  （WorkManager 场景需要独立于 Application 生命周期），非遗漏。
+- schema（`48.json` 缺失）与 migration 链核实：`MIGRATION_47_48` 确实已注册
+  在 `MIGRATIONS_41_47` 数组末尾（**数组命名过时未更新，容易误判成漏注册，
+  建议下次顺手改名为 `MIGRATIONS_41_48`**），迁移逻辑本身完整无误。
+- `CompetitionRoundEntity` 的 `@Index` 与 migration 的 `CREATE INDEX` 一致。
+- 报告第7条（`ProjectViewModel` 绕过 `TaskRepository`）实际已在某轮次
+  修复（`taskRepo` 字段类型是 `TaskRepository`，注释标注"7.7 修复"），
+  只是本文件清单没跟着更新，特此确认并更正。
+
+### 发现并修复：`DaughterCharacterRepository.updateStateLayer()` 校验缺口
+
+排查"女儿数据为什么会损坏"时发现——D4 生成器（`saveDaughter` 入口）的写库
+校验已经补齐（见上方"女儿数据损坏根治"一节），但 `updateStateLayer()`
+是**第二条写入路径**：接收裸 `stateLayerJson` 字符串直接覆盖该列，完全不
+经过 `parseAndValidate()` 那套 key 存在性校验。
+
+核实全项目零调用点——"情绪引擎"目前只存在于注释里，尚未实际接入，
+女儿角色本身也尚未生成过，所以这条路径至今没有产生过任何实际损坏数据，
+是抢在第一次真实使用前把关口焊死，不是抢救现有脏数据。
+
+**修复**：`DaughterCharacterRepository.updateStateLayer()` 内补上与
+`DaughterCharacterGenerator.parseAndValidate()` / `toDaughterCharacterData()`
+同一套校验规则——解析新 `stateLayerJson`，查出该女儿现有的
+`customEnumsJson` 做跨对象比对，四个 key（`maskKey`/`primaryEmotionKey`/
+`currentNeedKey`/`currentFearKey`）非空且能在对应枚举数组中查到才允许
+写库，否则抛 `DaughterDataException`，调用方需自行处理，不能吞掉异常
+静默跳过。`DaughterCharacterDao.updateStateLayer()` 注释同步更新，
+标注"DAO 原始写入不做校验，必须经由 Repository 调用"。
+
+改动文件：
+- `data/repository/DaughterCharacterRepository.kt`
+- `data/db/dao/DaughterCharacterDao.kt`（仅注释）
+
+括号平衡自检通过，未做实机编译。
+
+### 遗留、本次未处理（优先级较低，供后续参考）
+- `BriefingRepository.buildAttentionList()`：`daysSinceContact` 为 `null`
+  （从未联系过）时用 `?: 0` 兜底，导致"从未联系过"反而不会进入"需要关注"
+  列表，语义上她应该比"7天没联系"更需要关注。产品逻辑判断，非架构问题。
+- `ChatViewModel.kt`（364/1078行）、`CharacterDetailScreen.kt`（169行）
+  三处调用 `daughterRepo.getCharacterConfig()` 没有 try-catch 保护——
+  理论上现在两条写入路径都已校验封堵，女儿数据不会带病写入库，这三处
+  炸不出真实异常，优先级降为"锦上添花的防御性保险"，非紧急项。
+
+---
+
+## 遗留两项收尾：NoContact/NeverContacted 语义拆分 + 三处防御性 try-catch
+
+### 1. `BriefingAttentionItem` 新增 `NeverContacted`，替换 `?: 0` 兜底
+
+`BriefingRepository.buildAttentionList()` 原逻辑 `(entry.daysSinceContact ?: 0)
+>= 7` 会把"从未联系过"（`null`）兜底成 0，导致 `0 >= 7` 为 false——从未
+联系过的角色反而不出现在"需要关注"列表里，语义相反。
+
+**修复**：`BriefingAttentionItem`（`data/model/BriefingData.kt`）新增
+`NeverContacted(character: CharacterConfig)` 子类型，与 `NoContact(character,
+days: Long)` 区分开——`NoContact.days` 是非空 `Long`，"从未联系过"没有
+一个自然的天数可填（填 0 会被误读成"今天联系过"，填极大值是隐晦的魔法数），
+只能用独立类型表达。`buildAttentionList()` 改为 `days == null` 时归入
+`NeverContacted`，`days >= 7` 时才归入 `NoContact`。
+
+`BriefingAttentionSection.kt` 的 `when` 表达式（穷尽 `sealed class`，无
+`else` 分支）同步补上 `NeverContacted` 分支，文案"还没有联系过"——这处
+如果漏改会直接编译失败，起到了强制核对的作用，交叉搜索确认全项目只有
+这一处消费 `BriefingAttentionItem`，无其他遗漏点。
+
+改动文件：`data/model/BriefingData.kt`、`data/repository/BriefingRepository.kt`、
+`ui/screen/briefing/BriefingAttentionSection.kt`。
+
+### 2. 三处 `getCharacterConfig()` 调用点补齐防御性 try-catch
+
+背景：女儿角色目前尚未生成过，两条写入路径（`saveDaughter`/
+`updateStateLayer`）也已在此前修复中补齐校验，理论上不会再产生损坏数据，
+所以这里是纯防御性加固，不是抢救真实故障。
+
+- **`ChatViewModel.kt` `init()`**（约364行）：`daughterRepo.getCharacterConfig()`
+  包 try-catch，捕获 `DaughterDataException` 后 `char` 降级为 `null`，
+  走既有的"角色不存在"处理路径，并用 `ZLog.e` 记录，不让 `viewModelScope`
+  协程崩溃。
+- **`ChatViewModel.kt` D5 升阶检查**（约1073行起）：整段"检查5a：D5 关系
+  阶段引擎"逻辑（内部还有 `isThirdGeneration`/`isAllSlotsLocked`/
+  `getLockedAnswer` 等多次女儿数据读取）整体包 try-catch，避免任一环节
+  异常连累后面完全独立的"D3 didAsk 判定"逻辑（两段逻辑在同一个
+  `viewModelScope.launch` 里顺序执行，前者异常会导致后者也执行不到）。
+- **`CharacterDetailScreen.kt` `LaunchedEffect`**（约162行）：
+  `getCharacterConfig()` 包 try-catch，异常时 `daughterCharacter` 保持
+  `null`、`daughterLookupDone` 照常置 `true`，复用页面里已有的"角色不存在"
+  兜底 UI（空白页+返回按钮），不新增 UI 状态、不让 Composable 协程崩溃。
+
+三处均补充了 `DaughterDataException` 的 import（`ChatViewModel.kt`、
+`CharacterDetailScreen.kt` 此前未 import 这个类）。
+
+改动文件：`ui/viewmodel/ChatViewModel.kt`、
+`ui/screen/characterdetail/CharacterDetailScreen.kt`。
+
+括号平衡自检全部通过（5个改动文件逐一核对 `{}`/`()` 计数一致），
+未做实机编译。
+
