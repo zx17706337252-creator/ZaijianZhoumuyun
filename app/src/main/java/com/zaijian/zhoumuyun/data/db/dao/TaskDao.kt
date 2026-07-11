@@ -173,4 +173,14 @@ interface TaskDao {
         WHERE id = :id
     """)
     suspend fun toggleGrowthTaskDone(id: String, now: Long)
+
+    /** 某角色在某时间点之后完成的任务，供离线简报统计"完成任务数"用（整合方案 v2.1 4.10.1）。 */
+    @Query("""
+        SELECT * FROM tasks
+        WHERE characterId = :characterId
+          AND status = 'COMPLETED'
+          AND completedAt >= :since
+        ORDER BY completedAt DESC
+    """)
+    suspend fun getCompletedByCharacterSince(characterId: Int, since: Long): List<TaskEntity>
 }

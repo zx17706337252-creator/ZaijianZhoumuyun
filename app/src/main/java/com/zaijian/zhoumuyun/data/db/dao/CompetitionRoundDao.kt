@@ -48,4 +48,12 @@ interface CompetitionRoundDao {
 
     @Query("DELETE FROM competition_rounds WHERE id = :id")
     suspend fun deleteById(id: String)
+
+    /** 某时间点之后已完成的竞赛轮次，供离线简报统计交付评分用（整合方案 v2.1 4.10.1）。 */
+    @Query("""
+        SELECT * FROM competition_rounds
+        WHERE status = 'COMPLETED' AND completedAt >= :after
+        ORDER BY completedAt DESC
+    """)
+    suspend fun getCompletedSince(after: Long): List<CompetitionRoundEntity>
 }

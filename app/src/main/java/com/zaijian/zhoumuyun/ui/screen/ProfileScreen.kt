@@ -26,10 +26,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Check
-import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.Palette
-import androidx.compose.material.icons.outlined.Spa
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -123,7 +121,6 @@ internal data class SettingGroup(
 @Composable
 fun ProfileScreen(
     onNavigateToCharacter: (Int) -> Unit = {},
-    onNavigateToProjects:  () -> Unit    = {},
 ) {
     val colors = ZaijianTheme.colors
     val type   = ZaijianTheme.typography
@@ -241,12 +238,6 @@ fun ProfileScreen(
                     onNavigateToCharacter = onNavigateToCharacter,
                     avatarOverrides       = characterAvatarOverrides,
                 )
-                Spacer(Modifier.height(Spacing.lg))
-            }
-
-            // ── Step 1：进化项目快捷入口 ──────────────────────
-            item {
-                EvolutionProjectsEntry(onClick = onNavigateToProjects)
                 Spacer(Modifier.height(Spacing.lg))
             }
 

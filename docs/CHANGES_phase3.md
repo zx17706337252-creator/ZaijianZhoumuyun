@@ -247,3 +247,130 @@
 - `ProfileScreen.kt`/`CharacterDetailScreen.kt` 的 Composable 直连数据库问题
 - `WorkflowJobWorker.CHANNEL_NAME` 旧项目名残留
 - 二代/三代女儿受孕弹窗链路的验收走查（v93已修复代码，尚未实机验证）
+
+---
+
+## 离线简报 第一步：DAO + AppContainer + BriefingRepository（复核后修订版，已合入）
+
+对照《再见公馆》UI/UX 整合方案 v2.1 第 4.10.1/4.10.2 节，完成"施工顺序建议"第 1 步
+（DAO + AppContainer）+ 第 2 步（BriefingRepository），两步强耦合，一并完成。
+
+### 改动文件
+- 新增 `data/model/BriefingData.kt`
+- 新增 `data/repository/BriefingRepository.kt`
+- `RelationshipMilestoneDao.kt`：+`getAllSince(after: Long)`
+- `TaskDao.kt`：+`getCompletedByCharacterSince(characterId, since)`
+- `CompetitionRoundDao.kt`：+`getCompletedSince(after: Long)`
+- `AppContainer.kt`：新增 `menstrualCycleRepo`、`briefingRepo` 字段（纯新增，均在其依赖项之后声明，无初始化顺序问题）
+
+以上均为纯新增 `@Query`/字段，未改动任何现有方法/表结构，无需 migration。
+
+### 修复的问题：女儿角色数据损坏会崩掉整个开场页
+
+`DaughterCharacterRepository.getCharacterConfig()` 对损坏的女儿数据（identityJson/
+stateLayerJson 解析失败）故意抛 `DaughterDataException`——项目原有设计：宁可这一条
+消息报错，不让角色带残缺人格说话。但这是"单条消息"粒度的设计。
+
+最初实现用 `daughterIds.mapNotNull { getCharacterConfig(it) }` 批量转换全部女儿，
+`mapNotNull` 只挡得住 null 返回值，挡不住抛异常——一个女儿数据损坏，`generateBriefing()`
+整体向上抛异常，App 卡在开场页进不去，连累其余八九位角色的简报也生成不出来。
+
+修复：改为单角色级别 `try-catch` 隔离 `DaughterDataException`，损坏的女儿跳过并用
+`ZLog.w` 记录 `characterId` + 异常，不连累其余角色。
+
+### 复核确认没问题（记录避免下一步重复排查）
+- `observeFrom("user").first()` 一次性取快照，`WorldSimulation` 已有先例，验证过的模式
+- `getInterCharacterMatrix` 返回 Map 的 key 是归一化字符串，本次代码只用 `.values`，不受影响
+- `relationship_states` 表 `(fromId, toId)` 联合唯一索引，`associateBy { it.toId }` 不会丢数据
+- `AppContainer` 字段声明顺序没问题，没有引用未初始化字段
+- `ProjectEntity` 字段名是 `title` 不是方案文档写的 `name`，代码里已改正
+
+### 复核发现的既有系统缺口，本次一并修复（不留待办）
+
+最初提交版本把下面两条记录为"非本次引入、留给你判断是否处理"，后确认这两条
+也要处理，不留待办，已在本次一并修复：
+
+- **`MenstrualCycleRepository.initIfAbsent()` 全项目零调用点**：所有角色周期锚点
+  为 null，"排卵期"提示不会真实触发（此前安全兜底成"安全期"，不会崩，但功能
+  未接入启动流程）。设计文档本身写明的调用时机就是"App 启动时在 IO 协程中调用
+  一次"。修复：在 `ZaijianApp.onCreate()` 里补上独立的 `scope.launch(Dispatchers.Default)`
+  调用 `AppContainer.instance.menstrualCycleRepo.initIfAbsent()`，与文件里其它
+  后台初始化同一模式——try-catch + ZLog，失败不影响冷启动、不连累其它子系统。
+  时序上晚于 `AppContainer.init(this)`，不存在未初始化访问的问题。
+
+- **`competition_rounds` 表缺 `completedAt` 索引**：`getCompletedSince(after)`
+  原先先走 `status` 索引缩小范围、再对 `completedAt` 比较排序。当前数据量小
+  不会有实际性能问题，但既然复核时发现了就一并修复，不留作技术债。
+  修复：`CompetitionRoundEntity` 新增 `Index(value = ["completedAt"])`；
+  新增 `MIGRATION_47_48`（纯 `CREATE INDEX`，不改表结构、不改数据、无需重建表）；
+  `AppDatabase` 版本号 47 → 48。
+
+  **需要你本地操作**：跟此前 46.json/47.json 一样，`exportSchema = true`，
+  `48.json` 需要你本地跑一次 Gradle build 才能生成，Claude 这边没有 build
+  环境无法代为生成。build 后记得把 `app/schemas/.../48.json` 一并提交。
+
+
+---
+
+## 女儿数据损坏根治：写库端校验补齐到与读库端一致
+
+上一版修复（单角色 try-catch 隔离）解决的是"损坏数据读出来时不要连累其他
+角色"，这次要解决的是"数据为什么会损坏"——根治源头，而不是继续加兜底。
+
+### 排查结论
+
+对比写库前 `DaughterCharacterGenerator.parseAndValidate()` 和读库时
+`DaughterCharacterEntity.toDaughterCharacterData()`（含 `DaughterIdentity.kt`
+内三个 `fromJson()`）的校验范围，发现两边并不是同一套规则，写库端明显更松：
+
+| 校验项 | 写库前 | 读库时 |
+|---|---|---|
+| identity.persona/speechStyle/coreWound 非空 | ✅ | ✅ |
+| stateLayer.maskKey 非空 | ✅ | ✅ |
+| stateLayer.primaryEmotionKey/currentNeedKey/currentFearKey 非空 | ❌ | ✅ |
+| customEnums 四套数组非空 | 只查 maskStates | 四套都查 |
+| maskKey 存在于 maskStates 中 | ✅ | ❌（未查） |
+| primaryEmotionKey/currentNeedKey/currentFearKey 存在于对应数组中 | ❌ | ❌（均未查） |
+
+LLM 自由生成 JSON，`buildSystemPrompt()` 只是"要求"字段填满，没有结构化约束。
+写库端校验有缺口，意味着 LLM 完全可能生成一份缺字段/key 对不上的 JSON，
+畅通无阻写进库，直到某天读库时才第一次撞见完整校验、抛异常——这不是数据库
+被意外污染，是写入端本该拦住却没拦住。
+
+### 修复内容
+
+**写库端**（`DaughterCharacterGenerator.parseAndValidate()`）：
+补齐 `primaryEmotionKey`/`currentNeedKey`/`currentFearKey` 三个非空校验，
+补齐 `emotionStates`/`needStates`/`fearStates` 三套数组非空校验，并仿照
+已有的 `maskKey` 存在性校验模式，新增三处「key 是否真的能在对应枚举数组里
+找到」的校验。写库端和读库端校验范围现在完全一致。
+
+**读库端隐藏缺口一并补上**（`DaughterCharacterEntity.toDaughterCharacterData()`）：
+此前读库端也只对 `maskKey` 做过存在性校验，`primaryEmotionKey`/`currentNeedKey`/
+`currentFearKey` 只查非空、不查是否真能在 `customEnums` 里找到匹配项——这一层
+查不到时不会抛异常，是运行时静默的行为异常：女儿说话时 `customEnums.findEmotion(key)`
+返回 null，没人发现。现在 `toDaughterCharacterData()` 改为先解析出
+`stateLayer`/`customEnums` 两个对象，再做四项跨对象 key 存在性校验，全部
+通过后才组装返回。`DaughterStateLayer.fromJson()`/`DaughterCustomEnums.fromJson()`
+各自的单一职责边界不变，跨对象校验只能在能同时拿到两者的这一层做。
+
+### 影响与需要注意的点
+
+这是补严校验，不是新增功能，理论上不改变任何"正常数据"的行为。但如果
+线上已有女儿数据是当初侥幸绕过写库端漏洞生成、之前一直"能用但可能有点问题"
+（比如某个 key 查不到对应枚举、说话时情绪状态一直是兜底默认值），本次
+读库端补上跨对象校验之后，这类数据会从"能用"变成"读取时抛异常、走
+单角色 try-catch 隔离、这个女儿的简报生成不出来"。这不是新 bug，是把
+之前被漏过去的问题正确地暴露出来，但建议如果观察到某个女儿角色本次
+更新后突然读不出来，先怀疑她是历史遗留的边缘数据，而不是当作新引入的 bug。
+
+不改变任何异常处理路径本身——`DaughterDataException` 抛出后仍然由
+`BriefingRepository`（单角色隔离）、`getFamilyChain()`（第二/三代跳过）
+等既有 catch 块处理，这次改动的目标是让这些 catch 块在实践中不会被触发，
+而不是移除它们。
+
+## 未做的事（按方案 4.10.4 顺序留给下一步）
+- `BriefingDataStore`（4.4 节）
+- `BriefingViewModel`（4.7 节）
+- `ui/screen/briefing/` 四个 Compose 文件 + `BriefingScreen.kt`（4.10.3）
+- 导航接入（4.2 节）

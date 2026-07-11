@@ -24,6 +24,10 @@ import androidx.room.PrimaryKey
     indices = [
         Index(value = ["projectDomain"]),
         Index(value = ["status"]),
+        // v47→v48（离线简报复核修复）：getCompletedSince() 原先先走 status 索引
+        // 缩小范围、再对 completedAt 做全表比较排序。当前数据量级小可接受，
+        // 但既然发现了就顺手补上专用索引，避免以后轮次数据变多时退化。
+        Index(value = ["completedAt"]),
     ]
 )
 data class CompetitionRoundEntity(

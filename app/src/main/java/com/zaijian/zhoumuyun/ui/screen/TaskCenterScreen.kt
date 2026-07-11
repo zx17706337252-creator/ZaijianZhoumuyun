@@ -50,7 +50,6 @@ import kotlinx.coroutines.flow.first
 @Composable
 fun TaskCenterScreen(
     onNavigateToProjects:  () -> Unit = {},
-    onNavigateToGoals:     () -> Unit = {},
     onNavigateToSchedule:  () -> Unit = {},
     /** 深链接携带的 jobId，非空时高亮定位对应任务（Fix：之前传入但无消费者） */
     pendingJobId:          String? = null,
@@ -167,6 +166,9 @@ fun TaskCenterScreen(
                 .padding(paddingValues),
         ) {
             // ── 顶部栏 ────────────────────────────────────────
+            // 精修方案 v2.1 2.1：原右侧「目标/项目/日程」三个跳转按钮已删
+            // （目标→底部成长Tab已覆盖；项目/日程升级为下方预览卡），
+            // 顶栏现在只剩标题，SpaceBetween 排布已无意义，改回默认排布。
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -174,58 +176,47 @@ fun TaskCenterScreen(
                     .heightIn(min = 44.dp) // E fix: 改 height 为 heightIn，大字体缩放时标题不被截断
                     .padding(horizontal = Spacing.screenHorizontal),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
             ) {
                 Text(
                     text  = "任务",
                     style = type.titleLarge.copy(fontWeight = FontWeight.Bold),
                     color = colors.textPrimary,
                 )
-                Row {
-                    // Phase 23：学习目标入口
-                    TextButton(onClick = onNavigateToGoals) {
-                        Icon(
-                            imageVector        = Icons.Outlined.EmojiEvents,
-                            contentDescription = "学习目标",
-                            modifier           = Modifier.size(18.dp),
-                            tint               = colors.accent,
-                        )
-                        Spacer(Modifier.width(4.dp))
-                        Text(
-                            text  = "目标",
-                            style = type.label,
-                            color = colors.accent,
-                        )
-                    }
-                    TextButton(onClick = onNavigateToProjects) {
-                        Icon(
-                            imageVector        = Icons.Outlined.Folder,
-                            contentDescription = "项目",
-                            modifier           = Modifier.size(18.dp),
-                            tint               = colors.accent,
-                        )
-                        Spacer(Modifier.width(4.dp))
-                        Text(
-                            text  = "项目",
-                            style = type.label,
-                            color = colors.accent,
-                        )
-                    }
-                    TextButton(onClick = onNavigateToSchedule) {
-                        Icon(
-                            imageVector        = Icons.Outlined.CalendarMonth,
-                            contentDescription = "日程",
-                            modifier           = Modifier.size(18.dp),
-                            tint               = colors.accent,
-                        )
-                        Spacer(Modifier.width(4.dp))
-                        Text(
-                            text  = "日程",
-                            style = type.label,
-                            color = colors.accent,
-                        )
-                    }
-                }
+            }
+
+            // ── 精修方案 v2.1 2.1：项目/日程迷你预览卡 ──────────
+            // 原「目标」按钮已删（底部「成长」Tab 一步直达，多余）；
+            // 「项目」「日程」从纯跳转按钮升级为两张 WorldCard 预览卡，
+            // 显示真实数据（进行中项目数/完成率、今日待办数），数字用 labelMono。
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = Spacing.screenHorizontal)
+                    .padding(top = Spacing.sm),
+                horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
+            ) {
+                TaskCenterPreviewCard(
+                    modifier          = Modifier.weight(1f),
+                    icon              = Icons.Outlined.Folder,
+                    title             = "项目",
+                    subtitle          = if (uiState.activeProjectCount > 0) {
+                        "${uiState.activeProjectCount}个进行中"
+                    } else {
+                        "暂无进行中项目"
+                    },
+                    countText         = uiState.latestProjectCompletionRate?.let { rate ->
+                        "${(rate * 100).toInt()}%"
+                    },
+                    onClick           = onNavigateToProjects,
+                )
+                TaskCenterPreviewCard(
+                    modifier          = Modifier.weight(1f),
+                    icon              = Icons.Outlined.CalendarMonth,
+                    title             = "日程",
+                    subtitle          = "今日待办",
+                    countText         = (todayJobs.size + todayGrowthTasks.size).toString(),
+                    onClick           = onNavigateToSchedule,
+                )
             }
 
             // ── Tab 栏 ─────────────────────────────────────────
@@ -889,6 +880,67 @@ private fun TodayGroupedView(
                     }
                 }
             }
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+//  TaskCenterPreviewCard — 精修方案 v2.1 2.1「项目/日程」迷你预览卡
+//
+//  取代原先纯跳转的 TextButton，用 WorldCard 包裹展示真实数据。
+//  countText 为 null 时不显示数字行（如项目暂无里程碑可算完成率）。
+// ─────────────────────────────────────────────────────────────
+
+@Composable
+private fun TaskCenterPreviewCard(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    title: String,
+    subtitle: String,
+    countText: String?,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = ZaijianTheme.colors
+    val type   = ZaijianTheme.typography
+
+    WorldCard(
+        modifier = modifier.clickable(onClick = onClick),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = Spacing.sm, vertical = Spacing.xs),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector        = icon,
+                    contentDescription = title,
+                    modifier           = Modifier.size(16.dp),
+                    tint               = colors.accent,
+                )
+                Spacer(Modifier.width(4.dp))
+                Text(
+                    text  = title,
+                    style = type.cardTitle,
+                    color = colors.textPrimary,
+                )
+                if (countText != null) {
+                    Spacer(Modifier.weight(1f))
+                    Text(
+                        text  = countText,
+                        style = type.labelMono,
+                        color = colors.accent,
+                    )
+                }
+            }
+            Spacer(Modifier.height(2.dp))
+            Text(
+                text     = subtitle,
+                style    = type.caption,
+                color    = colors.textSecondary,
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+            )
         }
     }
 }

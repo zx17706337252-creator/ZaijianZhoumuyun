@@ -727,3 +727,23 @@ fun MoodCandle(
         )
     }
 }
+
+// ═════════════════════════════════════════════════════════════
+//  InfoChip —— 单色文字胶囊，展示单个静态状态标签
+//  （"怀孕中"/"排卵期"这类场景，不需要点击/选中态，与
+//  WrapChipGroup 的"可点击筛选标签组"用途不同，故不复用后者）
+//  整合方案 v2.1 4.10.3 节（离线简报角色卡片）首次引入。
+// ═════════════════════════════════════════════════════════════
+@Composable
+fun InfoChip(text: String, color: Color, modifier: Modifier = Modifier) {
+    val type = ZaijianTheme.typography
+    Text(
+        text = text,
+        style = type.caption,
+        color = Color.White,
+        modifier = modifier
+            .clip(RoundedCornerShape(Radius.xs))
+            .background(color)
+            .padding(horizontal = Spacing.sm, vertical = 2.dp),
+    )
+}

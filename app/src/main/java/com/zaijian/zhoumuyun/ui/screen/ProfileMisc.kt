@@ -26,10 +26,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Check
-import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.Palette
-import androidx.compose.material.icons.outlined.Spa
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -272,76 +270,3 @@ internal fun NotificationSection(
 // ─────────────────────────────────────────────────────────────
 
 // OptionPickerDialog 已收敛至 ui/component/CommonDialogs.kt（架构瘦身 Phase 1 第4项）
-
-// ─────────────────────────────────────────────────────────────
-//  Step 1：进化项目快捷入口（「我」页）
-// ─────────────────────────────────────────────────────────────
-
-/**
- * 在「我」页显示「进化项目」入口卡片，复用已有路由 AppRoute.ProjectList。
- * 纯 UI 添加，无数据依赖。
- */
-@Composable
-internal fun EvolutionProjectsEntry(
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val colors      = ZaijianTheme.colors
-    val type        = ZaijianTheme.typography
-    val growthGreen = androidx.compose.ui.graphics.Color(0xFF7BAE7F)
-
-    androidx.compose.material3.Surface(
-        onClick        = onClick,
-        shape          = androidx.compose.foundation.shape.RoundedCornerShape(
-            com.zaijian.zhoumuyun.ui.theme.Radius.md
-        ),
-        color          = colors.bgCard,
-        tonalElevation = 0.dp,
-        modifier       = modifier
-            .fillMaxWidth()
-            .padding(horizontal = com.zaijian.zhoumuyun.ui.theme.Spacing.screenHorizontal)
-            .border(
-                1.dp,
-                growthGreen.copy(alpha = 0.25f),
-                androidx.compose.foundation.shape.RoundedCornerShape(
-                    com.zaijian.zhoumuyun.ui.theme.Radius.md
-                )
-            ),
-    ) {
-        Row(
-            modifier          = Modifier
-                .fillMaxWidth()
-                .padding(
-                    horizontal = com.zaijian.zhoumuyun.ui.theme.Spacing.md,
-                    vertical   = 14.dp,
-                ),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(
-                imageVector        = Icons.Outlined.Spa,
-                contentDescription = null,
-                tint               = growthGreen,
-                modifier           = Modifier.size(20.dp),
-            )
-            Spacer(Modifier.width(com.zaijian.zhoumuyun.ui.theme.Spacing.sm))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text      = "进化项目",
-                    style     = type.label.copy(fontWeight = FontWeight.SemiBold),
-                    color     = colors.textPrimary,
-                )
-                Text(
-                    text  = "角色的长期成长方向",
-                    style = type.small,
-                    color = colors.textSecondary,
-                )
-            }
-            Icon(
-                imageVector        = Icons.Outlined.ChevronRight,
-                contentDescription = null,
-                tint               = colors.textDisabled,
-                modifier           = Modifier.size(18.dp),
-            )
-        }
-    }
-}

@@ -417,6 +417,24 @@ $persona1
         if (maskKey.isBlank())
             throw DaughterGenerationException("stateLayer.maskKey 为空")
 
+        // 复核修复：此前只校验了 maskKey，遗漏了 primaryEmotionKey/currentNeedKey/
+        // currentFearKey 三个同类字段。这三个字段与 maskKey 地位完全一致——都是
+        // 女儿层注入时查 customEnums 的索引，读库端 DaughterStateLayer.fromJson()
+        // 早就对这四个字段一视同仁地做非空校验，写库端却只挑了其中一个，
+        // 导致 LLM 生成的坏数据能绕过写库校验、直到读库时才第一次被拦截。
+        // 现补齐，让写库端和读库端的校验范围完全一致。
+        val primaryEmotionKey = stateLayer.optString("primaryEmotionKey")
+        if (primaryEmotionKey.isBlank())
+            throw DaughterGenerationException("stateLayer.primaryEmotionKey 为空")
+
+        val currentNeedKey = stateLayer.optString("currentNeedKey")
+        if (currentNeedKey.isBlank())
+            throw DaughterGenerationException("stateLayer.currentNeedKey 为空")
+
+        val currentFearKey = stateLayer.optString("currentFearKey")
+        if (currentFearKey.isBlank())
+            throw DaughterGenerationException("stateLayer.currentFearKey 为空")
+
         // 校验 maskKey 是否在 customEnums.maskStates 里存在
         val maskStates = customEnums.optJSONArray("maskStates")
         if (maskStates == null || maskStates.length() == 0)
@@ -426,6 +444,40 @@ $persona1
             .map { maskStates.getJSONObject(it).optString("key") }
         if (maskKey !in maskKeys)
             throw DaughterGenerationException("stateLayer.maskKey='$maskKey' 不在 customEnums.maskStates 中")
+
+        // 复核修复：此前只对 maskStates 做了「数组非空」+「key 存在性」双重校验，
+        // emotionStates/needStates/fearStates 三套完全没查——既没查数组是否为空
+        // （读库端 DaughterCustomEnums.fromJson() 会拦这个），也没查
+        // primaryEmotionKey/currentNeedKey/currentFearKey 是否真的能在对应数组里
+        // 找到（这一层读库端此前也没查，是本次一并补上的隐藏缺口，见
+        // DaughterIdentity.kt 内 DaughterStateLayer.fromJson() 的对应修改）。
+        // 「key 非空」和「key 能查到对应枚举值」是两件事：后者查不到时，女儿
+        // 说话时 customEnums.findEmotion(key) 会静默返回 null，是运行时的隐性
+        // 行为异常，不会抛 DaughterDataException——必须在写库这一步就堵死，
+        // 不能指望读库端发现（读库端此前也没查这一层）。
+        val emotionStates = customEnums.optJSONArray("emotionStates")
+        if (emotionStates == null || emotionStates.length() == 0)
+            throw DaughterGenerationException("customEnums.emotionStates 为空")
+        val emotionKeys = (0 until emotionStates.length())
+            .map { emotionStates.getJSONObject(it).optString("key") }
+        if (primaryEmotionKey !in emotionKeys)
+            throw DaughterGenerationException("stateLayer.primaryEmotionKey='$primaryEmotionKey' 不在 customEnums.emotionStates 中")
+
+        val needStates = customEnums.optJSONArray("needStates")
+        if (needStates == null || needStates.length() == 0)
+            throw DaughterGenerationException("customEnums.needStates 为空")
+        val needKeys = (0 until needStates.length())
+            .map { needStates.getJSONObject(it).optString("key") }
+        if (currentNeedKey !in needKeys)
+            throw DaughterGenerationException("stateLayer.currentNeedKey='$currentNeedKey' 不在 customEnums.needStates 中")
+
+        val fearStates = customEnums.optJSONArray("fearStates")
+        if (fearStates == null || fearStates.length() == 0)
+            throw DaughterGenerationException("customEnums.fearStates 为空")
+        val fearKeys = (0 until fearStates.length())
+            .map { fearStates.getJSONObject(it).optString("key") }
+        if (currentFearKey !in fearKeys)
+            throw DaughterGenerationException("stateLayer.currentFearKey='$currentFearKey' 不在 customEnums.fearStates 中")
 
         return DaughterCharacterEntity(
             motherCharacterId = motherCharacterId,

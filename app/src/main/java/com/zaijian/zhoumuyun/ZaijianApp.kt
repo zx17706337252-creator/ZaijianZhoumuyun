@@ -265,6 +265,21 @@ class ZaijianApp : Application() {
                 ZLog.e("ZaijianApp", "调度补偿（云同步/本地补偿）执行异常", e)
             }
         }
+
+        // 离线简报 复核发现的既有缺口修复：MenstrualCycleRepository.initIfAbsent()
+        // 此前全项目零调用点，导致所有角色周期锚点为 null、"排卵期"提示不会真实
+        // 触发（安全兜底成 SAFE，不会崩，但功能未接入）。设计文档明确写的调用时机
+        // 就是"App 启动时在 IO 协程中调用一次"，这里补上。
+        // 与其它后台初始化同一模式：独立 launch + try-catch + ZLog，
+        // 失败不影响冷启动、不连累其它子系统。
+        scope.launch(Dispatchers.Default) {
+            try {
+                com.zaijian.zhoumuyun.data.AppContainer.instance.menstrualCycleRepo.initIfAbsent()
+            } catch (e: Exception) {
+                ZLog.e("ZaijianApp", "MenstrualCycleRepository.initIfAbsent() 执行异常", e)
+            }
+        }
+
         // 报告第5条：PresenceEngine 收敛。原先在此处单独 new 一份 PresenceEngine
         // 再赋给 sharedPresenceEngine；现在 AppContainer.init(this) 内部已经
         // 自包含构造了同一个实例（见 AppContainer.presenceEngine 注释），这里

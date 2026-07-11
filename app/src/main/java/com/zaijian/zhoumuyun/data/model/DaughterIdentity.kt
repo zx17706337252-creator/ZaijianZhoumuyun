@@ -349,20 +349,42 @@ data class DaughterCharacterData(
 /**
  * DaughterCharacterEntity → DaughterCharacterData 的唯一转换入口。
  *
- * @throws DaughterDataException 三列 JSON 中任一解析失败或关键字段缺失。
+ * @throws DaughterDataException 三列 JSON 中任一解析失败、关键字段缺失，
+ *         或 stateLayer 的四个索引 key（maskKey/primaryEmotionKey/
+ *         currentNeedKey/currentFearKey）在 customEnums 对应数组中找不到
+ *         匹配项（复核修复：此前只对 maskKey 做过存在性校验，另外三个
+ *         key 完全没查——「key 非空」和「key 能查到对应枚举值」是两件事，
+ *         后者查不到时不会抛异常，是运行时静默的行为异常：女儿说话时
+ *         customEnums.findEmotion(key) 会返回 null，没人发现。
+ *         这里补齐，与写库端 DaughterCharacterGenerator.parseAndValidate()
+ *         的对应校验保持一致）。
  *         调用方（PromptOrchestrator / 对话入口）必须让这个异常往上抛，
  *         不能 catch 后静默降级成空人格——这是设计文档「防御性要求」
  *         在强类型层的落地：宁可让女儿对话报错，不能让她带着残缺人格说话。
  */
-fun DaughterCharacterEntity.toDaughterCharacterData(): DaughterCharacterData = DaughterCharacterData(
-    motherCharacterId = motherCharacterId,
-    daughterName = daughterName,
-    identity = DaughterIdentity.fromJson(identityJson),
-    stateLayer = DaughterStateLayer.fromJson(stateLayerJson),
-    customEnums = DaughterCustomEnums.fromJson(customEnumsJson),
-    generatedAt = generatedAt,
-    generatorVersion = generatorVersion,
-)
+fun DaughterCharacterEntity.toDaughterCharacterData(): DaughterCharacterData {
+    val stateLayer = DaughterStateLayer.fromJson(stateLayerJson)
+    val customEnums = DaughterCustomEnums.fromJson(customEnumsJson)
+
+    if (customEnums.findMask(stateLayer.maskKey) == null)
+        throw DaughterDataException("stateLayer.maskKey='${stateLayer.maskKey}' 不在 customEnums.maskStates 中")
+    if (customEnums.findEmotion(stateLayer.primaryEmotionKey) == null)
+        throw DaughterDataException("stateLayer.primaryEmotionKey='${stateLayer.primaryEmotionKey}' 不在 customEnums.emotionStates 中")
+    if (customEnums.findNeed(stateLayer.currentNeedKey) == null)
+        throw DaughterDataException("stateLayer.currentNeedKey='${stateLayer.currentNeedKey}' 不在 customEnums.needStates 中")
+    if (customEnums.findFear(stateLayer.currentFearKey) == null)
+        throw DaughterDataException("stateLayer.currentFearKey='${stateLayer.currentFearKey}' 不在 customEnums.fearStates 中")
+
+    return DaughterCharacterData(
+        motherCharacterId = motherCharacterId,
+        daughterName = daughterName,
+        identity = DaughterIdentity.fromJson(identityJson),
+        stateLayer = stateLayer,
+        customEnums = customEnums,
+        generatedAt = generatedAt,
+        generatorVersion = generatorVersion,
+    )
+}
 
 // ── 异常类 ────────────────────────────────────────────────────
 

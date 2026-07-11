@@ -4,10 +4,12 @@ import android.content.Context
 import com.zaijian.zhoumuyun.data.db.AppDatabase
 import com.zaijian.zhoumuyun.data.memory.MemoryEngine
 import com.zaijian.zhoumuyun.data.repository.CharacterStateRepository
+import com.zaijian.zhoumuyun.data.repository.BriefingRepository
 import com.zaijian.zhoumuyun.data.repository.DaughterCharacterRepository
 import com.zaijian.zhoumuyun.data.repository.EventRepository
 import com.zaijian.zhoumuyun.data.repository.IdentityRepository
 import com.zaijian.zhoumuyun.data.repository.MemoryRepository
+import com.zaijian.zhoumuyun.data.repository.MenstrualCycleRepository
 import com.zaijian.zhoumuyun.data.repository.MessageRepository
 import com.zaijian.zhoumuyun.data.repository.PregnancyRepository
 import com.zaijian.zhoumuyun.data.repository.TaskRepository
@@ -87,6 +89,26 @@ class AppContainer private constructor(context: Context) {
     // 留给以后需要时再做，避免本次改动面扩大。
     val daughterCharacterRepo: DaughterCharacterRepository =
         DaughterCharacterRepository(db.daughterCharacterDao())
+
+    // 离线简报（Briefing）聚合层。只读，见《再见公馆》UI/UX 整合方案 v2.1 第四节。
+    // menstrualCycleRepo 此前无任何 ViewModel 持有共享实例（BookCard 指示点尚未接入
+    // 周期显示），Briefing 是第一个需要它的调用方，因此在此新构造并归入容器共享持有。
+    val menstrualCycleRepo: MenstrualCycleRepository =
+        MenstrualCycleRepository(db.menstrualCycleDao())
+
+    val briefingRepo: BriefingRepository = BriefingRepository(
+        relationshipDao          = db.relationshipDao(),
+        relationshipMilestoneDao = db.relationshipMilestoneDao(),
+        relationshipEngine       = relationshipEngine,
+        pregnancyRepo            = pregnancyRepo,
+        menstrualCycleRepo       = menstrualCycleRepo,
+        projectDao               = db.projectDao(),
+        taskDao                  = db.taskDao(),
+        messageDao               = db.messageDao(),
+        competitionRoundDao      = db.competitionRoundDao(),
+        competitionEntryDao      = db.competitionEntryDao(),
+        daughterCharacterRepo    = daughterCharacterRepo,
+    )
 
     companion object {
         // 不需要 @Volatile / synchronized：唯一的写入点是 ZaijianApp.onCreate()，

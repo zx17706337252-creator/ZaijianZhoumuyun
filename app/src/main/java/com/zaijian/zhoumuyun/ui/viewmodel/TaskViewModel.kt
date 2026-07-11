@@ -8,6 +8,7 @@ import com.zaijian.zhoumuyun.data.db.entity.JobResultEntity
 import com.zaijian.zhoumuyun.data.db.entity.ScheduledJobEntity
 import com.zaijian.zhoumuyun.data.db.entity.TaskEntity
 import com.zaijian.zhoumuyun.data.repository.IdentityRepository
+import com.zaijian.zhoumuyun.data.repository.ProjectRepository
 import com.zaijian.zhoumuyun.data.repository.TaskRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -43,6 +44,11 @@ data class TaskCenterUiState(
     val avatarOverrides: Map<Int, String>  = emptyMap(),
     /** Fix-pendingJobId：深链接携带的 jobId，TaskCenterScreen 读取后滚动/高亮该任务，消费后设 null。 */
     val highlightedTaskId: String?         = null,
+    // ── 精修方案 v2.1 2.1：任务页顶部「项目」预览卡数据 ──────
+    /** 进行中项目数 */
+    val activeProjectCount: Int             = 0,
+    /** 最新更新的进行中项目的里程碑完成率（0f~1f）；无里程碑或无进行中项目时为 null */
+    val latestProjectCompletionRate: Float? = null,
 )
 
 // ─────────────────────────────────────────────────────────────
@@ -63,6 +69,10 @@ class TaskViewModel(application: Application) : AndroidViewModel(application) {
     private val repo = TaskRepository(db, db.taskDao(), db.worldEventDao())
     // 遗留裸调用修复：头像覆盖表加载原先裸取 db.characterIdentityDao()，改走薄包装。
     private val identityRepo = IdentityRepository(db.characterIdentityDao())
+    // 精修方案 v2.1 2.1：项目预览卡只需活跃项目数+最新项目完成率，不需要
+    // ProjectViewModel 那一整套详情/知识库/成员逻辑，跟随 identityRepo 的惯例
+    // 在此单独持有一个轻量 ProjectRepository 实例，不纳入 AppContainer 共享范围。
+    private val projectRepo = ProjectRepository(db.projectDao(), db.projectKnowledgeDao())
 
     private val _uiState = MutableStateFlow(TaskCenterUiState())
     val uiState: StateFlow<TaskCenterUiState> = _uiState.asStateFlow()
@@ -142,6 +152,26 @@ class TaskViewModel(application: Application) : AndroidViewModel(application) {
             val overrides = identityRepo.getAll()
                 .associate { it.characterId to it.avatarUrl }
             _uiState.update { it.copy(avatarOverrides = overrides) }
+        }
+
+        // 精修方案 v2.1 2.1：任务页顶部「项目」预览卡——活跃项目数 + 最新项目完成率。
+        // observeActive() 已按 updatedAt DESC 排序，第一条即「最新更新的进行中项目」。
+        // 里程碑用一次性挂起查询（getMilestones）而非再开一路 Flow：这张卡只是
+        // 入口预览，不需要项目内部里程碑变动的实时刷新（进详情页后自然是最新数据）。
+        viewModelScope.launch {
+            projectRepo.observeActive().collect { activeProjects ->
+                val latestRate = activeProjects.firstOrNull()?.let { latest ->
+                    val milestones = db.projectDao().getMilestones(latest.id)
+                    if (milestones.isEmpty()) null
+                    else milestones.count { it.isCompleted }.toFloat() / milestones.size
+                }
+                _uiState.update {
+                    it.copy(
+                        activeProjectCount          = activeProjects.size,
+                        latestProjectCompletionRate = latestRate,
+                    )
+                }
+            }
         }
     }
 

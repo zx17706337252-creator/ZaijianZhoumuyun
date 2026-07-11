@@ -201,8 +201,10 @@ import com.zaijian.zhoumuyun.data.db.entity.JudgeAccuracyLogEntity           // 
         CompetitionWeightConfigEntity::class,
         JudgeAccuracyLogEntity::class,
     ],
-    version = 47,  // 46 → 47：报告 2.8 修复——清理 30 个历史遗留索引
-    // （改名式冗余 + 无替代覆盖的孤儿索引），不涉及任何表结构或数据变更。
+    version = 48,  // 47 → 48：离线简报复核修复——competition_rounds 补 completedAt 索引，
+    // 纯新增索引，不涉及任何表结构或数据变更。
+    // 46 → 47：清理 30 个历史遗留索引（改名式冗余 + 无替代覆盖的孤儿索引），
+    // 不涉及任何表结构或数据变更。
     // 45 → 46：头像存储重新设计——avatarUrl 改存原图路径，
     // 新增 avatarCropCircle*/avatarCropTall* 两套裁剪参数，同一张原图
     // 分别适配详情页圆形和公馆拱形/书架椭圆两种展示（后者共用一套参数）。

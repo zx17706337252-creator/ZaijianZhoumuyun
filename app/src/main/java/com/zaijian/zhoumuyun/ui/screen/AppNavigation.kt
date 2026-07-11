@@ -101,6 +101,12 @@ fun NavController.navigateSingle(route: String) {
 
 sealed class AppRoute(val route: String) {
     object Splash          : AppRoute("splash")
+    /** 离线简报：Splash 之后、World 之前的开场页，不进 bottomNavRoutes/
+     *  detailRoutes——它既不是底部 Tab，也不是从 Tab 点进去的详情页，是
+     *  独立的第二段过场，自己在 composable() 里声明 enterTransition/
+     *  exitTransition，不依赖 NavHost 全局的 isDetailRoute() 判断
+     *  （整合方案 v2.1 4.2 节）。 */
+    object Briefing        : AppRoute("briefing")
     object World           : AppRoute("world")
     object Characters      : AppRoute("characters")
     object Tasks           : AppRoute("tasks")
@@ -284,12 +290,6 @@ fun AppNavigation(
     val type          = ZaijianTheme.typography
     val navBackStack  by navController.currentBackStackEntryAsState()
     val currentRoute  = navBackStack?.destination?.route
-
-    // 2.3/2.4/3.4 修复：「成长 Tab / 任务中心目标按钮」和「学习目标深链无参数
-    // 时的默认值」这两处站在跨角色的汇总页语境里，没有一个天然可用的
-    // "当前角色"，此前硬编码成 characterId = 1。改为弹出 CharacterPickerSheet
-    // 让用户自己选，true 时显示浮层，选中或点外部关闭后置回 false。
-    var showGoalsCharacterPicker by remember { mutableStateOf(false) }
 
     // Fix-11: bgStyleIndex 从 DataStore flow 读取（响应式，ProfileScreen 写入后自动更新）
     // 通知点击深链：pendingRoute 非空时导航到对应路由
@@ -507,8 +507,23 @@ fun AppNavigation(
             ) {
                 SplashScreen(
                     onFinished = {
-                        navController.navigate(AppRoute.World.route) {
+                        navController.navigate(AppRoute.Briefing.route) {
                             popUpTo(AppRoute.Splash.route) { inclusive = true }
+                        }
+                    },
+                )
+            }
+
+            // ── Briefing（新增：离线简报开场页，整合方案 v2.1 4.2 节）──
+            composable(
+                route           = AppRoute.Briefing.route,
+                enterTransition = { fadeIn(tween(AnimDuration.pageSwitch)) },
+                exitTransition  = { fadeOut(tween(AnimDuration.pageSwitch)) },
+            ) {
+                BriefingScreen(
+                    onEnterWorld = {
+                        navController.navigate(AppRoute.World.route) {
+                            popUpTo(AppRoute.Briefing.route) { inclusive = true }
                         }
                     },
                 )
@@ -548,7 +563,6 @@ fun AppNavigation(
             composable(AppRoute.Tasks.route) {
                 TaskCenterScreen(
                     onNavigateToProjects = { navController.navigateSingle(AppRoute.ProjectList.route) },
-                    onNavigateToGoals    = { showGoalsCharacterPicker = true },
                     onNavigateToSchedule = { navController.navigateSingle(AppRoute.GlobalSchedule.route) },
                     pendingJobId         = pendingJobId,
                     onPendingJobIdConsumed = onPendingJobIdConsumed,
@@ -558,9 +572,6 @@ fun AppNavigation(
                 ProfileScreen(
                     onNavigateToCharacter = { id ->
                         navController.navigateSingle(AppRoute.CharacterDetail.createRoute(id))
-                    },
-                    onNavigateToProjects = {
-                        navController.navigateSingle(AppRoute.ProjectList.route)
                     },
                 )
             }
@@ -795,16 +806,4 @@ fun AppNavigation(
         }
     }
 
-    // 2.3/2.4/3.4 修复：任务中心「目标」按钮点击后弹出的角色选择浮层。
-    // 放在 Scaffold 外层（与 NavHost 同级），确保浮层能盖住底部导航栏。
-    // 选中角色后带上真实 characterId 跳转到 LearningGoals，不再固定进角色 1。
-    if (showGoalsCharacterPicker) {
-        com.zaijian.zhoumuyun.ui.component.CharacterPickerSheet(
-            title             = "查看谁的成长目标？",
-            onDismiss         = { showGoalsCharacterPicker = false },
-            onSelectCharacter = { charId ->
-                navController.navigateSingle(AppRoute.LearningGoals.createRoute(charId))
-            },
-        )
-    }
 }
