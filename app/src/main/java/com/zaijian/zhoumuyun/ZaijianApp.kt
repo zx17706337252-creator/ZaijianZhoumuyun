@@ -55,6 +55,7 @@ import com.zaijian.zhoumuyun.data.repository.MemoryRepository
 import com.zaijian.zhoumuyun.data.repository.MessageRepository
 import com.zaijian.zhoumuyun.data.repository.IdentityRepository
 import com.zaijian.zhoumuyun.data.repository.AgentPlanRepository
+import com.zaijian.zhoumuyun.data.repository.LearningGoalRepository
 import com.zaijian.zhoumuyun.data.repository.ScheduleRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -571,6 +572,11 @@ class ZaijianApp : Application() {
         // 这里跟memoryRepository同一模式，只包一次、复用多次，不用每处重新裸取。
         val agentPlanRepository = AgentPlanRepository(db.agentPlanDao())
         val identityRepository = IdentityRepository(db.characterIdentityDao())
+        // 收尾交接清单 任务组C 联动修复：MemoryQueryTool/GoalUpdateTool/RuleDistillTool
+        // 构造参数收敛为 MemoryRepository/LearningGoalRepository 后，此处（原先与
+        // ChatViewModel.registerCharacterTools() 同构的静态占位注册）也要同步改，
+        // 否则类型不匹配无法编译。
+        val learningGoalRepository = LearningGoalRepository(db.learningGoalDao())
         AgentToolRegistry.registerAll(
             PlanSaveTool(
                 agentPlanDao = agentPlanRepository,
@@ -581,11 +587,11 @@ class ZaijianApp : Application() {
                 characterId      = { -1 },
             ),
             MemoryQueryTool(
-                memoryDao   = db.memoryDao(),
+                memoryRepo  = memoryRepository,
                 characterId = { -1 },
             ),
             GoalUpdateTool(
-                goalDao     = db.learningGoalDao(),
+                goalDao     = learningGoalRepository,
                 characterId = { -1 },
             ),
             // ── Soul/Memory/User 三模块 ──────────────────────────
@@ -623,8 +629,7 @@ class ZaijianApp : Application() {
                 RuleDistillTool(
                     provider    = p25Provider,
                     memoryRepo  = MemoryRepository(db.memoryDao(), db.memoryCandidateDao()),
-                    memoryDao   = db.memoryDao(),
-                    goalDao     = db.learningGoalDao(),
+                    goalDao     = learningGoalRepository,
                     characterId = { -1 },
                 )
             )

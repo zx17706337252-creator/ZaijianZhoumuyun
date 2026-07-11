@@ -6,8 +6,11 @@ import com.zaijian.zhoumuyun.data.memory.MemoryEngine
 import com.zaijian.zhoumuyun.data.repository.CharacterStateRepository
 import com.zaijian.zhoumuyun.data.repository.DaughterCharacterRepository
 import com.zaijian.zhoumuyun.data.repository.EventRepository
+import com.zaijian.zhoumuyun.data.repository.IdentityRepository
 import com.zaijian.zhoumuyun.data.repository.MemoryRepository
+import com.zaijian.zhoumuyun.data.repository.MessageRepository
 import com.zaijian.zhoumuyun.data.repository.PregnancyRepository
+import com.zaijian.zhoumuyun.data.repository.TaskRepository
 import com.zaijian.zhoumuyun.domain.PresenceEngine
 import com.zaijian.zhoumuyun.domain.RelationshipEngine
 
@@ -37,6 +40,13 @@ class AppContainer private constructor(context: Context) {
     val eventRepo: EventRepository = EventRepository(db.worldEventDao())
     val memoryRepo: MemoryRepository = MemoryRepository(db.memoryDao(), db.memoryCandidateDao())
     val memoryEngine: MemoryEngine = MemoryEngine(db, memoryRepo, eventRepo)
+
+    // 收尾交接清单 任务组A：ProfileScreen/ProfileStatsRow 原先各自在 Composable 内
+    // remember{ AppDatabase.getInstance(context) } 现拿 db 再手动构造 Repository，
+    // 现收敛为容器共享实例，与其余 Repository 保持同一持有模式。
+    val identityRepo: IdentityRepository = IdentityRepository(db.characterIdentityDao())
+    val messageRepo: MessageRepository = MessageRepository(db.messageDao())
+    val taskRepo: TaskRepository = TaskRepository(db, db.taskDao(), db.worldEventDao())
 
     // 统一为带 milestoneDao 的版本（审计报告 Phase 3 决策 2：
     // 一对一聊天以后也会记录关系里程碑，是一次真实的功能变化）。

@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import com.zaijian.zhoumuyun.data.AppContainer
 import com.zaijian.zhoumuyun.data.repository.AgentPlanRepository
 import com.zaijian.zhoumuyun.data.repository.IdentityRepository
+import com.zaijian.zhoumuyun.data.repository.LearningGoalRepository
 import com.zaijian.zhoumuyun.data.repository.MessageRepository
 import com.zaijian.zhoumuyun.data.agent.AgentToolRegistry
 import com.zaijian.zhoumuyun.data.agent.CiCdStartTool
@@ -198,6 +199,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val messageDao = MessageRepository(db.messageDao())
     private val identityDao = IdentityRepository(db.characterIdentityDao())
     private val agentPlanDao = AgentPlanRepository(db.agentPlanDao())
+    // 收尾交接清单 任务组B：本文件原无 LearningGoalRepository 包装字段，
+    // 617/997 行裸调用 db.learningGoalDao()。RoundtableViewModel 已有同构造
+    // 的 learningGoalDao 字段（同一模式：字段名沿用 DAO 原名，仅改底层实现），
+    // 此处照抄。
+    private val learningGoalDao = LearningGoalRepository(db.learningGoalDao())
     // Phase 3 修复手册：以下 6 项改从 AppContainer 取现成实例，不再各自 new
     // （原先与 RoundtableViewModel 逐行重复的装配逻辑，见审计报告 Phase 3）
     private val container = AppContainer.instance
@@ -375,7 +381,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             // （旧号在 character_identity 留孤儿行，不影响任何查询，可忽略）。
             if (characterId in 1..6 || characterId >= 1000) {
                 try {
-                    val raw = db.daughterCharacterDao().getByMother(characterId)
+                    val raw = daughterRepo.getByMother(characterId)
                     if (raw != null
                         && raw.daughterCharacterId == null
                         && raw.identityJson.isNotBlank()
@@ -614,9 +620,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 } ?: ""
 
                 // ── 补全 LearningGoal Layer（isLocked=true 的能力规则，按目标分组）──
-                val activeGoals = db.learningGoalDao().getActive(currentCharacterId)
+                val activeGoals = learningGoalDao.getActive(currentCharacterId)
                 val rulesByGoal = activeGoals.associate { goal ->
-                    goal.title to db.memoryDao()
+                    goal.title to memoryRepo
                         .getLockedRules(currentCharacterId, goal.id)
                         .map { it.content }
                 }
@@ -994,7 +1000,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                                 messageId    = assistantMsgId,
                             ) ?: return@runCatching   // 门控未命中（冷却中 / 回复太短 / 无目标）
                             // Agent B 评审（同一协程串行，内部已有 withContext(IO)）
-                            val goal = db.learningGoalDao().getActive(capturedCharId).firstOrNull()
+                            val goal = learningGoalDao.getActive(capturedCharId).firstOrNull()
                                 ?: return@runCatching
                             engine.runAgentReview(
                                 sessionId    = sessionId,
@@ -1284,8 +1290,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         AgentToolRegistry.registerAll(
             PlanSaveTool(agentPlanDao = agentPlanDao, characterId = { currentCharacterId }),
             MemoryWriteTool(memoryRepository = memoryRepo, characterId = { currentCharacterId }),
-            MemoryQueryTool(memoryDao = db.memoryDao(), characterId = { currentCharacterId }),
-            GoalUpdateTool(goalDao = db.learningGoalDao(), characterId = { currentCharacterId }),
+            MemoryQueryTool(memoryRepo = memoryRepo, characterId = { currentCharacterId }),
+            GoalUpdateTool(goalDao = learningGoalDao, characterId = { currentCharacterId }),
             WorkflowStartTool(
                 context = getApplication(),
                 workflowRepository = workflowRepo,
@@ -1349,7 +1355,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         )
         providerFn()?.let { p ->
             AgentToolRegistry.register(
-                RuleDistillTool(provider = p, memoryRepo = memoryRepo, memoryDao = db.memoryDao(), goalDao = db.learningGoalDao(), characterId = { currentCharacterId })
+                RuleDistillTool(provider = p, memoryRepo = memoryRepo, goalDao = learningGoalDao, characterId = { currentCharacterId })
             )
         }
     }

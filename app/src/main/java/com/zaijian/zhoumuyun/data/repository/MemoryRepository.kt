@@ -205,6 +205,22 @@ class MemoryRepository(
     suspend fun getLockedRules(characterId: Int, goalId: String): List<MemoryEntity> =
         memoryDao.getLockedRules(characterId, goalId)
 
+    /**
+     * 统计某学习目标下已锁定（isLocked=1）的规则数量（收尾交接清单 任务组C）。
+     * `RuleDistillTool` 原裸持有 `memoryDao: MemoryDao` 单独调用此方法，
+     * 此处补齐透传，供其改为只依赖 `MemoryRepository`。
+     */
+    suspend fun countLockedRules(characterId: Int, goalId: String): Int =
+        memoryDao.countLockedRules(characterId, goalId)
+
+    /**
+     * 获取某学习目标下全部规则记忆（含未锁定），按 goalId 过滤（收尾交接清单 任务组C）。
+     * `RuleDistillTool` 原裸持有 `memoryDao: MemoryDao` 单独调用此方法，
+     * 此处补齐透传，供其改为只依赖 `MemoryRepository`。
+     */
+    suspend fun getRulesByGoal(characterId: Int, goalId: String): List<MemoryEntity> =
+        memoryDao.getRulesByGoal(characterId, goalId)
+
     // ── 待办3：群记忆读取/写入 ────────────────────────────────
 
     /**
@@ -318,6 +334,23 @@ class MemoryRepository(
      */
     suspend fun getByDomain(characterId: Int, domain: MemoryDomain, limit: Int = 5): List<MemoryEntity> =
         memoryDao.getByDomain(characterId, domain.name, limit)
+
+    /**
+     * 原始 FTS4 检索透传，不做 FinalScore 评分排序（收尾交接清单 任务组C）。
+     * `MemoryQueryTool`（memory_query 工具）原裸持有 `memoryDao: MemoryDao`
+     * 直接调用此方法，自行做 domain 过滤 + take(limit)，与 [searchRelevant]
+     * 的评分排序是两套不同行为，因此单独透传而非复用 searchRelevant，
+     * 避免改变工具原有的召回结果顺序。
+     */
+    suspend fun searchByFts(characterId: Int, ftsQuery: String, limit: Int): List<MemoryEntity> =
+        memoryDao.searchByFts(characterId, ftsQuery, limit)
+
+    /**
+     * 按角色统计记忆条数（收尾交接清单 任务组A）。
+     * ProfileStatsRow 统计"条记忆"数原先裸调用 `db.memoryDao().count(it)`，
+     * 此处补齐透传方法，供其改走 Repository。
+     */
+    suspend fun count(characterId: Int): Int = memoryDao.count(characterId)
 
     // ── 观察（UI 层）─────────────────────────────────────────
 

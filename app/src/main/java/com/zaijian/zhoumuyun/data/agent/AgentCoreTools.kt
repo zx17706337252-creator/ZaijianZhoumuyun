@@ -17,13 +17,12 @@ package com.zaijian.zhoumuyun.data.agent
  *     故无法用单一 register*() 扩展函数统一封装，保持现有内联注册方式。）
  */
 
-import com.zaijian.zhoumuyun.data.db.dao.LearningGoalDao
-import com.zaijian.zhoumuyun.data.db.dao.MemoryDao
 import com.zaijian.zhoumuyun.data.db.entity.AgentPlanEntity
 import com.zaijian.zhoumuyun.data.db.entity.MemoryDomain
 import com.zaijian.zhoumuyun.data.db.entity.MemoryEntity
 import com.zaijian.zhoumuyun.data.provider.chatSyncWithRetry
 import com.zaijian.zhoumuyun.data.repository.AgentPlanRepository
+import com.zaijian.zhoumuyun.data.repository.LearningGoalRepository
 import com.zaijian.zhoumuyun.data.repository.MemoryRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -243,7 +242,7 @@ class MemoryWriteTool(
  *   （无结果时提示「未找到相关记忆」）
  */
 class MemoryQueryTool(
-    private val memoryDao: MemoryDao,
+    private val memoryRepo: MemoryRepository,
     private val characterId: () -> Int,
 ) : AgentTool {
 
@@ -268,7 +267,7 @@ class MemoryQueryTool(
                 .filter { it.isNotBlank() }
                 .joinToString(" ") { "$it*" }
 
-            val results = memoryDao.searchByFts(charId, ftsQuery, limit * 2)  // 多取一些再过滤
+            val results = memoryRepo.searchByFts(charId, ftsQuery, limit * 2)  // 多取一些再过滤
 
             val filtered = if (domainFilter != null) {
                 results.filter { it.domain.equals(domainFilter, ignoreCase = true) }
@@ -285,9 +284,8 @@ class MemoryQueryTool(
             }
 
             // 更新访问记录（异步，不阻塞结果返回）
-            val now = System.currentTimeMillis()
             filtered.forEach { memory ->
-                try { memoryDao.recordAccess(memory.id, now) } catch (e: Exception) {
+                try { memoryRepo.recordAccess(memory.id) } catch (e: Exception) {
                     ZLog.w("AgentCoreTools", "更新记忆访问记录失败 id=${memory.id}: ${e.message}")
                 }
             }
@@ -340,7 +338,7 @@ class MemoryQueryTool(
  *   - Agent 只能推进进度，不能创建或删除目标
  */
 class GoalUpdateTool(
-    private val goalDao: LearningGoalDao,
+    private val goalDao: LearningGoalRepository,
     private val characterId: () -> Int,
 ) : AgentTool {
 
@@ -441,8 +439,7 @@ class GoalUpdateTool(
 class RuleDistillTool(
     private val provider: LLMProvider,
     private val memoryRepo: MemoryRepository,
-    private val memoryDao: MemoryDao,
-    private val goalDao: LearningGoalDao,
+    private val goalDao: LearningGoalRepository,
     private val characterId: () -> Int,
 ) : AgentTool {
 
@@ -476,10 +473,10 @@ class RuleDistillTool(
         }
 
         // ── 2. 检查现有规则数量上限 ───────────────────────────
-        val existingCount = memoryDao.countLockedRules(charId, goalId) +
+        val existingCount = memoryRepo.countLockedRules(charId, goalId) +
             // 也统计未锁定规则，防止 Phase 26 前的候选规则过多
             // 性能 M2 修复：getRulesByGoal 在数据库层按 goalId 过滤，替代全量加载
-            memoryDao.getRulesByGoal(charId, goalId).count { !it.isLocked }
+            memoryRepo.getRulesByGoal(charId, goalId).count { !it.isLocked }
         if (existingCount >= MAX_RULES_PER_GOAL) {
             return@withContext ToolResult(
                 name, false, "",

@@ -73,6 +73,14 @@ class TaskRepository(
     // ── 查询 ────────────────────────────────────────────────
 
     suspend fun getById(id: String): TaskEntity? = taskDao.getById(id)
+
+    /**
+     * 按状态统计任务数（收尾交接清单 任务组A）。
+     * ProfileStatsRow 统计"任务完成"数原先裸调用 `db.taskDao().countByStatus(...)`，
+     * 此处补齐透传方法，供其改走 Repository。
+     */
+    suspend fun countByStatus(status: String): Int = taskDao.countByStatus(status)
+
     suspend fun getByCharacter(characterId: Int, limit: Int = 20) =
         taskDao.getByCharacter(characterId, limit)
     suspend fun getByProject(projectId: String, limit: Int = 30) =

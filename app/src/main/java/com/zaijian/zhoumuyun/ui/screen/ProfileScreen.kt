@@ -67,10 +67,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 // GitHub 配置已移至专属管理页
 import com.zaijian.zhoumuyun.data.model.DefaultCharacters
-import com.zaijian.zhoumuyun.data.db.AppDatabase
+import com.zaijian.zhoumuyun.data.AppContainer
 import com.zaijian.zhoumuyun.data.provider.ProviderManager
 import com.zaijian.zhoumuyun.data.provider.ProviderType
-import com.zaijian.zhoumuyun.data.repository.IdentityRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import com.zaijian.zhoumuyun.ui.component.BreathingAvatar
@@ -167,9 +166,9 @@ fun ProfileScreen(
     // 原 LaunchedEffect(Unit)+getAll() 只在进入页面时读一次，identity 更新后不刷新；
     // 改为 produceState+observeAll() 后，头像上传会即时反映在「我」页面的角色列表里。
     val characterAvatarOverrides by produceState(initialValue = emptyMap<Int, String>()) {
-        // 遗留裸调用修复：Composable 无 ViewModel 字段可复用，此处直接包一层
-        // IdentityRepository（薄包装，方法签名与 CharacterIdentityDao 一致）。
-        IdentityRepository(AppDatabase.getInstance(context).characterIdentityDao())
+        // 收尾交接清单 任务组A1：改走 AppContainer 共享的 identityRepo，
+        // 不再在 Composable 内现拿 db 构造 Repository。
+        AppContainer.instance.identityRepo
             .observeAll()
             .collect { entities ->
                 value = entities.associate { it.characterId to it.avatarUrl }

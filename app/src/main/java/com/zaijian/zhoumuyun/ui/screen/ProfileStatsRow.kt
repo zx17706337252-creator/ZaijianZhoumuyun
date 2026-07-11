@@ -55,7 +55,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -67,11 +66,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 // GitHub 配置已移至专属管理页
 import com.zaijian.zhoumuyun.data.model.DefaultCharacters
-import com.zaijian.zhoumuyun.data.db.AppDatabase
+import com.zaijian.zhoumuyun.data.AppContainer
 import com.zaijian.zhoumuyun.data.provider.ProviderManager
 import com.zaijian.zhoumuyun.data.provider.ProviderType
-import com.zaijian.zhoumuyun.data.repository.IdentityRepository
-import com.zaijian.zhoumuyun.data.repository.MessageRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import com.zaijian.zhoumuyun.ui.component.BreathingAvatar
@@ -93,8 +90,6 @@ import kotlinx.coroutines.launch
 
 @Composable
 internal fun StatsRow() {
-    val context = LocalContext.current
-
     // Fix-08: 从 DB 读取真实统计数据
     // 3.5 修复：新增 isLoading，加载完成前不展示 0，避免"0 次对话"被误读为
     // "确实没有任何记录"——两者在 UI 上此前完全无法区分。
@@ -103,13 +98,13 @@ internal fun StatsRow() {
     var totalMemories    by remember { mutableIntStateOf(0) }
     var isLoading         by remember { mutableStateOf(true) }
 
-    // M4：getInstance() 只在首次组合时获取一次，不在协程体内每次重复调用
-    val db = remember(context) { AppDatabase.getInstance(context) }
-
-    // 遗留裸调用修复：Composable 无 ViewModel 字段可复用，此处直接包一层
-    // IdentityRepository/MessageRepository（薄包装，方法签名与对应 DAO 一致）。
-    val identityRepo = remember(db) { IdentityRepository(db.characterIdentityDao()) }
-    val messageRepo  = remember(db) { MessageRepository(db.messageDao()) }
+    // 收尾交接清单 任务组A2：改走 AppContainer 共享的 identityRepo/messageRepo/
+    // taskRepo/memoryRepo，不再在 Composable 内现拿 db 构造 Repository或
+    // 裸调用 db.taskDao()/db.memoryDao()。
+    val identityRepo = AppContainer.instance.identityRepo
+    val messageRepo  = AppContainer.instance.messageRepo
+    val taskRepo     = AppContainer.instance.taskRepo
+    val memoryRepo   = AppContainer.instance.memoryRepo
 
     LaunchedEffect(Unit) {
         isLoading = true
@@ -119,9 +114,9 @@ internal fun StatsRow() {
             // 跨所有角色累计消息数
             val msgs  = allIds.sumOf { messageRepo.countByCharacter(it) }
             // 已完成任务数
-            val tasks = db.taskDao().countByStatus("completed")
+            val tasks = taskRepo.countByStatus("completed")
             // 跨所有角色累计记忆条数
-            val mems  = allIds.sumOf { db.memoryDao().count(it) }
+            val mems  = allIds.sumOf { memoryRepo.count(it) }
             Triple(msgs, tasks, mems)
         }.let { (msgs, tasks, mems) ->
             totalMessages  = msgs
