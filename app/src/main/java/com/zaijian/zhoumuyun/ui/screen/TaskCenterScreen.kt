@@ -197,7 +197,7 @@ fun TaskCenterScreen(
             ) {
                 TaskCenterPreviewCard(
                     modifier          = Modifier.weight(1f),
-                    icon              = Icons.Outlined.Folder,
+                    icon              = com.zaijian.zhoumuyun.ui.design.AppIcons.Folder,
                     title             = "项目",
                     subtitle          = if (uiState.activeProjectCount > 0) {
                         "${uiState.activeProjectCount}个进行中"
@@ -211,7 +211,7 @@ fun TaskCenterScreen(
                 )
                 TaskCenterPreviewCard(
                     modifier          = Modifier.weight(1f),
-                    icon              = Icons.Outlined.CalendarMonth,
+                    icon              = com.zaijian.zhoumuyun.ui.design.AppIcons.CalendarMonth,
                     title             = "日程",
                     subtitle          = "今日待办",
                     countText         = (todayJobs.size + todayGrowthTasks.size).toString(),
@@ -912,13 +912,12 @@ private fun TaskCenterPreviewCard(
                 .padding(horizontal = Spacing.sm, vertical = Spacing.xs),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    imageVector        = icon,
+                com.zaijian.zhoumuyun.ui.design.IconBadge(
+                    icon               = icon,
                     contentDescription = title,
-                    modifier           = Modifier.size(16.dp),
-                    tint               = colors.accent,
+                    size               = 14.dp,
                 )
-                Spacer(Modifier.width(4.dp))
+                Spacer(Modifier.width(6.dp))
                 Text(
                     text  = title,
                     style = type.cardTitle,

@@ -33,8 +33,21 @@
 | 2.1 任务页顶部（`TaskCenterScreen.kt`） | ✅ 已完成——删除「目标」按钮；「项目」「日程」升级为 `WorldCard` 预览卡，显示真实数据（活跃项目数+完成率、今日待办数） |
 | 2.2 "我"页进化项目卡 | ✅ 已完成——直接砍掉（2.1 的项目预览卡已覆盖同样作用，避免同一信息在多个 Tab 重复摆放） |
 | 2.3 圆桌入口 | 不做（用户明确跳过） |
-| 2.4 图标统一收口 | 暂不做 |
+| 2.4 图标统一收口 | 🔶 基础设施已搭建，示范迁移 1 处，其余 139 处留待后续逐步迁移 |
 | 2.5 全项目 token 审查 | 暂不做 |
+
+2.4 说明：全项目 `Icons.Outlined.XXX` 直接引用共 141 处，分布在 30 个文件、
+69 种不同图标，一次性全改风险高、验证难度大，方案原文本身也是"逐步收拢"。
+本次新建 `ui/design/AppIcons.kt`（单一文件，未按模块拆分），包含：
+- `AppIcons` object：图标常量收拢入口，目前收拢了 `Folder`/`CalendarMonth`
+  两个（本次示范迁移实际用到的），新增时照此格式追加，一次迁移一处即可
+- `IconBadge` composable：图标 + `Radius.xs` 圆角小色块背景的可复用组件，
+  背景色默认 `colors.accentSoft`，语义色场景可传入对应
+  `Palette.SemanticXxx.copy(alpha = 0.12f)`
+
+示范迁移：2.1 任务页「项目/日程」预览卡的图标，从裸 `Icon`（默认无背景）
+改为 `IconBadge`（色块背景），图标引用改用 `AppIcons.Folder`/
+`AppIcons.CalendarMonth`。其余 139 处引用未动，留待后续按同样模式逐步迁移。
 
 2.1 完成后额外清理的死代码：`TaskCenterScreen` 的 `onNavigateToGoals` 参数、
 `AppNavigation.kt` 里配套的 `showGoalsCharacterPicker` 状态与其触发的
