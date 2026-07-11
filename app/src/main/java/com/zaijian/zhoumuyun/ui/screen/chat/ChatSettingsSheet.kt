@@ -1,0 +1,475 @@
+package com.zaijian.zhoumuyun.ui.screen.chat
+
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.sizeIn
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.wrapContentSize
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.AccountCircle
+import com.zaijian.zhoumuyun.ui.design.WorldCard
+import androidx.compose.material.icons.outlined.Check
+import androidx.compose.material.icons.outlined.DeleteSweep
+import androidx.compose.material.icons.outlined.FolderOpen
+import androidx.compose.material.icons.outlined.KeyboardArrowDown
+import androidx.compose.material.icons.outlined.MoreVert
+import androidx.compose.material.icons.outlined.Send
+import androidx.compose.material.icons.outlined.Work
+import androidx.compose.material.icons.outlined.Favorite
+import androidx.compose.material.icons.outlined.Person
+import androidx.compose.material.icons.outlined.Wallpaper
+import androidx.compose.ui.graphics.vector.rememberVectorPainter
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.dp
+import coil.compose.AsyncImagePainter
+import coil.compose.rememberAsyncImagePainter
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import com.zaijian.zhoumuyun.data.model.ChatMode
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.Snackbar
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
+
+import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.sp
+import androidx.lifecycle.viewmodel.compose.viewModel
+
+import android.content.Context
+import android.net.Uri
+import android.provider.OpenableColumns
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import coil.compose.AsyncImage
+import coil.request.CachePolicy
+import coil.request.ImageRequest
+import com.zaijian.zhoumuyun.data.db.entity.ProjectEntity
+import com.zaijian.zhoumuyun.data.model.DefaultPresenceStates
+import com.zaijian.zhoumuyun.data.model.StatusType
+import com.zaijian.zhoumuyun.ui.component.BreathingAvatar
+import com.zaijian.zhoumuyun.ui.component.FertileWindowConsentDialog
+import com.zaijian.zhoumuyun.ui.component.MarkdownText
+import com.zaijian.zhoumuyun.ui.theme.AnimDuration
+import com.zaijian.zhoumuyun.ui.theme.AppTheme
+import com.zaijian.zhoumuyun.ui.theme.AvatarSize
+import com.zaijian.zhoumuyun.ui.theme.BubbleDimen
+import com.zaijian.zhoumuyun.ui.theme.GlassOpacity
+import com.zaijian.zhoumuyun.ui.theme.Palette
+import com.zaijian.zhoumuyun.ui.theme.Radius
+import com.zaijian.zhoumuyun.ui.theme.RingWidth
+import com.zaijian.zhoumuyun.ui.theme.Spacing
+import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
+import com.zaijian.zhoumuyun.ui.viewmodel.ChatViewModel
+
+import com.zaijian.zhoumuyun.ui.viewmodel.KnowledgeInjectMode
+import com.zaijian.zhoumuyun.ui.viewmodel.PresenceViewModel
+import com.zaijian.zhoumuyun.ui.viewmodel.ProjectViewModel
+import kotlinx.coroutines.launch
+import androidx.compose.runtime.mutableIntStateOf
+
+import com.zaijian.zhoumuyun.ZaijianApp
+import com.zaijian.zhoumuyun.domain.MoodType
+import com.zaijian.zhoumuyun.util.TimeFormatUtils
+
+
+// ─────────────────────────────────────────────────────────────
+//  ChatSettingsSheet — 聊天设置底部面板（Phase 16）
+//  拆分自 ChatScreen.kt（v87 Phase 2）。独立组件，含内部清空确认Dialog。
+// ─────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────
+//  ChatSettingsSheet — 聊天设置底部面板（Phase 16）
+// ─────────────────────────────────────────────────────────────
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun ChatSettingsSheet(
+    characterName: String,
+    accentColor: Color,
+    onNavigateToDetail: () -> Unit,
+    onDismiss: () -> Unit,
+    knowledgeMode: KnowledgeInjectMode = KnowledgeInjectMode.AUTO,
+    onKnowledgeModeChange: (KnowledgeInjectMode) -> Unit = {},
+    onManualKnowledgeTrigger: () -> Unit = {},
+    onClearMessages: () -> Unit = {},
+    activeProjects: List<ProjectEntity> = emptyList(),
+    currentProjectId: String? = null,
+    onSetProject: (String?) -> Unit = {},
+    hasCustomBackground: Boolean = false,
+    onSetBackground: () -> Unit = {},
+    onClearBackground: () -> Unit = {},
+) {
+    val colors     = ZaijianTheme.colors
+    val type       = ZaijianTheme.typography
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
+    ModalBottomSheet(
+        onDismissRequest  = onDismiss,
+        sheetState        = sheetState,
+        containerColor    = colors.bgCard,
+        dragHandle        = {
+            Box(
+                modifier = Modifier
+                    .padding(top = 12.dp, bottom = 4.dp)
+                    .size(width = 32.dp, height = 4.dp)
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(colors.border),
+            )
+        },
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(bottom = Spacing.xl),
+        ) {
+            // 标题
+            Text(
+                text     = characterName,
+                style    = type.cardTitle,
+                color    = colors.textPrimary,
+                modifier = Modifier.padding(
+                    horizontal = Spacing.screenHorizontal,
+                    vertical   = Spacing.md,
+                ),
+            )
+
+            HorizontalDivider(color = colors.border)
+
+            // 条目：角色档案
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable {
+                        onNavigateToDetail()
+                        onDismiss()
+                    }
+                    .padding(
+                        horizontal = Spacing.screenHorizontal,
+                        vertical   = Spacing.md,
+                    ),
+                verticalAlignment          = Alignment.CenterVertically,
+                horizontalArrangement      = Arrangement.spacedBy(Spacing.md),
+            ) {
+                Icon(
+                    imageVector        = Icons.Outlined.AccountCircle,
+                    contentDescription = null,
+                    tint               = colors.textSecondary,
+                    modifier           = Modifier.size(20.dp),
+                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(text = "查看角色档案", style = type.body, color = colors.textPrimary)
+                    Text(text = "记忆 · 人设 · 目标 · 关系", style = type.caption, color = colors.textSecondary)
+                }
+            }
+
+            HorizontalDivider(color = colors.border, modifier = Modifier.padding(horizontal = Spacing.screenHorizontal))
+
+            // 条目：聊天背景图
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onSetBackground() }
+                    .padding(
+                        horizontal = Spacing.screenHorizontal,
+                        vertical   = Spacing.md,
+                    ),
+                verticalAlignment     = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Spacing.md),
+            ) {
+                Icon(
+                    imageVector        = Icons.Outlined.Wallpaper,
+                    contentDescription = null,
+                    tint               = colors.textSecondary,
+                    modifier           = Modifier.size(20.dp),
+                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(text = "更换聊天背景", style = type.body, color = colors.textPrimary)
+                    Text(
+                        text  = if (hasCustomBackground) "已设置自定义背景 · 点击更换" else "从相册选择背景图片",
+                        style = type.caption,
+                        color = colors.textSecondary,
+                    )
+                }
+                if (hasCustomBackground) {
+                    androidx.compose.material3.TextButton(onClick = onClearBackground) {
+                        Text("恢复默认", style = type.caption, color = accentColor)
+                    }
+                }
+            }
+
+            HorizontalDivider(color = colors.border, modifier = Modifier.padding(horizontal = Spacing.screenHorizontal))
+
+            // 条目：清空对话（含确认 Dialog）
+            var showClearConfirm by remember { mutableStateOf(false) }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { showClearConfirm = true }
+                    .padding(
+                        horizontal = Spacing.screenHorizontal,
+                        vertical   = Spacing.md,
+                    ),
+                verticalAlignment     = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Spacing.md),
+            ) {
+                Icon(
+                    imageVector        = Icons.Outlined.DeleteSweep,
+                    contentDescription = null,
+                    tint               = colors.textSecondary,
+                    modifier           = Modifier.size(20.dp),
+                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(text = "清空对话记录", style = type.body, color = colors.textPrimary)
+                    Text(text = "不影响长期记忆与关系", style = type.caption, color = colors.textSecondary)
+                }
+            }
+            if (showClearConfirm) {
+                androidx.compose.material3.AlertDialog(
+                    onDismissRequest = { showClearConfirm = false },
+                    containerColor   = colors.bgCard,
+                    title = {
+                        Text("清空对话记录？", style = type.cardTitle, color = colors.textPrimary)
+                    },
+                    text = {
+                        Text(
+                            "当前对话记录将全部删除，长期记忆与关系数据不受影响。",
+                            style = type.body,
+                            color = colors.textSecondary,
+                        )
+                    },
+                    confirmButton = {
+                        androidx.compose.material3.TextButton(
+                            onClick = {
+                                onClearMessages()
+                                showClearConfirm = false
+                                onDismiss()
+                            }
+                        ) { Text("确认清空", color = Palette.SemanticDanger) }
+                    },
+                    dismissButton = {
+                        androidx.compose.material3.TextButton(
+                            onClick = { showClearConfirm = false }
+                        ) { Text("取消", color = colors.textSecondary) }
+                    },
+                )
+            }
+
+            HorizontalDivider(color = colors.border, modifier = Modifier.padding(horizontal = Spacing.screenHorizontal))
+
+            // ── 关联项目选择器 ────────────────────────────────
+            if (activeProjects.isNotEmpty()) {
+                var projectDropdown by remember { mutableStateOf(false) }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { projectDropdown = true }
+                        .padding(
+                            horizontal = Spacing.screenHorizontal,
+                            vertical   = Spacing.md,
+                        ),
+                    verticalAlignment     = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(Spacing.md),
+                ) {
+                    Icon(
+                        imageVector        = Icons.Outlined.FolderOpen,
+                        contentDescription = null,
+                        tint               = colors.textSecondary,
+                        modifier           = Modifier.size(20.dp),
+                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(text = "关联项目", style = type.body, color = colors.textPrimary)
+                        Text(
+                            text  = activeProjects.firstOrNull { it.id == currentProjectId }?.title
+                                        ?: "未关联",
+                            style = type.caption,
+                            color = colors.textSecondary,
+                        )
+                    }
+                    Icon(
+                        imageVector        = Icons.Outlined.KeyboardArrowDown,
+                        contentDescription = null,
+                        tint               = colors.textDisabled,
+                        modifier           = Modifier.size(18.dp),
+                    )
+                    DropdownMenu(
+                        expanded         = projectDropdown,
+                        onDismissRequest = { projectDropdown = false },
+                        modifier         = Modifier.background(
+                            if (colors.isDark) colors.bgCard else colors.bgElevated
+                        ),
+                    ) {
+                        // "不关联"选项
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    text  = "不关联",
+                                    style = type.body,
+                                    color = if (currentProjectId == null) colors.accent else colors.textPrimary,
+                                )
+                            },
+                            trailingIcon = if (currentProjectId == null) ({
+                                Icon(
+                                    imageVector = Icons.Outlined.Check,
+                                    contentDescription = null,
+                                    tint = colors.accent,
+                                    modifier = Modifier.size(16.dp),
+                                )
+                            }) else null,
+                            onClick = {
+                                onSetProject(null)
+                                projectDropdown = false
+                            },
+                        )
+                        androidx.compose.material3.HorizontalDivider(color = colors.border)
+                        activeProjects.forEach { project ->
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        text  = project.title,
+                                        style = type.body,
+                                        color = if (project.id == currentProjectId) colors.accent
+                                                else colors.textPrimary,
+                                    )
+                                },
+                                trailingIcon = if (project.id == currentProjectId) ({
+                                    Icon(
+                                        imageVector = Icons.Outlined.Check,
+                                        contentDescription = null,
+                                        tint = colors.accent,
+                                        modifier = Modifier.size(16.dp),
+                                    )
+                                }) else null,
+                                onClick = {
+                                    onSetProject(project.id)
+                                    projectDropdown = false
+                                },
+                            )
+                        }
+                    }
+                }
+                HorizontalDivider(color = colors.border, modifier = Modifier.padding(horizontal = Spacing.screenHorizontal))
+            }
+
+            // ── Phase 31：知识库注入模式 ──────────────────────
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = Spacing.screenHorizontal, vertical = Spacing.md),
+                verticalArrangement = Arrangement.spacedBy(Spacing.sm),
+            ) {
+                    Text(text = "项目知识库", style = type.body, color = colors.textPrimary)
+                    val modeLabel = when (knowledgeMode) {
+                        KnowledgeInjectMode.AUTO -> "自动 — 检测到关键词时注入"
+                        KnowledgeInjectMode.MANUAL -> "手动"
+                    }
+                    Text(text = modeLabel, style = type.caption, color = colors.textSecondary)
+                    // 两个选项横排
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
+                    ) {
+                        listOf(
+                            KnowledgeInjectMode.AUTO to "自动",
+                            KnowledgeInjectMode.MANUAL to "手动",
+                        ).forEach { (mode, label) ->
+                            val selected = knowledgeMode == mode
+                            Box(
+                                contentAlignment = Alignment.Center,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(
+                                        if (selected) accentColor
+                                        else colors.surface.copy(alpha = GlassOpacity.low)
+                                    )
+                                    .clickable { onKnowledgeModeChange(mode) }
+                                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                            ) {
+                                Text(
+                                    text  = label,
+                                    style = type.label,
+                                    color = if (selected) Color.White else colors.textSecondary,
+                                )
+                            }
+                        }
+                    }
+                    // MANUAL 模式：显示"注入知识库"一次性触发按钮
+                    if (knowledgeMode == KnowledgeInjectMode.MANUAL) {
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(accentColor.copy(alpha = 0.15f))
+                                .clickable { onManualKnowledgeTrigger() }
+                                .padding(horizontal = 16.dp, vertical = 8.dp),
+                        ) {
+                            Text(
+                                text  = "注入知识库（下一条消息生效）",
+                                style = type.label,
+                                color = accentColor,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }

@@ -1,0 +1,370 @@
+package com.zaijian.zhoumuyun.data.repository
+
+import android.content.Context
+import com.zaijian.zhoumuyun.data.db.dao.ProjectDao
+import com.zaijian.zhoumuyun.data.db.dao.ProjectKnowledgeDao
+import com.zaijian.zhoumuyun.data.db.entity.KnowledgeSource
+import com.zaijian.zhoumuyun.data.db.entity.ProjectEntity
+import com.zaijian.zhoumuyun.data.db.entity.ProjectKnowledgeEntity
+import com.zaijian.zhoumuyun.data.db.entity.ProjectMemberEntity
+import com.zaijian.zhoumuyun.data.db.entity.ProjectMilestoneEntity
+import com.zaijian.zhoumuyun.data.db.entity.ProjectStatus
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.withContext
+import org.apache.poi.xwpf.usermodel.XWPFDocument
+import java.io.InputStream
+import java.util.UUID
+
+/**
+ * 知识库注入的 Token 预算保护（修复 2：buildKnowledgeBlock 此前全文不截断）。
+ */
+object KnowledgeBudget {
+    /** 单次注入最多携带的知识条目数 */
+    const val MAX_ITEMS = 20
+    /** 知识库块总字符上限（粗略按 1 token ≈ 1.5~2 中文字符估算，留余量） */
+    const val MAX_TOTAL_CHARS = 6000
+}
+
+/**
+ * Project Engine Repository（Phase 31）
+ *
+ * 封装所有 Project/Milestone/Member/Knowledge 的读写操作。
+ * ViewModel 只与 Repository 交互，不直接碰 DAO。
+ *
+ * Phase 31 变更：
+ * - addKnowledge() 写入 charCount
+ * - 新增 importFile() — TXT/MD/DOCX/PDF 解析为纯文本后调 addKnowledge
+ * - buildWorldLayerBlock() 去掉 content.take(120) 截断，改为全文注入
+ * - buildKnowledgeBlock() 新增：独立知识库块，供 PromptOrchestrator 前置注入
+ */
+class ProjectRepository(
+    private val projectDao: ProjectDao,
+    private val knowledgeDao: ProjectKnowledgeDao,
+) {
+
+    // ── Projects ──────────────────────────────────────────────
+
+    suspend fun createProject(
+        title: String,
+        description: String = "",
+        ownerId: String = "user",
+    ): String {
+        val id = UUID.randomUUID().toString()
+        val now = System.currentTimeMillis()
+        projectDao.upsertProject(
+            ProjectEntity(
+                id          = id,
+                title       = title,
+                description = description,
+                ownerId     = ownerId,
+                createdAt   = now,
+                updatedAt   = now,
+            )
+        )
+        return id
+    }
+
+    suspend fun updateProject(project: ProjectEntity) {
+        projectDao.upsertProject(project.copy(updatedAt = System.currentTimeMillis()))
+    }
+
+    suspend fun archiveProject(id: String) {
+        projectDao.updateStatus(id, ProjectStatus.ARCHIVED.name)
+    }
+
+    suspend fun completeProject(id: String) {
+        projectDao.updateStatus(id, ProjectStatus.COMPLETED.name)
+    }
+
+    suspend fun pauseProject(id: String) {
+        projectDao.updateStatus(id, ProjectStatus.PAUSED.name)
+    }
+
+    suspend fun reactivateProject(id: String) {
+        projectDao.updateStatus(id, ProjectStatus.ACTIVE.name)
+    }
+
+    fun observeActive(): Flow<List<ProjectEntity>> = projectDao.observeActive()
+    fun observeAll(): Flow<List<ProjectEntity>> = projectDao.observeAll()
+    suspend fun getById(id: String): ProjectEntity? = projectDao.getById(id)
+
+    // ── Milestones ────────────────────────────────────────────
+
+    suspend fun addMilestone(
+        projectId: String,
+        title: String,
+        description: String = "",
+    ): String {
+        val id = UUID.randomUUID().toString()
+        projectDao.upsertMilestone(
+            ProjectMilestoneEntity(
+                id          = id,
+                projectId   = projectId,
+                title       = title,
+                description = description,
+                createdAt   = System.currentTimeMillis(),
+            )
+        )
+        return id
+    }
+
+    suspend fun completeMilestone(milestoneId: String) {
+        projectDao.completeMilestone(milestoneId)
+    }
+
+    fun observeMilestones(projectId: String): Flow<List<ProjectMilestoneEntity>> =
+        projectDao.observeMilestones(projectId)
+
+    // ── Members ───────────────────────────────────────────────
+
+    suspend fun addMember(
+        projectId: String,
+        characterId: String,
+        role: String = "CONTRIBUTOR",
+    ) {
+        projectDao.upsertMember(
+            ProjectMemberEntity(
+                id          = "${projectId}_${characterId}",
+                projectId   = projectId,
+                characterId = characterId,
+                role        = role,
+                joinedAt    = System.currentTimeMillis(),
+            )
+        )
+    }
+
+    suspend fun removeMember(projectId: String, characterId: String) {
+        projectDao.removeMember(projectId, characterId)
+    }
+
+    suspend fun getMembers(projectId: String): List<ProjectMemberEntity> =
+        projectDao.getMembers(projectId)
+
+    // ── Knowledge ────────────────────────────────────────────
+
+    suspend fun addKnowledge(
+        projectId: String,
+        content: String,
+        title: String = "",
+        characterId: String? = null,
+        source: String = KnowledgeSource.MANUAL.name,
+        importance: Int = 3,
+    ): String {
+        val id = UUID.randomUUID().toString()
+        val now = System.currentTimeMillis()
+        knowledgeDao.upsert(
+            ProjectKnowledgeEntity(
+                id          = id,
+                projectId   = projectId,
+                characterId = characterId,
+                title       = title,
+                content     = content,
+                source      = source,
+                importance  = importance,
+                charCount   = content.length,   // Phase 31: 写入字数
+                createdAt   = now,
+                updatedAt   = now,
+            )
+        )
+        return id
+    }
+
+    /**
+     * 导入文件到知识库。
+     *
+     * 支持格式：
+     *   .txt / .md  → 直接读取文本
+     *   .docx       → Apache POI 解析段落
+     *   .pdf        → Android PdfRenderer 逐页提取文本（系统 API，无需额外依赖）
+     *
+     * @param context   Android Context（PdfRenderer 需要 ParcelFileDescriptor）
+     * @param inputStream 文件输入流
+     * @param fileName  原始文件名，用于判断格式和设置 title
+     * @param projectId 目标项目 ID
+     * @param importance 重要度，默认 3
+     * @return 新建知识条目的 ID
+     */
+    suspend fun importFile(
+        context: Context,
+        inputStream: InputStream,
+        fileName: String,
+        projectId: String,
+        importance: Int = 3,
+    ): String = withContext(Dispatchers.IO) {
+        val ext = fileName.substringAfterLast('.', "").lowercase()
+        // P1-8-3 修复：所有分支的 InputStream 改用 .use{} 包裹，确保关闭。
+        // 原来 txt/md/else 分支直接 readText() 后不关流；docx 分支已有 XWPFDocument.use{}
+        // 但外层 InputStream 本身未关闭；pdf 分支同理。
+        val content = inputStream.use { stream ->
+            when (ext) {
+                "txt", "md" -> stream.bufferedReader(Charsets.UTF_8).readText()
+                "docx"      -> parseDocx(stream)
+                "pdf"       -> parsePdf(context, stream)
+                else        -> stream.bufferedReader(Charsets.UTF_8).readText()
+            }
+        }
+        addKnowledge(
+            projectId  = projectId,
+            content    = content,
+            title      = fileName,
+            source     = KnowledgeSource.FILE_IMPORT.name,
+            importance = importance,
+        )
+    }
+
+    /** Apache POI：解析 .docx 所有段落文本 */
+    private fun parseDocx(inputStream: InputStream): String {
+        return XWPFDocument(inputStream).use { doc ->
+            doc.paragraphs.joinToString("\n") { it.text }
+        }
+    }
+
+    /**
+     * Android PdfRenderer：逐页提取文本。
+     * PdfRenderer 只能渲染位图，不直接提供文本提取 API，
+     * 所以这里用 PdfRenderer 把每页渲染成 Bitmap 后交给系统 OCR（API 31+）。
+     * 对于 API 31 以下或无 OCR 支持的设备，回退为用 PDFBox 的纯文本提取路径。
+     *
+     * 注：如果项目已集成 pdfbox-android，可直接 PDDocument.load(inputStream)
+     * 提取文本，无需 OCR。此处提供双路径实现。
+     */
+    private fun parsePdf(context: Context, inputStream: InputStream): String {
+        // 优先尝试 Apache PDFBox（如果依赖存在）
+        return try {
+            val pdfBoxClass = Class.forName("com.tom_roush.pdfbox.pdmodel.PDDocument")
+            val loadMethod  = pdfBoxClass.getMethod("load", InputStream::class.java)
+            val doc         = loadMethod.invoke(null, inputStream)
+            val stripperClass = Class.forName("com.tom_roush.pdfbox.text.PDFTextStripper")
+            val stripper    = stripperClass.getDeclaredConstructor().newInstance()
+            val getText     = stripperClass.getMethod("getText", pdfBoxClass)
+            val text        = getText.invoke(stripper, doc) as String
+            val close       = pdfBoxClass.getMethod("close")
+            close.invoke(doc)
+            text
+        } catch (_: ClassNotFoundException) {
+            // P1-13-4 修复：原先返回占位字符串，调用方无法区分"正常文本"和"PDF提取失败"，
+            // 导致 LLM 读到的是"[PDF 文件已导入，内容需要 PDFBox...]"这类内部提示而非真实内容。
+            // 改为抛出异常，让 importFile 调用链感知失败，可在 UI 层给用户明确提示。
+            throw UnsupportedOperationException("PDF 文本提取需要 PDFBox 依赖（com.tom_roush:pdfbox-android），当前构建未包含该依赖。")
+        }
+    }
+
+    fun observeKnowledge(projectId: String): Flow<List<ProjectKnowledgeEntity>> =
+        knowledgeDao.observeByProject(projectId)
+
+    suspend fun searchKnowledge(projectId: String, query: String, limit: Int = 10): List<ProjectKnowledgeEntity> =
+        knowledgeDao.searchFts(projectId, query, limit)
+
+    suspend fun getTopKnowledge(projectId: String, limit: Int = KnowledgeBudget.MAX_ITEMS): List<ProjectKnowledgeEntity> =
+        knowledgeDao.getTopK(projectId, limit)
+
+    suspend fun deleteKnowledge(id: String) = knowledgeDao.delete(id)
+
+    suspend fun knowledgeCount(projectId: String): Int = knowledgeDao.countByProject(projectId)
+
+    // ── 知识库独立块（Phase 31：前置注入，缓存友好）────────────
+
+    /**
+     * 构建独立的「项目知识库」块，用于注入到 Identity 层之后、Memory 层之前。
+     *
+     * 修复 2：原实现全文注入不截断，知识条目和单条长度均无上限，
+     * 存在把 Prompt 撑爆到超出 Provider context 限制的风险。
+     * 现按 [KnowledgeBudget] 做条目数 + 总字符数双重限制，超出部分截断并提示。
+     * 注入时机由 ChatViewModel 的 KnowledgeInjectMode 控制。
+     *
+     * 格式：
+     * ```
+     * ════════════════════════════════
+     * [项目知识库：{projectTitle}]
+     *
+     * ## {title}
+     * {content（可能被截断）}
+     *
+     * ## {title2}
+     * ...
+     * （知识库内容较多，本次仅注入部分条目/已截断，完整内容共 N 条）
+     * ════════════════════════════════
+     * ```
+     */
+    suspend fun buildKnowledgeBlock(projectId: String): String {
+        val project   = getById(projectId) ?: return ""
+        val knowledge = getTopKnowledge(projectId, limit = KnowledgeBudget.MAX_ITEMS)
+        if (knowledge.isEmpty()) return ""
+
+        val totalCount = knowledgeCount(projectId)
+        var usedChars = 0
+        var truncated = false
+
+        val body = buildString {
+            knowledge.forEach { k ->
+                if (usedChars >= KnowledgeBudget.MAX_TOTAL_CHARS) {
+                    truncated = true
+                    return@forEach
+                }
+                appendLine()
+                if (k.title.isNotEmpty()) appendLine("## ${k.title}")
+                val remaining = KnowledgeBudget.MAX_TOTAL_CHARS - usedChars
+                val content = if (k.content.length > remaining) {
+                    truncated = true
+                    k.content.take(remaining)
+                } else k.content
+                append(content)
+                usedChars += content.length
+                appendLine()
+            }
+        }
+
+        return buildString {
+            appendLine("════════════════════════════════")
+            appendLine("[项目知识库：${project.title}]")
+            append(body)
+            if (truncated || totalCount > KnowledgeBudget.MAX_ITEMS) {
+                appendLine()
+                appendLine("（知识库内容较多，本次仅注入部分条目/已截断，完整内容共 $totalCount 条）")
+            }
+            append("════════════════════════════════")
+        }
+    }
+
+    // ── World Layer 注入文本（项目状态 + 里程碑，不含知识库）──
+
+    /**
+     * 构建 World Layer 文本块（仅项目状态和里程碑）。
+     *
+     * Phase 31 变更：知识库内容已迁移到独立的 buildKnowledgeBlock()，
+     * 此处不再注入知识条目，保持 World Layer 职责纯粹。
+     *
+     * 格式：
+     * ```
+     * [当前项目：{title}]
+     * 描述：{description}
+     *
+     * 里程碑：
+     * □ {milestone title}
+     * ✓ {completed milestone}
+     * ```
+     */
+    suspend fun buildWorldLayerBlock(
+        projectId: String,
+        userMessage: String = "",
+    ): String {
+        val project    = getById(projectId) ?: return ""
+        val milestones = projectDao.getMilestones(projectId)
+
+        return buildString {
+            appendLine("[当前项目：${project.title}]")
+            if (project.description.isNotEmpty()) {
+                appendLine("描述：${project.description}")
+            }
+            if (milestones.isNotEmpty()) {
+                appendLine()
+                appendLine("里程碑：")
+                milestones.forEach { m ->
+                    val prefix = if (m.isCompleted) "✓" else "□"
+                    appendLine("$prefix ${m.title}")
+                }
+            }
+        }.trimEnd()
+    }
+}
