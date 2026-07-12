@@ -421,7 +421,7 @@ class ZaijianApp : Application() {
             generateDailyPresenceTexts(
                 goalDao        = db.characterGoalDao(),
                 presenceEngine = presenceEngine,
-                daughterRepo   = container.daughterCharacterRepo,
+                daughterRepo   = com.zaijian.zhoumuyun.data.AppContainer.instance.daughterCharacterRepo,
             )
         }
 

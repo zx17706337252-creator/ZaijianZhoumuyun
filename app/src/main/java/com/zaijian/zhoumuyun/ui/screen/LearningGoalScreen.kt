@@ -1151,6 +1151,7 @@ private fun GoalStatusIcon(status: String, isActive: Boolean) {
 @Composable
 private fun GoalStatusChip(status: String, isActive: Boolean) {
     val colors = ZaijianTheme.colors
+    val type   = ZaijianTheme.typography
     val (label, chipBg, chipText) = when {
         !isActive                                    -> Triple("已停用",   colors.border,                    colors.textDisabled)
         status == LearningGoalStatus.COMPLETED.name  -> Triple("已完成",   Palette.TaskDone.copy(alpha = 0.12f), Palette.TaskDone)

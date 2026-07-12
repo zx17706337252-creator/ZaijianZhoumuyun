@@ -72,16 +72,18 @@ fun TimelineScreen(
                 Text("还没有故事记录", color = colors.textSecondary)
             }
         } else {
+            // P3-50 修复：分组计算未 remember，添加 remember 避免每次重组都重新计算
+            // （remember 是 @Composable 函数，须在 LazyColumn 的 content lambda 之外调用，
+            //  因为 content lambda 是 LazyListScope 构建器上下文而非 @Composable 上下文）
+            val grouped = remember(uiState.events) {
+                uiState.events.groupBy { event ->
+                    SimpleDateFormat("yyyy年MM月dd日", Locale.CHINESE).format(Date(event.createdAt))
+                }
+            }
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(horizontal = Spacing.md, vertical = Spacing.sm),
             ) {
-                // P3-50 修复：分组计算未 remember，添加 remember 避免每次重组都重新计算
-                val grouped = remember(uiState.events) {
-                    uiState.events.groupBy { event ->
-                        SimpleDateFormat("yyyy年MM月dd日", Locale.CHINESE).format(Date(event.createdAt))
-                    }
-                }
                 grouped.entries.forEach { (date, events) ->
                     item {
                         Text(
