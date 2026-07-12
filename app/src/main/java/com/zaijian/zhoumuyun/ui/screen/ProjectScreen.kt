@@ -26,7 +26,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.outlined.CheckBox
 import androidx.compose.material.icons.outlined.CheckBoxOutlineBlank
@@ -102,7 +102,7 @@ fun ProjectScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(colors.background)
+            .background(colors.bgBase) // P3-17 修复：统一使用 bgBase/bgCard 替代 background/surface
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
 
@@ -115,7 +115,7 @@ fun ProjectScreen(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 IconButton(onClick = onBack) {
-                    Icon(Icons.Default.Close, contentDescription = "返回", tint = colors.onBackground)
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回", tint = colors.onBackground)
                 }
                 Spacer(Modifier.width(8.dp))
                 Text(
@@ -339,7 +339,7 @@ private fun CreateProjectDialog(
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("取消", color = colors.onBackground.copy(alpha = 0.5f)) }
         },
-        containerColor = colors.surface,
+        containerColor = colors.bgCard, // P3-17 修复：统一使用 bgCard 替代 surface
     )
 }
 

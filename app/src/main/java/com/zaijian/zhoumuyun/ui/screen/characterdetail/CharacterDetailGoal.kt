@@ -50,8 +50,11 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.runtime.LaunchedEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -416,6 +419,7 @@ private fun GoalCard(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun GoalDraftSheet(
     draft: GoalDraft,
@@ -432,20 +436,19 @@ internal fun GoalDraftSheet(
     val colors = ZaijianTheme.colors
     val type   = ZaijianTheme.typography
 
-    // 用半透明遮罩 + 底部弹出卡片模拟 BottomSheet
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.45f))
-            .clickable { onDismiss() },
-        contentAlignment = Alignment.BottomCenter,
+    // P2-16 修复：从手工模拟的半透明遮罩+底部卡片改为系统的 ModalBottomSheet，
+    // 恢复系统返回手势、拖拽关闭、键盘避让等标准行为。
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState       = sheetState,
+        containerColor   = if (colors.isDark) colors.bgCard else colors.bgBase,
+        shape            = RoundedCornerShape(topStart = Radius.lg, topEnd = Radius.lg),
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(topStart = Radius.lg, topEnd = Radius.lg))
-                .background(if (colors.isDark) colors.bgCard else colors.bgBase)
-                .clickable(enabled = false) {}  // 阻止点击穿透
                 .padding(Spacing.lg)
                 .navigationBarsPadding(),
             verticalArrangement = Arrangement.spacedBy(Spacing.md),

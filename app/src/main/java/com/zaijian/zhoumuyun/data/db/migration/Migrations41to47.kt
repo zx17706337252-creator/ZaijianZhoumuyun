@@ -259,6 +259,22 @@ internal val MIGRATION_47_48 = object : Migration(47, 48) {
     }
 }
 
+// P1-47 修复：daughter_character 表新增 gender 列，用于 FamilyScreen 代数标签展示
+internal val MIGRATION_48_49 = object : Migration(48, 49) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE `daughter_character` ADD COLUMN `gender` TEXT")
+    }
+}
+
+// Fix-ThinkingLeak 修复：messages 表新增 thinkingText 列，承接
+// ChatViewModel.stripThinkingTag() 从回复正文剥离出的内心推理内容，
+// 气泡下方"想法"卡片据此渲染。纯新增可空列，不改动现有数据，无需重建表。
+internal val MIGRATION_49_50 = object : Migration(49, 50) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE `messages` ADD COLUMN `thinkingText` TEXT")
+    }
+}
+
 internal val MIGRATIONS_41_47 = arrayOf(
     MIGRATION_41_42,
     MIGRATION_42_43,

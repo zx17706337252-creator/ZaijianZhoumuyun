@@ -157,7 +157,11 @@ class PersonalScheduleViewModel(application: Application) : AndroidViewModel(app
      * 的 PARAM_REGEX 保持一致）为 Map，便于复用 Repository 的 create/update 签名。
      */
     private fun parseParamsText(text: String): Map<String, String> {
-        val regex = Regex("""(\w+)="((?:[^"\\]|\\.)*)"""")
+        // 验收修复：原写法 """...*)"""" 结尾连续4个引号，与 ScheduleCreateTool.kt/
+        // ScheduleUpdateTool.kt 里逐字符相同的既有编译错误（三重引号字符串被提前
+        // 截断，见 ScheduleCreateTool.kt 同位置注释）。同样改为把收尾引号拆到
+        // + "\"" 里拼接，最终正则字符串不变。
+        val regex = Regex("""(\w+)="((?:[^"\\]|\\.)*)""" + "\"")
         return regex.findAll(text)
             .associate { it.groupValues[1].trim() to it.groupValues[2].trim() }
     }

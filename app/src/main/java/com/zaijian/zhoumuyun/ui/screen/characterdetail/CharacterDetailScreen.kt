@@ -138,6 +138,8 @@ fun CharacterDetailScreen(
     onNavigateToCompetition: (domain: String) -> Unit = {},
     // 精修方案 v1.3 第5.1节：「关联项目」WrapChipGroup 点击跳转项目详情页
     onNavigateToProjectDetail: (String) -> Unit = {},
+    // P3-44 修复：从孕育记录点击跳转到子代角色详情页
+    onNavigateToCharacterDetail: (Int) -> Unit = {},
     identityViewModel: IdentityViewModel = viewModel(),
     memoryViewModel: MemoryViewModel = viewModel(),
     goalViewModel: GoalViewModel = viewModel(),
@@ -450,6 +452,9 @@ fun CharacterDetailScreen(
                     showPregnancyTab = showPregnancyTab,
                     onSelect         = { index, label ->
                         if (label == "文件") {
+                            // P1-15 修复：点击"文件"Tab 时同步更新 mainTab，
+                            // 确保从 FileVaultScreen 返回后 Tab 高亮正确显示"文件"
+                            mainTab = index
                             onNavigateToFileVault(characterId)
                         } else {
                             mainTab = index
@@ -506,19 +511,12 @@ fun CharacterDetailScreen(
                 when (abilityTab) {
                     0 -> item {
                         AbilityPanel(
-                            tags        = skillTags,
+                            tags        = getSkillTags(characterId),
                             accentColor = accentColor,
                             accentLight = accentLight,
                         )
                     }
-                    1 -> item {
-                        ToolsPanel(
-                            tools       = toolItems,
-                            accentLight = accentLight,
-                            accentColor = accentColor,
-                        )
-                    }
-                    2 -> item {
+                    else -> item {
                         EmptyState(
                             text     = "有点卡住，先歇一歇",
                             modifier = Modifier
@@ -612,6 +610,7 @@ fun CharacterDetailScreen(
                         onRequestTerminate  = pregnancyViewModel::requestTerminate,
                         onDismissTerminate  = pregnancyViewModel::dismissTerminateConfirm,
                         onConfirmTerminate  = pregnancyViewModel::confirmTerminate,
+                        onBirthRecordClick  = onNavigateToCharacterDetail, // P3-44 修复
                     )
                 }
             }

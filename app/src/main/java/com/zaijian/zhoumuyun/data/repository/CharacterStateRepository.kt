@@ -25,7 +25,22 @@ class CharacterStateRepository(
     private val dao: CharacterStateDao,
 ) {
 
-    /** 监听指定角色的当前状态；不存在时 fallback 到该角色的 initialState。 */
+    /**
+     * 监听指定角色的当前状态；不存在时 fallback 到该角色的 initialState。
+     *
+     * 复核修复 #20 说明：本方法对女儿角色（characterId>=1000）仍然会 fallback 到
+     * 空白 CharacterStateLayer()，这里的 fallback 逻辑本身没有改动——不引入对
+     * DaughterCharacterRepository 的依赖是有意为之：本类是同步 Flow 转换
+     * （dao.observeState().map{}），而女儿数据查询/JSON解析是 suspend 函数，
+     * 两者不能直接组合，若要在这里接入需要把整个类改造成 suspend Flow 或引入
+     * 额外的 combine，改动面和风险明显大于收益。
+     * 实际的女儿状态补偿放在调用方 ChatViewModel：组装 Prompt 前单独查询
+     * DaughterCharacterRepository.getCharacterData()，当这里返回空白默认值时，
+     * 用 DaughterStateLayer.toCharacterStateLayer() 的真实数值覆盖，
+     * 且无论是否命中空白 fallback，女儿的种类维度描述都改为经由
+     * PromptOrchestrator 的 daughterStateLayer/daughterCustomEnums 参数单独渲染，
+     * 不依赖这里的 fallback 结果。详见 ChatViewModel.sendMessage() 中的接线。
+     */
     fun observeState(characterId: Int): Flow<CharacterStateLayer> =
         dao.observeState(characterId).map { entity ->
             // Fix-13-1：原来 fallback 到 CharacterStateLayer()（空白默认值），

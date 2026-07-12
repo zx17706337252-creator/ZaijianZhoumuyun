@@ -175,12 +175,43 @@ class DaughterCharacterRepository(
         return entity.toDaughterCharacterData().toCharacterConfig(daughterCharacterId)
     }
 
+    /**
+     * 复核修复 #7/#13/#20：给定女儿自己的 characterId，返回完整的
+     * [com.zaijian.zhoumuyun.data.model.DaughterCharacterData]（而非拼装后的
+     * CharacterConfig），供 ChatViewModel 组装 Prompt 时使用。
+     *
+     * 用途：CharacterStateRepository.getState() 对女儿角色（ID>=1000）的持久化
+     * fallback 只查 DefaultCharacters，永远查不到，会退化为空白 CharacterStateLayer()；
+     * 且即便查到，母亲侧编译期枚举（MaskType 等）也无法承载女儿的运行时字符串枚举
+     * （DaughterCustomEnums）。ChatViewModel 需要这份原始数据，一是补齐女儿状态的
+     * 数值维度（talkativeness/intensity 等，见 DaughterStateLayer 字段），二是把
+     * customEnums 单独传给 PromptOrchestrator.buildSystemPrompt() 的
+     * daughterStateLayer/daughterCustomEnums 参数，在 State Layer 渲染时替换掉
+     * 通用/母亲专属枚举翻译。
+     *
+     * 与 getCharacterConfig 共享同一条查询+解析路径，避免两处 dao 调用逻辑漂移；
+     * 返回 null / 抛 DaughterDataException 的情况与 getCharacterConfig 一致。
+     */
+    suspend fun getCharacterData(
+        daughterCharacterId: Int,
+    ): com.zaijian.zhoumuyun.data.model.DaughterCharacterData? {
+        val entity = dao.getByDaughterCharacterId(daughterCharacterId) ?: return null
+        return entity.toDaughterCharacterData()
+    }
+
     // ── 家族链查询（Step 4，FamilyListViewModel / PresenceViewModel 使用）──
+
+    // P1-47 修复：getFamilyChain 返回类型从 List<CharacterConfig> 改为 List<DaughterChainEntry>，
+    // 增加 gender 字段，供 FamilyScreen 代数标签使用，不再硬编码 "女儿"/"孙女"。
+    data class DaughterChainEntry(
+        val config: com.zaijian.zhoumuyun.data.model.CharacterConfig,
+        val gender: String?,
+    )
 
     /**
      * 查询以 [firstGenCharacterId] 为起点的完整后代链（最多两层，固定不递归）。
      *
-     * 返回有序列表：[第二代 CharacterConfig, 第三代 CharacterConfig（如有）]
+     * 返回有序列表：[第二代 DaughterChainEntry, 第三代 DaughterChainEntry（如有）]
      * 不含第一代母亲本身（调用方自己持有 DefaultCharacters 里的那条）。
      *
      * 查询逻辑：
@@ -193,8 +224,8 @@ class DaughterCharacterRepository(
      */
     suspend fun getFamilyChain(
         firstGenCharacterId: Int,
-    ): List<com.zaijian.zhoumuyun.data.model.CharacterConfig> {
-        val result = mutableListOf<com.zaijian.zhoumuyun.data.model.CharacterConfig>()
+    ): List<DaughterChainEntry> {
+        val result = mutableListOf<DaughterChainEntry>()
 
         // ── 第二代 ──────────────────────────────────────────────
         val gen2Entity = dao.getAllWithMotherId(firstGenCharacterId).firstOrNull()
@@ -209,7 +240,7 @@ class DaughterCharacterRepository(
             ZLog.w("DaughterCharacterRepo", "gen2 parse failed, skip", e)
             return result
         }
-        result.add(gen2Config)
+        result.add(DaughterChainEntry(gen2Config, gen2Entity.gender))
 
         // ── 第三代 ──────────────────────────────────────────────
         val gen3Entity = dao.getAllWithMotherId(gen2CharacterId).firstOrNull()
@@ -224,7 +255,7 @@ class DaughterCharacterRepository(
             ZLog.w("DaughterCharacterRepo", "gen3 parse failed, skip", e)
             return result
         }
-        result.add(gen3Config)
+        result.add(DaughterChainEntry(gen3Config, gen3Entity.gender))
 
         return result
     }

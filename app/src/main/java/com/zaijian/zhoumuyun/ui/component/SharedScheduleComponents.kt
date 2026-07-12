@@ -40,7 +40,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -56,8 +55,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.zaijian.zhoumuyun.ui.viewmodel.RepeatLabel
+import com.zaijian.zhoumuyun.ui.theme.Palette
 import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
 
 /**
@@ -80,7 +79,7 @@ fun ScheduleRepeatChip(label: RepeatLabel, accent: Color, disabled: Boolean) {
             .padding(horizontal = 5.dp, vertical = 2.dp),
         contentAlignment = Alignment.Center,
     ) {
-        Text(text = label.text, style = type.label.copy(fontSize = 10.sp), color = textColor)
+        Text(text = label.text, style = type.label, color = textColor)  // P3-32 修复：移除硬编码 fontSize 覆写
     }
 }
 
@@ -144,11 +143,12 @@ fun ScheduleCardShell(
  */
 @Composable
 fun ScheduleDeleteButton(onDelete: () -> Unit) {
-    IconButton(onClick = onDelete, modifier = Modifier.size(36.dp)) {
+    // P3-33 修复：触摸目标 < 48dp，移除 IconButton 的 size 限制，让 minimumInteractiveComponentSize 生效
+    IconButton(onClick = onDelete) {
         Icon(
             imageVector        = Icons.Outlined.Delete,
             contentDescription = "删除",
-            tint               = MaterialTheme.colorScheme.error.copy(alpha = 0.7f),
+            tint               = Palette.SemanticDanger.copy(alpha = 0.7f),  // P3-53 修复：colorScheme.error → Palette.SemanticDanger
             modifier           = Modifier.size(18.dp),
         )
     }

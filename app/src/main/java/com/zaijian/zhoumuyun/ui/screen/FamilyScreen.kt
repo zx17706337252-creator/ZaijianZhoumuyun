@@ -180,14 +180,31 @@ fun FamilyScreen(
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     items(state.members, key = { it.config.id }) { member ->
+                        // 审查报告问题26修复：presenceMap（PresenceViewModel 实时状态，
+                        // 由 WorldSimulation.runTier1() 用 allCharacterIds() 驱动，已覆盖
+                        // 女儿）和 DefaultPresenceStates（静态预览文案，仅 1-9 号角色）
+                        // 两层都 miss 时才会走到这里——多数发生在女儿刚完成 D4 生成、
+                        // App 尚未跑过首次 Tier1 tick（STARTUP_DELAY_MS 内）的短暂窗口期。
+                        // 此前这里统一硬编码成"OFFLINE / —"，母亲角色好歹有
+                        // DefaultPresenceStates 兜底文案，女儿完全没有、观感上像是
+                        // 被系统性排除；给女儿一个专属的、语气友好的默认文案。
                         val presence = pState.presenceMap[member.config.id]
                             ?: DefaultPresenceStates.find { it.characterId == member.config.id }
-                            ?: PresenceState(
-                                characterId = member.config.id,
-                                statusText  = "—",
-                                statusType  = StatusType.OFFLINE,
-                                lastUpdated = 0L,
-                            )
+                            ?: if (member.config.id >= 1000) {
+                                PresenceState(
+                                    characterId = member.config.id,
+                                    statusText  = "刚刚到来",
+                                    statusType  = StatusType.IDLE,
+                                    lastUpdated = 0L,
+                                )
+                            } else {
+                                PresenceState(
+                                    characterId = member.config.id,
+                                    statusText  = "—",
+                                    statusType  = StatusType.OFFLINE,
+                                    lastUpdated = 0L,
+                                )
+                            }
                         FamilyMemberCard(
                             member       = member,
                             presence     = presence,
@@ -274,7 +291,13 @@ private fun FamilyMemberCard(
                             .padding(horizontal = 5.dp, vertical = 1.dp),
                     ) {
                         Text(
-                            text  = if (member.generation == 2) "女儿" else "孙女",
+                            // P1-47 修复：从 FamilyMember.gender 动态读取，不再硬编码 "女儿"/"孙女"。
+                            // gender 为 null 时（旧数据无此字段）使用中性表述 "孩子"。
+                            text  = when {
+                                member.generation == 2 -> member.gender ?: "孩子"
+                                member.generation == 3 -> member.gender ?: "孩子"
+                                else -> ""
+                            },
                             style = type.label,
                             color = border,
                         )

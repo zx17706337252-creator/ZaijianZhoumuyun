@@ -16,6 +16,8 @@ import com.zaijian.zhoumuyun.data.db.entity.RoundtableMessageEntity
 import com.zaijian.zhoumuyun.domain.PresenceEngine
 import com.zaijian.zhoumuyun.domain.RelationshipEngine
 import com.zaijian.zhoumuyun.data.model.CharacterConfig
+import com.zaijian.zhoumuyun.data.model.CharacterStateLayer
+import com.zaijian.zhoumuyun.data.model.toCharacterStateLayer
 import com.zaijian.zhoumuyun.data.model.DefaultCharacters
 import com.zaijian.zhoumuyun.data.prompt.PromptOrchestrator
 import com.zaijian.zhoumuyun.data.repository.CharacterStateRepository
@@ -152,7 +154,8 @@ data class RoundtableUiState(
     val pendingBackgroundCropUri: String? = null,
 ) {
     val activeMembers: ImmutableList<CharacterConfig>
-        get() = (allMotherMembers.filter { it.id !in blockedMotherIds } + extraDaughterMembers).toImmutableList()
+        get() = (allMotherMembers.filter { it.id !in blockedMotherIds } +
+                 extraDaughterMembers.filter { it.id !in blockedMotherIds }).toImmutableList()
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -434,7 +437,6 @@ class RoundtableViewModel(app: Application) : AndroidViewModel(app) {
     // ──────────────────────────────────────────────────────────
 
     fun blockMother(characterId: Int) {
-        if (characterId >= 1000) return
         _uiState.update { it.copy(blockedMotherIds = (it.blockedMotherIds + characterId).toImmutableSet()) }
     }
 
@@ -989,7 +991,29 @@ $digest
         val identityEntity  = identityDao.getById(bot.id)
         val pregnancyState  = pregnancyRepo.getPregnancy(bot.id)
         // ── 补全 characterState（深层状态，与 ChatViewModel 这次的修法对齐）──
-        val characterState  = characterStateRepo.getState(bot.id)
+        var characterState  = characterStateRepo.getState(bot.id)
+        // ── 复核修复 #7/#13/#20（圆桌路径补齐）：女儿角色单独查询专属状态数据。
+        // 与 ChatViewModel 私聊路径同一段逻辑——圆桌和私聊是两条独立的 Prompt
+        // 组装路径，私聊那边修好不代表圆桌这边也好，女儿角色同样会出现在圆桌
+        // 发言里（activeMembers 不区分角色类型），必须在这里也查一次，否则
+        // 圆桌场景下女儿角色的面具/情绪/需求/恐惧仍然渲染成空白/通用占位值。
+        // 查询失败静默跳过，不影响本轮圆桌发言。
+        var daughterStateLayer: com.zaijian.zhoumuyun.data.model.DaughterStateLayer? = null
+        var daughterCustomEnums: com.zaijian.zhoumuyun.data.model.DaughterCustomEnums? = null
+        if (bot.id >= 1000) {
+            try {
+                val daughterData = daughterCharacterRepo.getCharacterData(bot.id)
+                if (daughterData != null) {
+                    daughterStateLayer = daughterData.stateLayer
+                    daughterCustomEnums = daughterData.customEnums
+                    if (characterState == CharacterStateLayer()) {
+                        characterState = daughterData.stateLayer.toCharacterStateLayer()
+                    }
+                }
+            } catch (e: Exception) {
+                ZLog.w("RoundtableViewModel", "女儿状态数据查询失败，State Layer 渲染将回退到通用描述", e)
+            }
+        }
         // ── 补全 State Layer（presence 在场状态，和 ChatViewModel 这次的修法对齐）──
         // presence fallback：缓存为空时主动计算一次，结果写入缓存供后续轮次复用
         var presenceSnap = presenceEngine?.getCachedPresence(bot.id)
@@ -1045,6 +1069,8 @@ $digest
             ruleLayerBlock          = ruleLayerBlock,
             pregnancyState          = pregnancyState,
             characterState          = characterState,
+            daughterStateLayer      = daughterStateLayer,
+            daughterCustomEnums     = daughterCustomEnums,
             miscarriageAftermathPatch = miscarriageAftermathPatch,
             pregnancyAwarenessBlock = pregnancyAwarenessBlock,
         )
@@ -1277,7 +1303,26 @@ $digest
         val relationshipSnap = relationshipEngine.buildPromptSnapshot(initiator.id)
         // presence fallback：缓存为空时（角色未打开过单人对话）主动计算一次，
         // 与 generateBotReply 的处理逻辑对齐。
-        val characterStateForPresence = characterStateRepo.getState(initiator.id)
+        var characterStateForPresence = characterStateRepo.getState(initiator.id)
+        // ── 复核修复 #7/#13/#20（圆桌自发发言路径补齐）：与常规圆桌发言、
+        // ChatViewModel 私聊路径同一段逻辑——自发发言的 initiator 同样不区分
+        // 角色类型，女儿角色一样会自发插话，必须同样查一次专属状态数据。
+        var daughterStateLayer: com.zaijian.zhoumuyun.data.model.DaughterStateLayer? = null
+        var daughterCustomEnums: com.zaijian.zhoumuyun.data.model.DaughterCustomEnums? = null
+        if (initiator.id >= 1000) {
+            try {
+                val daughterData = daughterCharacterRepo.getCharacterData(initiator.id)
+                if (daughterData != null) {
+                    daughterStateLayer = daughterData.stateLayer
+                    daughterCustomEnums = daughterData.customEnums
+                    if (characterStateForPresence == CharacterStateLayer()) {
+                        characterStateForPresence = daughterData.stateLayer.toCharacterStateLayer()
+                    }
+                }
+            } catch (e: Exception) {
+                ZLog.w("RoundtableViewModel", "女儿状态数据查询失败（自发发言），State Layer 渲染将回退到通用描述", e)
+            }
+        }
         val presenceSnap = presenceEngine.getCachedPresence(initiator.id)
             ?: presenceEngine.refreshPresence(initiator.id, characterStateForPresence)
 
@@ -1303,7 +1348,9 @@ $digest
                 agentPlanBlock          = "",
                 ruleLayerBlock          = "",
                 pregnancyState          = pregnancyRepo.getPregnancy(initiator.id),
-                characterState          = characterStateRepo.getState(initiator.id),
+                characterState          = characterStateForPresence,
+                daughterStateLayer      = daughterStateLayer,
+                daughterCustomEnums     = daughterCustomEnums,
                 miscarriageAftermathPatch = "",
                 pregnancyAwarenessBlock = "",
             ))

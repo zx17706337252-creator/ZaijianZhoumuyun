@@ -37,7 +37,10 @@ class ScheduleUpdateTool(
         // P1-12-1 修复：与 ScheduleCreateTool 对齐，使用带引号正则解析 params 字段，
         // 旧实现用 split(",") + indexOf('=') 切割，值中含逗号时会被截断。
         // 新正则与 ToolParser.ATTR_PATTERN 格式一致：key="value"，允许值内含逗号和转义引号。
-        val PARAM_REGEX = Regex("""(\w+)="((?:[^"\\]|\\.)*)"""")
+        // 验收修复：原写法 """...*)"""" 结尾连续4个引号，与 ScheduleCreateTool.kt 里
+        // 逐字符相同的既有编译错误（三重引号字符串被提前截断，见该文件同位置注释）。
+        // 同样改为把收尾引号拆到 + "\"" 里拼接，最终正则字符串不变。
+        val PARAM_REGEX = Regex("""(\w+)="((?:[^"\\]|\\.)*)""" + "\"")
     }
 
     override suspend fun execute(params: Map<String, String>): ToolResult {

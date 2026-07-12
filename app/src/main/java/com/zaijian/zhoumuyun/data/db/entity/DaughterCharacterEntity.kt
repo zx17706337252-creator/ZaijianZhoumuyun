@@ -100,4 +100,13 @@ data class DaughterCharacterEntity(
      * 是生成流程的最后一步，回填失败会在 Log 里留下痕迹（见 ChatViewModel）。
      */
     val daughterCharacterId: Int? = null,
+
+    /**
+     * 女儿性别（P1-47 修复新增，v48→v49）。
+     *
+     * 由 D4 生成器根据 NAME_PREF 槎位答案中的性别偏好写入。
+     * 取值："男" / "女" / null（旧数据无此字段，但 identityJson 中可能已有）。
+     * 独立存列便于 FamilyScreen/FamilyListViewModel 直接读取，无需解析 identityJson。
+     */
+    val gender: String? = null,
 )

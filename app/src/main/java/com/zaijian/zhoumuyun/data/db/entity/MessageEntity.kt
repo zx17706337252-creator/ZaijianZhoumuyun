@@ -13,6 +13,11 @@ import androidx.room.PrimaryKey
  * - exportedFileJson：file_export 工具生成的文件元数据（JSON 字符串）。
  *   null = 普通消息，非 null = 该消息携带可下载文件。
  *   格式：{"fileName":"xxx.md","mimeType":"text/markdown","sizeBytes":1234}
+ *
+ * Fix-ThinkingLeak 新增：
+ * - thinkingText：ChatViewModel.stripThinkingTag() 从回复正文剥离出的内心推理/
+ *   工具调用意图原文，纯文本存储。null = 该消息没有思考内容（或用户消息）。
+ *   与 exportedFileJson 不同，思考内容只有一个字段，不需要 JSON 包装。
  */
 @Entity(
     tableName = "messages",
@@ -41,4 +46,9 @@ data class MessageEntity(
      * null = 普通消息，非 null = 该消息携带可下载文件卡片。
      */
     val exportedFileJson: String? = null,
+    /**
+     * Fix-ThinkingLeak：从回复正文剥离出的内心推理/工具调用意图原文。
+     * null = 没有思考内容，非 null = 气泡下方展示可折叠的"想法"卡片。
+     */
+    val thinkingText: String? = null,
 )

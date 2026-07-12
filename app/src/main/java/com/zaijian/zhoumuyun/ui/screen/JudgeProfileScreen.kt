@@ -322,8 +322,8 @@ private fun JudgeDetailContent(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(Radius.sm))
-                            .background(MaterialTheme.colorScheme.error.copy(alpha = 0.08f))
-                            .border(0.5.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.3f), RoundedCornerShape(Radius.sm))
+                            .background(Palette.SemanticDanger.copy(alpha = 0.08f))  // P3-53 修复：colorScheme.error → Palette.SemanticDanger
+                            .border(0.5.dp, Palette.SemanticDanger.copy(alpha = 0.3f), RoundedCornerShape(Radius.sm))  // P3-53 修复
                             .padding(Spacing.sm),
                         horizontalArrangement = Arrangement.spacedBy(Spacing.xs),
                         verticalAlignment = Alignment.CenterVertically,
@@ -331,13 +331,13 @@ private fun JudgeDetailContent(
                         Icon(
                             Icons.Outlined.Warning,
                             contentDescription = null,
-                            tint     = MaterialTheme.colorScheme.error,
+                            tint     = Palette.SemanticDanger,  // P3-53 修复
                             modifier = Modifier.size(14.dp),
                         )
                         Text(
                             text  = "她的评判标准最近出现了分歧，可能需要再校准一下",
                             style = type.caption,
-                            color = MaterialTheme.colorScheme.error,
+                            color = Palette.SemanticDanger,  // P3-53 修复
                         )
                     }
                     Spacer(Modifier.height(Spacing.sm))

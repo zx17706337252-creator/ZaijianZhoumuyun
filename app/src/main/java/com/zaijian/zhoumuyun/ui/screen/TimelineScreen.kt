@@ -7,6 +7,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
@@ -16,7 +17,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle // P1-11-2
 import com.zaijian.zhoumuyun.data.db.entity.EventType
@@ -63,8 +63,9 @@ fun TimelineScreen(
         }
 
         if (uiState.isLoading) {
+            // P3-51 修复：加载态用纯文本改为 CircularProgressIndicator
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("加载中…", color = colors.textSecondary)
+                CircularProgressIndicator(color = colors.accent)
             }
         } else if (uiState.events.isEmpty()) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -75,8 +76,11 @@ fun TimelineScreen(
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(horizontal = Spacing.md, vertical = Spacing.sm),
             ) {
-                val grouped = uiState.events.groupBy { event ->
-                    SimpleDateFormat("yyyy年MM月dd日", Locale.CHINESE).format(Date(event.createdAt))
+                // P3-50 修复：分组计算未 remember，添加 remember 避免每次重组都重新计算
+                val grouped = remember(uiState.events) {
+                    uiState.events.groupBy { event ->
+                        SimpleDateFormat("yyyy年MM月dd日", Locale.CHINESE).format(Date(event.createdAt))
+                    }
                 }
                 grouped.entries.forEach { (date, events) ->
                     item {
@@ -119,7 +123,10 @@ private fun TimelineEventCard(event: WorldEventEntity, colors: com.zaijian.zhoum
         EventType.PRESENCE_CHANGED.name -> "🔵"
         else -> "📌"
     }
-    val timeStr = SimpleDateFormat("HH:mm", Locale.CHINESE).format(Date(event.createdAt))
+    // P3-52 修复：SimpleDateFormat 在 items 内重复创建，提升到 remember
+    val timeStr = remember(event.createdAt) {
+        SimpleDateFormat("HH:mm", Locale.CHINESE).format(Date(event.createdAt))
+    }
 
     Row(
         modifier = Modifier
@@ -151,7 +158,7 @@ private fun TimelineEventCard(event: WorldEventEntity, colors: com.zaijian.zhoum
         ) {
             Column(modifier = Modifier.padding(Spacing.sm)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(eventIcon, fontSize = 14.sp)
+                    Text(eventIcon, style = type.body)  // P3-32 修复：emoji 图标 fontSize 替换为主题排印
                     Spacer(Modifier.width(4.dp))
                     Text(
                         text = eventTypeLabel(event.type),

@@ -107,7 +107,6 @@ import com.zaijian.zhoumuyun.data.db.entity.ProjectEntity
 import com.zaijian.zhoumuyun.data.model.DefaultPresenceStates
 import com.zaijian.zhoumuyun.data.model.StatusType
 import com.zaijian.zhoumuyun.ui.component.BreathingAvatar
-import com.zaijian.zhoumuyun.ui.component.FertileWindowConsentDialog
 import com.zaijian.zhoumuyun.ui.component.MarkdownText
 import com.zaijian.zhoumuyun.ui.theme.AnimDuration
 import com.zaijian.zhoumuyun.ui.theme.AppTheme
@@ -356,12 +355,11 @@ internal fun ChatSettingsSheet(
                         tint               = colors.textDisabled,
                         modifier           = Modifier.size(18.dp),
                     )
+                    // P3-20 修复：移除 DropdownMenu 的 Modifier.background() 双层叠加，
+                    // DropdownMenu 自身已有 Surface 背景，额外 background 导致视觉重叠。
                     DropdownMenu(
                         expanded         = projectDropdown,
                         onDismissRequest = { projectDropdown = false },
-                        modifier         = Modifier.background(
-                            if (colors.isDark) colors.bgCard else colors.bgElevated
-                        ),
                     ) {
                         // "不关联"选项
                         DropdownMenuItem(

@@ -161,6 +161,42 @@ class BriefingRepository(
         worsened.forEach { m ->
             items += BriefingAttentionItem.RelationWorsened(m.fromId, m.toId, m.description)
         }
-        return items
+        return items.sortedWith(attentionItemComparator)
     }
+
+    /**
+     * 「需要关注」排序规则（v2.1 补充，原方案未规定顺序，仅明确了
+     * NeverContacted 语义上比 NoContact 更紧急这一条相对关系）。
+     *
+     * 一级：按类型分组，优先级从高到低：
+     *   1. Pregnancy        —— 健康相关，风险最高，永远置顶
+     *   2. RelationWorsened —— 已经发生的关系恶化事件，属于"已出问题"
+     *   3. Tension          —— 关系紧张但尚未恶化，属于"有风险但未爆发"
+     *   4. NeverContacted   —— 从未联系，文档明确比 NoContact 更紧急
+     *   5. NoContact        —— 久未联系，组内再按天数降序
+     *
+     * 二级：同类型内部再排序，避免退化回原始遍历顺序：
+     *   - Tension 按 tension 数值降序（越紧张越靠前）
+     *   - NoContact 按 days 降序（越久没联系越靠前）
+     *   - 其余类型没有可比的强度字段，二级键恒定，保留原始相对顺序
+     *     （sortedWith 是稳定排序，不会打乱同优先级内的原始顺序）
+     */
+    private val attentionItemComparator: Comparator<BriefingAttentionItem> =
+        compareBy<BriefingAttentionItem> { item ->
+            when (item) {
+                is BriefingAttentionItem.Pregnancy        -> 0
+                is BriefingAttentionItem.RelationWorsened -> 1
+                is BriefingAttentionItem.Tension          -> 2
+                is BriefingAttentionItem.NeverContacted   -> 3
+                is BriefingAttentionItem.NoContact        -> 4
+            }
+        }.thenByDescending { item ->
+            when (item) {
+                is BriefingAttentionItem.Tension          -> item.tension.toLong()
+                is BriefingAttentionItem.NoContact        -> item.days
+                is BriefingAttentionItem.Pregnancy        -> 0L
+                is BriefingAttentionItem.RelationWorsened -> 0L
+                is BriefingAttentionItem.NeverContacted   -> 0L
+            }
+        }
 }

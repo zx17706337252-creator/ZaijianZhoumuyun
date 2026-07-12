@@ -33,6 +33,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.AccountCircle
@@ -107,7 +108,6 @@ import com.zaijian.zhoumuyun.data.db.entity.ProjectEntity
 import com.zaijian.zhoumuyun.data.model.DefaultPresenceStates
 import com.zaijian.zhoumuyun.data.model.StatusType
 import com.zaijian.zhoumuyun.ui.component.BreathingAvatar
-import com.zaijian.zhoumuyun.ui.component.FertileWindowConsentDialog
 import com.zaijian.zhoumuyun.ui.component.MarkdownText
 import com.zaijian.zhoumuyun.ui.theme.AnimDuration
 import com.zaijian.zhoumuyun.ui.theme.AppTheme
@@ -177,6 +177,9 @@ internal fun ChatInputBar(
             onValueChange = onValueChange,
             textStyle     = type.body.copy(color = colors.textPrimary),
             cursorBrush   = SolidColor(accentColor),
+            // P2-4 修复（重做）：限制最大行数 + 内部可滚动
+            maxLines      = 6,
+            scrollState   = rememberScrollState(),
             modifier      = Modifier
                 .weight(1f)
                 .clip(RoundedCornerShape(28.dp))
@@ -186,31 +189,34 @@ internal fun ChatInputBar(
                     else
                         colors.bgCard,
                 )
-                .padding(horizontal = Spacing.md, vertical = 10.dp),
+                // P2-25 修复：vertical padding 从硬编码 10.dp 改为主题 Spacing
+                .padding(horizontal = Spacing.md, vertical = Spacing.sm),
             decorationBox = { innerTextField ->
-                if (value.isEmpty()) {
-                    Text(
-                        text  = "说点什么…",
-                        style = type.body,
-                        color = colors.textDisabled,
-                    )
+                Box {
+                    if (value.isEmpty()) {
+                        Text(
+                            text  = "说点什么…",
+                            style = type.body,
+                            color = colors.textDisabled,
+                        )
+                    }
+                    innerTextField()
                 }
-                innerTextField()
             },
         )
 
-        // 导入文件按钮（视觉32dp，触摸区扩展至48dp）
+        // P2-5 修复：导入文件按钮——将 clickable 从内层 32dp Box 上移到外层 48dp Box
         Box(
             modifier = Modifier
                 .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
-                .wrapContentSize(Alignment.Center),
+                .wrapContentSize(Alignment.Center)
+                .clip(CircleShape)
+                .clickable { onImport() },
         ) {
             Box(
                 modifier = Modifier
                     .size(32.dp)
-                    .clip(CircleShape)
-                    .background(colors.textDisabled.copy(alpha = 0.1f))
-                    .clickable { onImport() },
+                    .background(colors.textDisabled.copy(alpha = 0.1f)),
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(
@@ -224,23 +230,27 @@ internal fun ChatInputBar(
 
         Spacer(Modifier.width(Spacing.sm))
 
-        // 发送按钮（视觉32dp，触摸区扩展至48dp）
+        // P2-5 修复：发送按钮——将 clickable 从内层 32dp Box 上移到外层 48dp Box
         Box(
             modifier = Modifier
                 .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
-                .wrapContentSize(Alignment.Center),
+                .wrapContentSize(Alignment.Center)
+                .clip(CircleShape)
+                .clickable(enabled = canSend) { onSend() },
         ) {
             Box(
                 modifier = Modifier
                     .size(32.dp)
-                    .clip(CircleShape)
                     .background(
                         if (canSend)
                             Brush.linearGradient(
+                                // P2-41 修复（重做）：真正传入 start/end 坐标实现水平渐变
                                 colors = listOf(
                                     Palette.Gold.copy(alpha = 0.90f),
                                     Palette.Gold.copy(alpha = 0.65f),
                                 ),
+                                start = Offset(0f, Float.POSITIVE_INFINITY),
+                                end   = Offset(Float.POSITIVE_INFINITY, Float.POSITIVE_INFINITY),
                             )
                         else
                             Brush.linearGradient(
@@ -249,8 +259,7 @@ internal fun ChatInputBar(
                                     colors.textDisabled.copy(alpha = 0.3f),
                                 ),
                             )
-                    )
-                    .clickable(enabled = canSend) { onSend() },
+                    ),
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(

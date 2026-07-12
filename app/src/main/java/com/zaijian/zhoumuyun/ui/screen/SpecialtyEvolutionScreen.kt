@@ -177,7 +177,7 @@ fun SpecialtyEvolutionScreen(
                 TextButton(onClick = {
                     viewModel.deleteSpecialty(profile.id, profile.domain)
                     profileToDelete = null
-                }) { Text("删除", color = MaterialTheme.colorScheme.error) }
+                }) { Text("删除", color = Palette.SemanticDanger) }  // P3-53 修复：colorScheme.error → Palette.SemanticDanger
             },
             dismissButton = {
                 TextButton(onClick = { profileToDelete = null }) { Text("取消") }
@@ -308,14 +308,14 @@ private fun SpecialtyCard(
                     Icon(
                         Icons.Outlined.ErrorOutline,
                         contentDescription = null,
-                        tint = MaterialTheme.colorScheme.error,
+                        tint = Palette.SemanticDanger,  // P3-53 修复
                         modifier = Modifier.size(14.dp),
                     )
                     Spacer(Modifier.width(4.dp))
                     Text(
                         text = "有未处理的风格分歧",
                         style = type.caption,
-                        color = MaterialTheme.colorScheme.error,
+                        color = Palette.SemanticDanger,  // P3-53 修复
                     )
                 }
             }
@@ -606,7 +606,7 @@ private fun PracticeRecordRow(
 
     val tagColor = when (record.comparisonResult) {
         "EMERGING" -> colors.accent
-        "CONFLICTING" -> MaterialTheme.colorScheme.error
+        "CONFLICTING" -> Palette.SemanticDanger  // P3-53 修复
         else -> colors.textDisabled
     }
     val tagLabel = when (record.comparisonResult) {

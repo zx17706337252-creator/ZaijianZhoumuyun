@@ -77,7 +77,7 @@ fun GlobalScheduleScreen(
                     scope.launch { viewModel.deleteJob(job.id) }
                     jobToDelete = null
                 }) {
-                    Text("删除", color = MaterialTheme.colorScheme.error)
+                    Text("删除", color = Palette.SemanticDanger)  // P3-53 修复：colorScheme.error → Palette.SemanticDanger
                 }
             },
             dismissButton = {
@@ -177,7 +177,8 @@ private fun ScheduleTopBar(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         // 日期导航左按钮
-        IconButton(onClick = onPrev, modifier = Modifier.size(36.dp)) {
+        // P3-33 修复：触摸目标 < 48dp，移除 IconButton 的 size 限制，让 minimumInteractiveComponentSize 生效
+        IconButton(onClick = onPrev) {
             Icon(
                 imageVector        = Icons.AutoMirrored.Outlined.ArrowBack,
                 contentDescription = "前一天",
@@ -223,7 +224,8 @@ private fun ScheduleTopBar(
         }
 
         // 日期导航右按钮
-        IconButton(onClick = onNext, modifier = Modifier.size(36.dp)) {
+        // P3-33 修复：触摸目标 < 48dp，移除 IconButton 的 size 限制，让 minimumInteractiveComponentSize 生效
+        IconButton(onClick = onNext) {
             Icon(
                 imageVector        = Icons.Outlined.ArrowForward,
                 contentDescription = "后一天",

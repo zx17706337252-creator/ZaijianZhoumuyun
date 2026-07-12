@@ -648,6 +648,10 @@ fun AppNavigation(
                     onNavigateToProjectDetail = { projectId ->
                         navController.navigateSingle(AppRoute.ProjectDetail.createRoute(projectId))
                     },
+                    // P3-44 修复：从孕育记录点击跳转到子代角色详情页
+                    onNavigateToCharacterDetail = { charId ->
+                        navController.navigateSingle(AppRoute.CharacterDetail.createRoute(charId))
+                    },
                 )
             }
 

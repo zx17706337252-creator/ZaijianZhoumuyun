@@ -47,7 +47,6 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.runtime.LaunchedEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -65,6 +64,7 @@ import com.zaijian.zhoumuyun.data.model.PregnancyState
 import com.zaijian.zhoumuyun.data.model.isDaughterMother
 import com.zaijian.zhoumuyun.ui.theme.GoldDivider
 import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
 import androidx.compose.material3.TabRowDefaults
 import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.material3.Text
@@ -117,17 +117,11 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 import androidx.compose.material3.FilterChip
 
-internal data class ToolItem(val icon: ImageVector, val label: String)
-
-internal val toolItems = listOf(
-    ToolItem(com.zaijian.zhoumuyun.ui.design.AppIcons.ToolSearch,      "搜索"),
-    ToolItem(com.zaijian.zhoumuyun.ui.design.AppIcons.ToolDescription, "文件"),
-    ToolItem(com.zaijian.zhoumuyun.ui.design.AppIcons.ToolCode,        "代码"),
-    ToolItem(com.zaijian.zhoumuyun.ui.design.AppIcons.ToolTable,       "表格"),
-    ToolItem(com.zaijian.zhoumuyun.ui.design.AppIcons.ToolEmail,       "邮件"),
-)
-
-internal val skillTags = listOf("写作", "逻辑推理", "情绪陪伴", "信息整理", "头脑风暴")
+// P1-11 修复：skillTags 原先硬编码为文件级常量，所有角色显示相同内容。
+// 当前 CharacterConfig 尚无角色级能力配置字段，暂时保留默认值但改为函数形式，
+// 接受 characterId 参数，为后续数据模型补充后接入动态数据预留接口。
+// TODO: 待 CharacterConfig 增加 skillTags 字段后，从此处改为从角色配置读取。
+internal fun getSkillTags(characterId: Int): List<String> = listOf("写作", "逻辑推理", "情绪陪伴", "信息整理", "头脑风暴")
 
 @Composable
 internal fun AbilitySubTabRow(
@@ -137,13 +131,16 @@ internal fun AbilitySubTabRow(
 ) {
     val colors = ZaijianTheme.colors
     val type   = ZaijianTheme.typography
-    val tabs   = listOf("能力", "工具", "任务")
+    // P1-12 修复：移除无意义的"工具"子Tab，只保留"能力"和"任务"
+    val tabs   = listOf("能力", "任务")
 
-    ScrollableTabRow(
+    // P3-45 修复：只有"能力""任务"两个 Tab，用 TabRow 即可，
+    // ScrollableTabRow 是为 5+ 个 Tab 设计的可滚动版本，两 Tab 场景
+    // 用 ScrollableTabRow 是多余开销，改为 TabRow 让 Tab 均分宽度。
+    TabRow(
         selectedTabIndex  = selectedIndex,
         containerColor    = Color.Transparent,
         contentColor      = accentColor,
-        edgePadding       = Spacing.screenHorizontal,
         indicator         = { tabPositions ->
             if (selectedIndex < tabPositions.size) {
                 TabRowDefaults.SecondaryIndicator(
@@ -226,66 +223,6 @@ internal fun AbilityPanel(
                     )
                 }
             }
-        }
-    }
-}
-
-@Composable
-internal fun ToolsPanel(
-    tools: List<ToolItem>,
-    accentLight: Color,
-    accentColor: Color,
-) {
-    val colors = ZaijianTheme.colors
-    val type   = ZaijianTheme.typography
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = Spacing.screenHorizontal),
-    ) {
-        Text(
-            text  = "可用工具",
-            style = type.cardTitle,
-            color = colors.textPrimary,
-        )
-        Spacer(Modifier.height(Spacing.sm))
-
-        // 固定 4 列布局
-        val rows = tools.chunked(4)
-        rows.forEach { rowTools ->
-            Row(
-                modifier              = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(Spacing.md),
-            ) {
-                rowTools.forEach { tool ->
-                    Column(
-                        modifier            = Modifier.weight(1f),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                    ) {
-                        com.zaijian.zhoumuyun.ui.design.IconBadge(
-                            icon               = tool.icon,
-                            contentDescription = tool.label,
-                            tint               = accentColor,
-                            background         = accentLight,
-                            size               = 22.dp,
-                            badgeSize          = 48.dp,
-                            modifier           = Modifier.clickable { /* 工具能力展示，对话中按需触发 */ },
-                        )
-                        Spacer(Modifier.height(4.dp))
-                        Text(
-                            text  = tool.label,
-                            style = type.label,
-                            color = colors.textSecondary,
-                        )
-                    }
-                }
-                // 补空列保持对齐
-                repeat(4 - rowTools.size) {
-                    Spacer(Modifier.weight(1f))
-                }
-            }
-            Spacer(Modifier.height(Spacing.md))
         }
     }
 }

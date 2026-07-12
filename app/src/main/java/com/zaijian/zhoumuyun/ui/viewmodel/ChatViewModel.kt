@@ -16,18 +16,15 @@ import com.zaijian.zhoumuyun.data.agent.MemoryQueryTool
 import com.zaijian.zhoumuyun.data.agent.MemoryWriteTool
 import com.zaijian.zhoumuyun.data.agent.PlanSaveTool
 import com.zaijian.zhoumuyun.data.agent.RuleDistillTool
+import com.zaijian.zhoumuyun.data.agent.SelfReflectTool
+import com.zaijian.zhoumuyun.data.agent.RuleReviewTool
 import com.zaijian.zhoumuyun.data.agent.StreamEvent
 import com.zaijian.zhoumuyun.data.agent.TaskCancelTool
 import com.zaijian.zhoumuyun.data.agent.TaskCompleteTool
 import com.zaijian.zhoumuyun.data.agent.TaskStartTool
 import com.zaijian.zhoumuyun.data.agent.TaskUpdateTool
 import com.zaijian.zhoumuyun.data.agent.ToolCallInterceptor
-import com.zaijian.zhoumuyun.data.agent.NarrativeMemoryClearTool
-import com.zaijian.zhoumuyun.data.agent.NarrativeMemoryUpdateTool
-import com.zaijian.zhoumuyun.data.agent.SoulClearTool
-import com.zaijian.zhoumuyun.data.agent.SoulUpdateTool
-import com.zaijian.zhoumuyun.data.agent.UserImpressionClearTool
-import com.zaijian.zhoumuyun.data.agent.UserImpressionUpdateTool
+import com.zaijian.zhoumuyun.data.agent.registerSoulMemoryUserTools
 import com.zaijian.zhoumuyun.data.agent.WorkflowStartTool
 import com.zaijian.zhoumuyun.data.agent.ScheduleCreateTool
 import com.zaijian.zhoumuyun.data.agent.ScheduleListTool
@@ -35,6 +32,7 @@ import com.zaijian.zhoumuyun.data.agent.HeartbeatSetTool
 import com.zaijian.zhoumuyun.data.agent.ReminderTool
 import com.zaijian.zhoumuyun.data.agent.HeartbeatUpdateTool
 import com.zaijian.zhoumuyun.data.agent.HeartbeatDeleteTool
+import com.zaijian.zhoumuyun.data.agent.CalendarSyncHelper
 import com.zaijian.zhoumuyun.data.repository.ScheduleRepository
 import com.zaijian.zhoumuyun.data.datastore.GithubConfigDataStore
 import com.zaijian.zhoumuyun.data.datastore.D3AskAttemptDataStore
@@ -54,10 +52,12 @@ import com.zaijian.zhoumuyun.data.manager.DaughterCharacterGenerator
 import com.zaijian.zhoumuyun.data.manager.DaughterIdAllocator
 import com.zaijian.zhoumuyun.data.model.AgentRelationStage
 import com.zaijian.zhoumuyun.data.model.ChatMode
+import com.zaijian.zhoumuyun.data.model.CharacterStateLayer
 import com.zaijian.zhoumuyun.data.model.DaughterDataException
 import com.zaijian.zhoumuyun.data.model.DefaultCharacters
 import com.zaijian.zhoumuyun.data.model.isDaughterMother
 import com.zaijian.zhoumuyun.data.model.toDaughterCharacterData
+import com.zaijian.zhoumuyun.data.model.toCharacterStateLayer
 import com.zaijian.zhoumuyun.data.model.toCharacterIdentityEntity
 import com.zaijian.zhoumuyun.data.prompt.D3TriggerContent
 import com.zaijian.zhoumuyun.data.prompt.PromptOrchestrator
@@ -73,7 +73,9 @@ import com.zaijian.zhoumuyun.data.repository.SlotRecordResult
 import com.zaijian.zhoumuyun.data.repository.MenstrualCycleRepository
 import com.zaijian.zhoumuyun.data.manager.FertileWindowConsentJudge
 import com.zaijian.zhoumuyun.data.manager.PregnancyTriggerManager
+import com.zaijian.zhoumuyun.data.manager.UserConsentIntentJudge
 import com.zaijian.zhoumuyun.data.model.pickCharacterDialogText
+import com.zaijian.zhoumuyun.data.model.slotKey
 import com.zaijian.zhoumuyun.data.repository.ProjectRepository
 import com.zaijian.zhoumuyun.data.repository.TaskRepository
 import com.zaijian.zhoumuyun.data.repository.WorkflowRepository
@@ -83,6 +85,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
@@ -113,6 +116,8 @@ data class ChatMessage(
     val content: String,
     val createdAt: Long,
     val exportedFileJson: String? = null,
+    // Fix-ThinkingLeak：从回复正文剥离出的内心推理/工具调用意图原文，null = 无想法内容。
+    val thinkingText: String? = null,
 ) {
     val exportedFile: ExportedFile? get() {
         if (exportedFileJson == null) return null
@@ -133,7 +138,7 @@ data class ChatUiState(
     val messages: ImmutableList<ChatMessage> = persistentListOf(),
     val character: com.zaijian.zhoumuyun.data.model.CharacterConfig? = null,
     val isTyping: Boolean = false,
-    val streamingContent: String? = null,
+    // 代码清洁：streamingContent 已从 uiState 中移除，改用独立 StateFlow 暴露
     val streamingHint: String? = null,
     val error: String? = null,
     val isApiKeyMissing: Boolean = false,
@@ -149,6 +154,10 @@ data class ChatUiState(
     // 1.1 受孕窗口同意对话框
     val fertileWindowConsentDialogText: String? = null,   // 非空时显示对话框
     val fertileWindowCharacterName: String = "",
+    // 问题14修复：弹窗展示时捕获的角色ID快照（capturedCharId），而非实时的
+    // currentCharacterId——弹窗展示期间用户若切换角色，onFertileWindowDialogResult()
+    // 必须仍然作用在弹窗真正对应的角色上，不能被切换后的 currentCharacterId 顶替。
+    val fertileWindowCharacterId: Int = -1,
     // D4 女儿生成失败提示（非空时 UI 弹 Snackbar）
     val pendingDaughterGenerationError: String? = null,
     // 主动消息前台实时呈现（非空时 UI 弹 Snackbar，含角色名 + 消息内容）
@@ -210,10 +219,20 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val container = AppContainer.instance
     private val eventRepo get() = container.eventRepo
     private val memoryRepo get() = container.memoryRepo
+    // 问题24修复：SelfReflectTool/RuleReviewTool 构造函数需要 MemoryDao 做
+    // 只读查询（getByDomain/getAllRules/getLockedRules），与 memoryRepo 是
+    // 同一张表的两种访问方式（Repository 写入路径 vs DAO 直接只读查询），
+    // 沿用 DataVisTools.registerDataVisTools() 里同一对参数的取值方式，
+    // 直接从 db 取，不经 Repository 包一层（这两个工具内部本就只做只读查询，
+    // 不涉及 FTS 同步写入，不需要 memoryRepo.save() 那层保证）。
+    private val memoryDao get() = db.memoryDao()
     private val memoryEngine get() = container.memoryEngine
     private val relationshipEngine get() = container.relationshipEngine
     private val pregnancyRepo get() = container.pregnancyRepo
     private val characterStateRepo get() = container.characterStateRepo
+    // 问题4修复：PregnancyPressureDataStore 现已在 AppContainer 中实例化，
+    // 供下方 sendMessage() 读取动态 pressureScale（此前所有调用点硬编码 1.0f）。
+    private val pregnancyPressureDataStore get() = container.pregnancyPressureDataStore
     private val taskRepo = TaskRepository(db, db.taskDao(), db.worldEventDao())
     private val projectRepo = ProjectRepository(db.projectDao(), db.projectKnowledgeDao())
     // 报告第6条收口：daughterRepo 原先独立 new，与 AppContainer.daughterCharacterRepo
@@ -244,6 +263,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         stateRepository       = characterStateRepo,
         relationshipEngine   = relationshipEngine,
         aiJudge              = FertileWindowConsentJudge(providerFn = { ProviderManager.instance.activeProvider }),
+        // 问题17（第二阶段）：1-6 号关键词兜底链路的 AI 判定优先层。
+        // 与 aiJudge 同样用懒加载 providerFn，确保用户切换 provider/Key 后
+        // 始终拿到最新实例；LLM 调用失败/超时时 PregnancyTriggerManager 内部
+        // 自动降级到关键词兜底，这里不需要也不应该做任何额外的 try/catch。
+        consentJudge         = UserConsentIntentJudge(providerFn = { ProviderManager.instance.activeProvider }),
     )
     private val workflowRepo = WorkflowRepository(db, db.workflowJobDao(), db.workflowStepResultDao())
 
@@ -274,6 +298,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         scheduledJobDao = db.scheduledJobDao(),
         jobResultDao    = db.jobResultDao(),
     )
+    // 审查报告问题8修复：ZaijianApp.onCreate() 静态注册 ScheduleCreateTool 时已正确
+    // 传入 CalendarSyncHelper 和 context，但 ChatViewModel 动态覆盖注册（仅为了绑定
+    // 当前会话 characterId，见下方 Fix-#1 注释）时漏传了这两个参数，覆盖后
+    // calendarSync/context 又变回构造函数默认值 null，导致日历同步和 WorkManager
+    // 精确调度两条链路对聊天里创建的定时任务静默失效。此处与 ZaijianApp 同款方式
+    // 各自持有一个 CalendarSyncHelper 实例（该类只依赖 context，无跨实例共享状态，
+    // 两份实例不会产生数据不一致——SharedPreferences 映射表是进程级共享存储，
+    // 不依赖 CalendarSyncHelper 对象本身的内存状态）。
+    private val calendarSync = CalendarSyncHelper(getApplication())
     private val githubConfigStore = GithubConfigDataStore(getApplication())
     private val chatBgStore       = ChatBackgroundDataStore(getApplication())
     // ── D3 孕期共设 · 槎位问答状态机依赖 ──────────────────────────
@@ -291,7 +324,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val d3AskAttemptStore = D3AskAttemptDataStore(getApplication())
 
     // ── D5 女儿关系阶段引擎 ─────────────────────────────────────
-    private val agentRelationEngine = AgentRelationEngine(db.agentRelationDao())
+    // 问题19修复：新增传入 daughterRepo（即 container.daughterCharacterRepo），
+    // 供 buildPromptSnapshot() 内部查询女儿真实 persona/speechStyle/coreWound，
+    // 注入到阶段 Prompt 块里，不再是"谁来都一样"的纯模板文本。
+    private val agentRelationEngine = AgentRelationEngine(db.agentRelationDao(), daughterRepo)
     private val daughterIdAllocator  = DaughterIdAllocator(db.daughterIdAllocatorDao())
 
     // ── D4 女儿人格生成器（槎位全锁后触发）──────────────────────
@@ -350,6 +386,27 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val lastFertileJudgeAtMap = mutableMapOf<Int, Long>()
     private val FERTILE_JUDGE_COOLDOWN_MS = 5 * 60 * 1000L  // 5 分钟冷却
 
+    /**
+     * 问题1修复：1-6 号角色关键词兜底触发链路（PregnancyTriggerManager.checkTrigger() +
+     * evaluateConsent()）的跨轮"待定触发"标记。
+     *
+     * D2 判定链结构：checkTrigger() 扫描 AI 刚说完的回复文本是否命中触发词
+     * （AI 回复写库后调用）；evaluateConsent() 在用户下一条消息发送时执行完整
+     * 判定链（同意/拒绝/模糊）。两者跨越两轮消息，需要一个轻量的跨轮标记
+     * 把"上一轮 AI 回复命中了触发词"这个事实带到下一轮用户发消息时。
+     *
+     * 用内存 Map 而非落库：这条链路本身是"关键词兜底"（轻权重、可丢失重来的
+     * 辅助判定），与 lastFertileJudgeAtMap 同一定位——ViewModel 销毁重建（如
+     * 切后台被回收）时丢失该标记，最坏情况只是错过一次触发窗口，不影响
+     * pregnancyState/characterState 等核心数据正确性，不需要为此新增 Room 字段。
+     *
+     * key = characterId（恒为 1..6，checkTrigger() 内部已过滤女儿角色），
+     * value = true 表示上一轮 AI 回复命中触发词，本轮用户消息应送入
+     * evaluateConsent() 判定；判定完成后（无论结果如何）立即清除，
+     * 避免同一次触发被连续多轮重复判定。
+     */
+    private val pendingKeywordTriggerMap = mutableMapOf<Int, Boolean>()
+
     fun init(characterId: Int) {
         // P1-10-4 修复：切换角色时必须同时取消上一次的 replyJob，
         // 否则旧 replyJob 完成后会把旧角色的回复写入新角色的 UI 状态，
@@ -360,6 +417,20 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         currentCharacterId = characterId
         loadMessages(characterId)
         registerCharacterTools()
+
+        // 批次C·问题5 修复：分娩到期结算——"进入聊天时"触发路径。
+        // 与 ZaijianApp.onCreate() 的 12h 周期兜底轮询互补：用户可能在两次轮询
+        // 之间打开聊天页，此时若恰好某角色已满 30 天，应立即结算而不是让用户
+        // 干等到下一个轮询点。独立协程、独立 try-catch，与角色加载逻辑解耦，
+        // 结算失败不影响本次进入聊天页的其余流程。
+        viewModelScope.launch(Dispatchers.IO) {
+            com.zaijian.zhoumuyun.data.agent.PregnancySettlementScheduler.runImmediateCheck(
+                pregnancyRepo = pregnancyRepo,
+                memoryRepo    = memoryRepo,
+                daughterRepo  = daughterRepo,
+            )
+        }
+
         viewModelScope.launch(Dispatchers.IO) {
             // 防御性保护：daughterRepo.getCharacterConfig() 在女儿数据损坏时会抛
             // DaughterDataException（见 DaughterCharacterEntity.toDaughterCharacterData()
@@ -588,6 +659,22 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 )
                 loadMessages(currentCharacterId)
 
+                // 问题17（第二阶段）附带修复：detectUserConsent() 引入 AI 语义判定后，
+                // evaluateConsent()（下方 pregnancyTriggerPromptPatch 计算过程中调用）
+                // 最坏情况下会有数秒延迟（UserConsentIntentJudge 的 8s 超时上限），
+                // 而原来的 isTyping=true 要等到 prompt 组装完、即将开始流式回复时
+                // （原 1012 行附近）才会置位——这中间这段"用户已发送但看不到任何
+                // 反馈"的空窗期，在关键词匹配年代几乎不可感知（同步操作，微秒级），
+                // 现在可能被 AI 判定的网络延迟明显放大，用户会看到发送后界面
+                // 短暂"卡住"。这里提前到用户消息落库、UI 刷新之后立即置位，
+                // 让"正在输入"指示与发送按钮禁用尽早生效——顺带修复了一个
+                // 已存在但此前不易察觉的小问题：之前这段窗口期 canSend 仍为
+                // true（ChatInputBar.kt 用 !isTyping 门控发送按钮），理论上用户
+                // 可以在 prompt 组装完成前重复点击发送。
+                // P1-3 修复：streamingContent 不再写入 _uiState（双写导致整屏重组），
+                // 只保留独立 _streamingContent StateFlow 供 StreamingMessageItem 单独收集
+                _uiState.update { it.copy(isTyping = true) }
+
                 val character = _uiState.value.character ?: return@launch
                 // Bug2-fix: 过滤非法 role，只保留 user/assistant 两种合法值
                 // - role = "system" 的内部控制消息直接跳过（notifyFileImported / Phase28 AGENT_MSG / ROUNDTABLE_TRIGGER）
@@ -644,11 +731,109 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 // ── 补全怀孕状态（注意：PregnancyDao 没有 getLatest，
                 //    正确入口是 PregnancyRepository.getPregnancy，与 RoundtableViewModel
                 //    现有写法保持一致；未怀孕时返回默认 PregnancyState，非 null）──
-                val pregnancyState = pregnancyRepo.getPregnancy(currentCharacterId)
+                var pregnancyState = pregnancyRepo.getPregnancy(currentCharacterId)
+
+                // ══════════════════════════════════════════════════════════════
+                // 问题1修复：1-6 号角色关键词兜底触发链路 —— ② evaluateConsent()
+                //
+                // 消费上一轮 checkTrigger()（后置分析协程块内）留下的 pending 标记：
+                // 若上一轮 AI 回复命中了触发词，本轮用户消息（text）就是"回应"，
+                // 送入 evaluateConsent() 走完整判定链（突破检测 → 同意/拒绝/模糊）。
+                //
+                // 范围限定：显式用 currentCharacterId in 1..6 判断是否需要走这条链路，
+                // 不依赖 evaluateConsent() 内部的 isDaughterMother() 检查来兜底——
+                // isDaughterMother(characterId) = characterId in setOf(1..6) ||
+                // characterId >= 1000，对 1-6 和女儿（>=1000）一视同仁地放行，
+                // 只排除 7-9 号等真正无关角色。也就是说 evaluateConsent() 内部
+                // 那道检查本身并不会把女儿角色挡在外面；本调用点的 pending 标记
+                // 只可能在 checkTrigger()（同样已用 currentCharacterId in 1..6 限定，
+                // 见下方后置分析协程块）里被设置为 true，双重限定叠加才保证了
+                // 女儿（id>=1000）的角色永远不会走到这条 1-6 号专属链路，而不是内部
+                // isDaughterMother() 检查单独起作用。
+                //
+                // 判定完成后立即清除 pending 标记（无论结果如何），避免同一次
+                // 触发被后续多轮重复判定——evaluateConsent() 是"一次性问答"语义，
+                // 不是持续轮询状态。
+                var pregnancyTriggerPromptPatch = ""
+                if (currentCharacterId in 1..6 && pendingKeywordTriggerMap[currentCharacterId] == true) {
+                    pendingKeywordTriggerMap.remove(currentCharacterId)
+                    try {
+                        val triggerResult = pregnancyTriggerManager.evaluateConsent(
+                            characterId  = currentCharacterId,
+                            userText     = text,
+                            isPregnant   = pregnancyState.isPregnant,
+                        )
+                        when (triggerResult) {
+                            is com.zaijian.zhoumuyun.data.model.PregnancyTriggerResult.Triggered -> {
+                                // 怀孕已在 PregnancyTriggerManager 内部落库，这里重新读一次
+                                // 保证本轮 buildSystemPrompt 用的是怀孕后的最新状态，
+                                // 不会因为用的是本函数顶部读的旧快照而漏掉"刚怀孕"这一状态变化。
+                                pregnancyState = pregnancyRepo.getPregnancy(currentCharacterId)
+                            }
+                            is com.zaijian.zhoumuyun.data.model.PregnancyTriggerResult.FertileButFailed -> {
+                                pregnancyTriggerPromptPatch = triggerResult.immediatePromptPatch
+                            }
+                            is com.zaijian.zhoumuyun.data.model.PregnancyTriggerResult.BreakthroughA -> {
+                                pregnancyTriggerPromptPatch = triggerResult.promptPatch
+                            }
+                            is com.zaijian.zhoumuyun.data.model.PregnancyTriggerResult.BreakthroughB -> {
+                                pregnancyTriggerPromptPatch = triggerResult.promptPatch
+                            }
+                            is com.zaijian.zhoumuyun.data.model.PregnancyTriggerResult.Rejected,
+                            is com.zaijian.zhoumuyun.data.model.PregnancyTriggerResult.AmbiguousRejected,
+                            is com.zaijian.zhoumuyun.data.model.PregnancyTriggerResult.WrongPhase,
+                            is com.zaijian.zhoumuyun.data.model.PregnancyTriggerResult.NotTriggered,
+                            is com.zaijian.zhoumuyun.data.model.PregnancyTriggerResult.Miscarried -> {
+                                // Rejected/AmbiguousRejected/WrongPhase：副作用已在 manager 内部落库
+                                // （desireStrength/emotionalSuppression 数值更新），无需即时 Prompt 注入，
+                                // 下一轮 State Layer 渲染时数值会自然体现在角色状态描述里。
+                                // NotTriggered：isPregnant 为 true 时的兜底分支，理论上不应发生
+                                // （pending 标记只在未怀孕时由 checkTrigger 设置），安全忽略。
+                                // Miscarried：evaluateConsent() 内部判定链不会产出此分支
+                                // （只有 triggerMiscarriage() 会），穷尽 when 分支需要，安全忽略。
+                            }
+                        }
+                    } catch (e: Exception) {
+                        ZLog.w("ChatViewModel", "evaluateConsent 判定链异常（不影响主流程）", e)
+                    }
+                }
 
                 // ── 补全 characterState（深层状态：desireStrength/emotionalSuppression等，
                 //    之前 PromptOrchestrator 参数存在但函数体内完全未使用，现已实装）──
-                val characterState = characterStateRepo.getState(currentCharacterId)
+                var characterState = characterStateRepo.getState(currentCharacterId)
+
+                // ── 复核修复 #7/#13/#20：女儿角色单独查询专属状态数据 ──────────
+                // CharacterStateRepository.getState() 的持久化 fallback 只查
+                // DefaultCharacters（ID 1-9），对女儿角色（ID>=1000）永远查不到，
+                // 会退化为全空白 CharacterStateLayer()。这里单独查一次女儿的
+                // DaughterCharacterData：
+                //   1. 若 character_state 表尚无该女儿的持久化记录（characterState
+                //      仍是空白默认值），用 DaughterStateLayer 的真实数值维度覆盖，
+                //      而不是让 LLM 看到全 0/默认值的假状态；
+                //   2. 无论持久化记录是否存在，daughterStateLayer/daughterCustomEnums
+                //      都会传给 PromptOrchestrator，用于渲染面具/情绪/需求/恐惧
+                //      四个种类维度的专属描述文本（customEnums.description），
+                //      不再使用 CharacterStateLayer 编译期枚举的中性占位值。
+                // 查询失败或数据损坏（DaughterDataException）时静默跳过，不影响
+                // 本轮对话——女儿人格数据的完整性由 loadCharacter() 处的校验把关，
+                // 这里只是 Prompt 渲染的锦上添花，不应该因为这一步失败而中断对话。
+                var daughterStateLayer: com.zaijian.zhoumuyun.data.model.DaughterStateLayer? = null
+                var daughterCustomEnums: com.zaijian.zhoumuyun.data.model.DaughterCustomEnums? = null
+                if (currentCharacterId >= 1000) {
+                    try {
+                        val daughterData = daughterRepo.getCharacterData(currentCharacterId)
+                        if (daughterData != null) {
+                            daughterStateLayer = daughterData.stateLayer
+                            daughterCustomEnums = daughterData.customEnums
+                            if (characterState == CharacterStateLayer()) {
+                                characterState = daughterData.stateLayer.toCharacterStateLayer()
+                            }
+                        }
+                    } catch (e: Exception) {
+                        ZLog.w("ChatViewModel", "女儿状态数据查询失败，State Layer 渲染将回退到通用描述", e)
+                    }
+                }
+
                 // ── presence fallback：缓存为空时主动计算一次，结果写入缓存供后续轮次复用 ──
                 if (presenceSnap == null) {
                     presenceSnap = presenceEngine?.refreshPresence(currentCharacterId, characterState)
@@ -656,12 +841,78 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
                 // ── 补全 miscarriageAftermathPatch（D2.6 流产后5天内跨周期悲伤余波）──
                 // ChatViewModel 是一对一私聊场景，isOneOnOne 恒为 true。
+                //
+                // 问题4修复：pressureScale 此前硬编码 1.0f，现读取
+                // PregnancyPressureDataStore.pregnancyPressureScaleFlow 的当前值
+                // （用户可调节的孕期压力系数，默认 1.0f，与硬编码时代行为完全一致，
+                // 用户未主动调整过设置时零行为变化）。用 .first() 读一次而非持续
+                // collect——这是"发消息"这一次性事件里的单次快照读取，不是需要
+                // 响应式更新的 UI 状态，与 BriefingViewModel 里 lastOpenAtFlow.first()
+                // 的用法同一模式。safeData() 已在 DataStore 层兜底 IOException，
+                // 这里不需要额外 try-catch。
+                //
+                // 问题29修复：miscarriageDaysAgo() 内部由 shouldInjectMiscarriageContext()
+                // 调用，此前用其默认参数 System.currentTimeMillis()，与"整轮统一时间快照"
+                // 的既有约定（本函数其余各处落库/判断均使用同一个 now）不一致。这里
+                // 统一取一次 now，显式透传给 shouldInjectMiscarriageContext()/
+                // shouldInjectFailureContext()，避免同一轮内因为函数调用先后跨越了
+                // 毫秒边界而产生难以复现的细微不一致（例如流产"第5天窗口"边界判断）。
+                val pressureScale = pregnancyPressureDataStore.pregnancyPressureScaleFlow.first()
+                val nowSnapshot   = System.currentTimeMillis()
+
                 val miscarriageAftermathPatch = pregnancyTriggerManager.shouldInjectMiscarriageContext(
                     pregnancyState = pregnancyState,
                     userText       = text,
                     isOneOnOne     = true,
-                    pressureScale  = 1.0f,
+                    pressureScale  = pressureScale,
+                    now            = nowSnapshot,
                 ) ?: ""
+
+                // ── 补全 failureContextPatch（D2.5 跨周期失败背景情绪，问题3修复）──
+                // 与上面的流产余波同构：四重门控（含随机概率+48h冷却）全部通过才
+                // 返回非空文案，否则静默返回 ""，零行为可见变化。门控通过后必须
+                // 调用 markFailureContextInjected() 落库更新 lastFailureInjectedAt，
+                // 否则下一轮 48h 冷却检查会一直读到旧时间戳，实质上失去冷却效果——
+                // 这一步不能漏，是本条修复"真正生效"而非"看起来接上了"的关键。
+                val failureContextPatch = pregnancyTriggerManager.shouldInjectFailureContext(
+                    pregnancyState = pregnancyState,
+                    userText       = text,
+                    isOneOnOne     = true,
+                    pressureScale  = pressureScale,
+                    now            = nowSnapshot,
+                ) ?: ""
+                if (failureContextPatch.isNotEmpty()) {
+                    try {
+                        pregnancyTriggerManager.markFailureContextInjected(currentCharacterId, nowSnapshot)
+                    } catch (e: Exception) {
+                        // 落库失败不应该丢弃这一轮已经生成好的 Prompt 文案（用户体验
+                        // 优先于"下一轮冷却计时是否精确"），但要记录日志——如果这个
+                        // 异常反复出现，说明 lastFailureInjectedAt 的持久化链路本身
+                        // 有问题，需要单独排查，不属于本次修复范围。
+                        ZLog.w("ChatViewModel", "markFailureContextInjected 失败（不影响本轮文案）", e)
+                    }
+                }
+
+                // ── 补全 routinePressurePatch（常规压力 Prompt，问题3/4修复）──
+                // 无门控、每轮都渲染：基于当前 characterState 的 desireStrength/
+                // emotionalSuppression 数值分档给出背景文案（PromptOrchestrator.kt
+                // 注释原本设想的"D2 正常同意分支"专属场景实际过窄——只要角色当前
+                // 有渴望/压抑数值积累，无论是通过 1-6 号关键词链路还是女儿 AI 判定
+                // 链路产生的，都应该体现在日常 Prompt 里，不应该只在恰好命中判定
+                // 分支的那一轮才出现，否则绝大多数轮次这个数值状态对 LLM 完全不可见。
+                // 与 failureContextPatch 的区别：那是"事件驱动、有冷却"的一次性情绪
+                // 涟漪，这是"持续存在、无冷却"的背景压力描述，两者不互斥、可以同轮共存。
+                val routinePressurePatch = if (
+                    characterState.motivationalState.desireStrength > 0 ||
+                    characterState.hiddenState.emotionalSuppression > 0
+                ) {
+                    pregnancyTriggerManager.buildRoutinePromptPatch(
+                        desireStrength        = characterState.motivationalState.desireStrength,
+                        emotionalSuppression  = characterState.hiddenState.emotionalSuppression,
+                    )
+                } else {
+                    ""
+                }
 
                 // ══════════════════════════════════════════════════════════════
                 // 补全 d3QuestionPatch（D3 孕期共设 · 槎位问答状态机）
@@ -671,6 +922,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 //      （这一轮如果刚答完，也不在同一轮立刻追问下一题，留一轮呼吸空间，
                 //       下一轮 pending 已清空后才会问下一题）
                 //   ③ 全部 6 个槎位已锁定 → D3 阶段结束（D4 生成器消费锁定答案，超出本次范围）
+                //
+                // 注意（问题1修复引入）：pregnancyState 是 var，若本轮用户消息刚好命中
+                // 上方 evaluateConsent() 判定链且结果为 Triggered（1-6 号关键词兜底触发
+                // 怀孕成功），这里读到的已经是刷新后 isPregnant=true 的最新值——即"这条
+                // 消息让她怀孕"和"同一轮就开始问 D3 第一题"是同一轮发生的，属于预期内的
+                // 时序改进，不是脏读；1-6 号角色此前从未有过 D3 问答（因为从未真正触发
+                // 过怀孕，见问题1原始描述），这里是该链路接入后自然获得的新行为。
                 // ══════════════════════════════════════════════════════════════
                 val isD3Eligible = isDaughterMother(currentCharacterId) &&
                     pregnancyState.isPregnant &&
@@ -721,7 +979,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                                                 slotIndex         = slot.slotIndex,
                                             )
                                             if (ans != null) {
-                                                "slot_${slot.questionType.name}_${slot.slotIndex}" to ans
+                                                slotKey(slot.questionType, slot.slotIndex) to ans
                                             } else null
                                         }.toMap()
                                     viewModelScope.launch(Dispatchers.IO) {
@@ -732,7 +990,16 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                                             )
                                         } catch (e: Exception) {
                                             ZLog.e("ChatViewModel", "D4 generateForMother 失败", e)
-                                            _uiState.update { it.copy(pendingDaughterGenerationError = "女儿生成失败：${e.message?.take(60) ?: "未知错误"}") }
+                                            // 问题31修复：原 take(60) 过短，LLM 返回的 JSON 解析失败
+                                            // 诊断信息（如"Expected STRING but was BEGIN_OBJECT at
+                                            // path $.xxx"这类）经常超过60字，关键部分会被截断。
+                                            // 放宽到 200 字——Snackbar 能容纳的展示长度足够，且不是
+                                            // 无限制拼接（避免异常消息里偶发的超长堆栈片段撑爆提示条）。
+                                            // 完整异常已在上一行 ZLog.e() 里带 e 参数记录，这里只是
+                                            // 放宽 UI 摘要的信息量，不依赖这行日志做诊断依据。
+                                            // 同一模式出现 3 处（另两处见 D5→D4 第三代生成、手动重试
+                                            // 入口），已一并同步修改，保持三处行为一致。
+                                            _uiState.update { it.copy(pendingDaughterGenerationError = "女儿生成失败：${e.message?.take(200) ?: "未知错误"}") }
                                         }
                                     }
                                 }
@@ -854,7 +1121,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     ruleLayerBlock        = ruleLayerBlock,
                     pregnancyState        = pregnancyState,
                     characterState        = characterState,
+                    daughterStateLayer    = daughterStateLayer,
+                    daughterCustomEnums   = daughterCustomEnums,
                     miscarriageAftermathPatch = miscarriageAftermathPatch,
+                    pregnancyTriggerPromptPatch = pregnancyTriggerPromptPatch,
+                    failureContextPatch   = failureContextPatch,
+                    routinePressurePatch  = routinePressurePatch,
                     d3QuestionPatch       = d3QuestionPatch,
                     toolDescriptionBlock  = toolDesc,
                     chatMode              = chatMode,
@@ -871,7 +1143,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     stream = true,
                 )
 
-                _uiState.update { it.copy(isTyping = true, streamingContent = "") }
+                // P1-3 修复：streamingContent 不再写入 _uiState
+                _uiState.update { it.copy(isTyping = true) }
                 _streamingContent.value = ""
                 val fullReply = StringBuilder()
 
@@ -896,13 +1169,23 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                                 // 优化策略：绝大多数 token 正文中不含 '[' 字符，直接输出。
                                 // 只有末尾出现 '[' 时（可能是 mood 标签前缀），才触发完整的剥离逻辑，
                                 // 将正则调用频率从"每个 token"降低到"接近末尾的少数 token"。
+                                //
+                                // Fix-ThinkingLeak（zaijian）：新增 [thinking:...] 标签剥离，接入同一条
+                                // display-only 管道。与 mood 不同，thinking 标签可能出现在正文任意位置
+                                // （说完一段台词又插入一段思考，再继续说台词），不是只在末尾出现一次，
+                                // 所以 stripTagsForDisplay 内部会先对全文做一次"剥离所有已闭合 thinking 标签"
+                                // 的 replace，这一步在 thinking 标签出现后的每个 token 上都会重新扫描全文，
+                                // 相当于放弃了 H1 修复追求的"绝大多数 token 零正则"最优路径——但仅限于
+                                // 单条消息内确实包含 thinking 标签的情况，消息长度通常在几千字符量级，
+                                // 实测不构成可感知卡顿，暂不做更复杂的增量解析。
                                 val fullText = fullReply.toString()
                                 val displayText = if ('[' in fullText) {
-                                    stripPartialMoodTagForDisplay(fullText)
+                                    stripTagsForDisplay(fullText)
                                 } else {
                                     fullText
                                 }
-                                _uiState.update { it.copy(streamingContent = displayText) }
+                                // P1-3 修复：streamingContent 不再写入 _uiState（此处的双写是高频路径，
+                                // 每个 token 触发一次 _uiState 更新 → ChatScreen 整屏重组）
                                 _streamingContent.value = displayText
                             }
                             is StreamEvent.ToolStarted -> {
@@ -929,7 +1212,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 // 在 cleanReply 产生的唯一入口剥离 [mood:xxx] 标签，
                 // 这样后面所有消费者（DB 落库、HeuristicRelTracker、D3 意图识别、D5 关系引擎）
                 // 拿到的都是已经干净的文本，不需要逐个消费点单独打补丁。
-                val (cleanReply, parsedMood) = stripMoodTag(fullReply.toString().trimEnd())
+                //
+                // Fix-ThinkingLeak（zaijian）：在同一入口先剥离 [thinking:...]，
+                // 复用 stripMoodTag 已验证过的"结构化标记 + 客户端剥离"路径——
+                // 剥离顺序是先 thinking 后 mood，因为 Output Layer 里 mood 标签固定是
+                // 全文最后一行，thinking 标签可能夹在台词正文中间，先处理内层夹杂的标签，
+                // 再处理末尾的 mood 标签，两者互不干扰（mood 正则只锚定字符串末尾）。
+                val (afterThinking, parsedThinking) = stripThinkingTag(fullReply.toString().trimEnd())
+                val (cleanReply, parsedMood) = stripMoodTag(afterThinking)
                 if (parsedMood != null) {
                     presenceEngine?.updateMoodFromReply(currentCharacterId, parsedMood)
                     _uiState.update { it.copy(currentMood = parsedMood) }
@@ -941,6 +1231,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         role = "assistant",
                         content = cleanReply,
                         createdAt = System.currentTimeMillis(),
+                        thinkingText = parsedThinking,
                     )
                     messageDao.insert(assistantMsg)
                     // H2 修复（race消除）：insert是挂起函数，到这里落库已完成。
@@ -994,6 +1285,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 val capturedUnreported = unreportedJob
                 val capturedReply    = cleanReply
                 val capturedText     = text
+                // 问题1修复：checkTrigger() 门控用——本轮（含本轮 evaluateConsent()
+                // 可能引起的刷新）结束时的怀孕状态快照，而非函数顶部读取的旧值。
+                val capturedPregnancyState = pregnancyState
                 if (capturedReply.isNotBlank()) {
                     viewModelScope.launch(Dispatchers.IO) {
                         // ── Phase 24/26 修复：评分卡触发链路（之前 pendingEvaluationSessionId 从未被赋值）──
@@ -1037,6 +1331,43 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             ZLog.w("ChatViewModel", "评分链路异常（不影响主流程）", e)
                         }
 
+                        // ══════════════════════════════════════════════════════════════
+                        // 问题1修复：1-6 号角色关键词兜底触发链路 —— ① checkTrigger()
+                        //
+                        // AI 回复（capturedReply）写库完成后，扫描本轮回复文本是否命中
+                        // CharacterTriggerKeywords 关键词表。命中则把 pending 标记写入
+                        // pendingKeywordTriggerMap，供下一轮用户发消息时的 evaluateConsent()
+                        // 调用点（sendMessage 顶部，pregnancyState 读取之后）消费。
+                        //
+                        // 范围限定：显式用 capturedCharId in 1..6 判断，不依赖
+                        // checkTrigger() 内部的 isDaughterMother() 检查来挡住女儿角色——
+                        // isDaughterMother() 对 1-6 和女儿（>=1000）都返回 true，真正让
+                        // 女儿角色查不到关键词的是 CharacterTriggerKeywords[characterId]
+                        // 这个 map 本身只有 1-6 号的 key（女儿角色查表落空，?: 兜底返回
+                        // triggered=false）。这是"关键词表恰好未收录女儿"造成的结果，
+                        // 不是 isDaughterMother() 主动排除女儿的结果——如果以后有人往
+                        // CharacterTriggerKeywords 里补充了 1000+ 的 key，checkTrigger()
+                        // 内部不会拦住它。本调用点的 capturedCharId in 1..6 限定，才是
+                        // 这条链路唯一可靠生效的边界，必须保留，不能因为"内部好像也判断了"
+                        // 就省略。
+                        //
+                        // 仅在角色未怀孕时才有意义（已怀孕不需要再判定是否触发怀孕）。
+                        // capturedPregnancyState 捕获的是本轮 pregnancyState（var）在
+                        // evaluateConsent 调用点之后的值——若本轮用户消息恰好通过
+                        // evaluateConsent() 触发了怀孕（Triggered 分支），这里能看到
+                        // 刷新后的 isPregnant=true，正确跳过本次 checkTrigger 标记；
+                        // 不是"函数顶部读取的原始快照"。
+                        if (capturedCharId in 1..6 && !capturedPregnancyState.isPregnant) {
+                            try {
+                                val trigger = pregnancyTriggerManager.checkTrigger(capturedCharId, capturedReply)
+                                if (trigger.triggered) {
+                                    pendingKeywordTriggerMap[capturedCharId] = true
+                                }
+                            } catch (e: Exception) {
+                                ZLog.w("ChatViewModel", "checkTrigger 扫描异常（不影响主流程）", e)
+                            }
+                        }
+
                         // ── 1.1 受孕窗口同意对话框触发链路 ────────────────────────────
                         // 三重门控顺序：门1+门2（shouldEvaluateFertileWindowConsent）→ 门3（AI语义判定）
                         val shouldEval = pregnancyTriggerManager.shouldEvaluateFertileWindowConsent(capturedCharId)
@@ -1064,6 +1395,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                                             it.copy(
                                                 fertileWindowConsentDialogText = dialogText,
                                                 fertileWindowCharacterName     = character.name,
+                                                // 问题14修复：与 dialogText/characterName 同批写入，
+                                                // 三者共享同一个 capturedCharId 快照，保证一致性。
+                                                fertileWindowCharacterId       = capturedCharId,
                                             )
                                         }
                                     }
@@ -1104,7 +1438,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                                                                 slotIndex         = slot.slotIndex,
                                                             )
                                                             if (ans != null) {
-                                                                "slot_${slot.questionType.name}_${slot.slotIndex}" to ans
+                                                                slotKey(slot.questionType, slot.slotIndex) to ans
                                                             } else null
                                                         }.toMap()
                                                     viewModelScope.launch(Dispatchers.IO) {
@@ -1115,7 +1449,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                                                             )
                                                         } catch (e: Exception) {
                                                             ZLog.e("ChatViewModel", "D5→D4 第三代 generateForMother 失败", e)
-                                                            _uiState.update { it.copy(pendingDaughterGenerationError = "女儿生成失败：${e.message?.take(60) ?: "未知错误"}") }
+                                                            _uiState.update { it.copy(pendingDaughterGenerationError = "女儿生成失败：${e.message?.take(200) ?: "未知错误"}") }
                                                         }
                                                     }
                                                 } else {
@@ -1159,7 +1493,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 // B-1 修复：finally 保证任何路径（正常完成、网络异常、CancellationException）
                 // 都能重置 isTyping，避免发送按钮永久禁用。
                 // P1-10-1 修复：后置 LLM 分析已移至独立 launch，finally 在流式结束后立即执行。
-                _uiState.update { it.copy(isTyping = false, streamingContent = null) }
+                // P1-3 修复：streamingContent 不再写入 _uiState
+                _uiState.update { it.copy(isTyping = false) }
                 _streamingContent.value = null
             }
         }
@@ -1168,19 +1503,56 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     fun clearError() { _uiState.update { it.copy(error = null) } }
 
     /** 用户在受孕窗口同意对话框点击"同意"或"拒绝"后调用。
-     *  先关闭对话框 UI，再异步执行底层逻辑（写库、触发怀孕或拒绝效果）。 */
+     *  先关闭对话框 UI，再异步执行底层逻辑（写库、触发怀孕或拒绝效果）。
+     *
+     *  问题14修复：使用弹窗展示时捕获的 [ChatUiState.fertileWindowCharacterId]
+     *  快照，而不是本函数被调用这一刻的 [currentCharacterId]——如果用户在
+     *  弹窗展示期间切换了角色再点击按钮，currentCharacterId 已经指向新角色，
+     *  但弹窗内容（dialogText/characterName）仍是旧角色的，必须保证三者
+     *  作用在同一个角色上，不能用切换后的新角色 ID 错误地调用
+     *  proceedAfterDialogConsent()。
+     *
+     *  问题2修复：拿到结果后调用 markFertileWindowConsentAsked(true) 落库
+     *  消费"已问过"标记（PregnancyTriggerManager.proceedAfterDialogConsent()
+     *  文档明确要求调用方做这一步）——无论用户同意还是拒绝，本排卵期窗口
+     *  都已经"问过"了，避免同一排卵期重复弹窗。此前只依赖 ViewModel 内存级
+     *  lastFertileJudgeAtMap 冷却，进程重启后失效；现在落库后
+     *  shouldEvaluateFertileWindowConsent() 里的 fertileWindowConsentAsked
+     *  检查才会真正生效。 */
     fun onFertileWindowDialogResult(accepted: Boolean) {
+        val targetCharId = _uiState.value.fertileWindowCharacterId
         _uiState.update {
-            it.copy(fertileWindowConsentDialogText = null, fertileWindowCharacterName = "")
+            it.copy(
+                fertileWindowConsentDialogText = null,
+                fertileWindowCharacterName     = "",
+                fertileWindowCharacterId       = -1,
+            )
+        }
+        if (targetCharId < 0) {
+            // 理论上不应发生（弹窗展示时必然同批写入了合法 ID），
+            // 防御性兜底：没有有效目标角色时不做任何底层调用。
+            ZLog.w("ChatViewModel", "onFertileWindowDialogResult: fertileWindowCharacterId 无效，跳过")
+            return
         }
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 pregnancyTriggerManager.proceedAfterDialogConsent(
-                    characterId  = currentCharacterId,
+                    characterId  = targetCharId,
                     accepted     = accepted,
                 )
             } catch (e: Exception) {
                 ZLog.e("ChatViewModel", "proceedAfterDialogConsent 失败", e)
+            } finally {
+                // 落库消费标记与 proceedAfterDialogConsent() 的成败无关：
+                // 无论底层判定成功、失败还是抛异常，弹窗都已经展示给用户看过、
+                // 用户也已经点击过按钮了，本排卵期窗口客观上已经"问过"，
+                // 都不应该在同一排卵期再次弹窗。放在 finally 里保证这一点
+                // 不会因为上面 try 块异常而被跳过。
+                try {
+                    pregnancyRepo.markFertileWindowConsentAsked(targetCharId, true)
+                } catch (e: Exception) {
+                    ZLog.e("ChatViewModel", "markFertileWindowConsentAsked 失败", e)
+                }
             }
         }
     }
@@ -1207,7 +1579,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             questionType      = slot.questionType,
                             slotIndex         = slot.slotIndex,
                         )
-                        if (ans != null) "slot_${slot.questionType.name}_${slot.slotIndex}" to ans
+                        if (ans != null) slotKey(slot.questionType, slot.slotIndex) to ans
                         else null
                     }.toMap()
                 daughterGenerator.generateForMother(
@@ -1216,7 +1588,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 )
             } catch (e: Exception) {
                 ZLog.e("ChatViewModel", "重试 D4 generateForMother 失败", e)
-                _uiState.update { it.copy(pendingDaughterGenerationError = "女儿生成失败：${e.message?.take(60) ?: "未知错误"}") }
+                _uiState.update { it.copy(pendingDaughterGenerationError = "女儿生成失败：${e.message?.take(200) ?: "未知错误"}") }
             }
         }
     }
@@ -1319,37 +1691,48 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 workflowRepository = workflowRepo,
                 characterId = { currentCharacterId },
             ),
+            // 问题12修复：CI/CD（提交代码→编译→下载APK）是项目级操作，与"当前
+            // 正在跟哪个角色聊天"无关；原先绑定 currentCharacterId 会导致任务完成
+            // 通知（见下方 workflowRecapPatch 的 findUnreported(currentCharacterId)
+            // 查询）只能在开启任务时那个角色的聊天窗口里被看到——如果用户开完任务
+            // 后切换到别的角色聊天，通知永远不会出现。改为固定绑定 -1（项目里已有
+            // 的"非绑定特定角色"约定，ZaijianApp.kt 静态注册大量工具用同一约定），
+            // 这样无论用户在跟哪个角色聊天，都能看到 CI/CD 任务的完成播报。
             CiCdStartTool(
                 context = getApplication(),
                 githubConfigStore = githubConfigStore,
                 db = db,
                 workflowJobDao = db.workflowJobDao(),
                 workflowStepResultDao = db.workflowStepResultDao(),
-                characterId = { currentCharacterId },
+                characterId = { -1 },
             ),
             // ── 2.3 工作台任务跟踪修复：补上"开始/更新/完成/取消"任务的入口 ──
             TaskStartTool(taskRepo = taskRepo, characterId = { currentCharacterId }),
             TaskUpdateTool(taskRepo = taskRepo, characterId = { currentCharacterId }),
             TaskCompleteTool(taskRepo = taskRepo, characterId = { currentCharacterId }),
             TaskCancelTool(taskRepo = taskRepo, characterId = { currentCharacterId }),
-            // ── Fix-ToolWire: 覆盖 ZaijianApp 里 characterId={-1} 的静态注册 ──
-            // 这6个工具是人设/叙事记忆/用户印象的读写，必须绑定当前会话角色ID，
-            // 否则 updateSoulNote / updateNarrativeMemory / updateUserImpression
-            // 全部打到 characterId=-1 的行，永远改不了实际角色的数据。
-            SoulUpdateTool(identityDao = identityDao, characterId = { currentCharacterId }),
-            SoulClearTool(identityDao = identityDao, characterId = { currentCharacterId }),
-            NarrativeMemoryUpdateTool(identityDao = identityDao, characterId = { currentCharacterId }),
-            NarrativeMemoryClearTool(identityDao = identityDao, characterId = { currentCharacterId }),
-            UserImpressionUpdateTool(identityDao = identityDao, characterId = { currentCharacterId }),
-            UserImpressionClearTool(identityDao = identityDao, characterId = { currentCharacterId }),
+            // 问题39修复：Soul/Memory/User 三模块 6 个工具的实例化代码此前在本文件
+            // 和 ZaijianApp.kt 各写一份（仅 characterId 闭包不同），改用
+            // AgentToolRegistry.registerSoulMemoryUserTools() 统一封装，本处传
+            // currentCharacterId 覆盖 ZaijianApp 里的 -1 静态占位——覆盖时机、
+            // 覆盖原因（updateSoulNote 等否则永远打到 characterId=-1 的行）均不变，
+            // 只是不再各自手写 6 行几乎相同的构造代码。
+            //
+            // 注意：AgentToolRegistry.registerAll(...) 这个 vararg 调用只接受
+            // AgentTool 实例，registerSoulMemoryUserTools() 是扩展函数不是
+            // AgentTool，因此在 registerAll(...) 调用结束后单独调用（见下方）。
             // ── Fix-#1: 覆盖 ZaijianApp 里 characterIdProvider={-1} 的静态注册 ──
             // schedule_create / schedule_list / heartbeat_set / heartbeat_update /
             // heartbeat_delete 这5个工具在 ZaijianApp 里以 -1 注册，导致任务写入错误
             // 角色行，observeAndNotifyResults() 找不到 characterId=-1 的角色，
             // 推送永久跳过。此处用当前会话的 currentCharacterId 动态覆盖。
+            // 问题8修复：补上 calendarSync/context，否则覆盖注册后这两个参数
+            // 回落到构造函数默认值 null，日历同步与 WorkManager 精确调度失效。
             ScheduleCreateTool(
                 scheduleRepository  = scheduleRepo,
                 characterIdProvider = { currentCharacterId },
+                calendarSync = calendarSync,
+                context = getApplication(),
             ),
             ScheduleListTool(
                 scheduleRepository  = scheduleRepo,
@@ -1374,6 +1757,34 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 context             = getApplication(),
                 characterIdProvider = { currentCharacterId },
             ),
+            // 问题24修复：SelfReflectTool（self_reflect）/RuleReviewTool（rule_review）
+            // 在 DataVisTools.registerDataVisTools() 里以 characterIdProvider={-1} 静态
+            // 注册，此前和 schedule_create 等一样从未在 ChatViewModel 里被覆盖注册。
+            // execute() 内部虽然优先读 params["__character_id"]（LLM 工作流标签注入时
+            // 能拿到正确角色），但私聊场景下 LLM 输出的 <tool:self_reflect .../> 标签
+            // 通常不带 __character_id 属性（不是所有触发路径都走工作流注入），此时
+            // fallback 到 characterIdProvider() 就会拿到 -1——反思记忆写入 characterId=-1
+            // 这一不存在的行，查询该角色 WORK 域记忆时永远查不到；rule_review 同理会审视
+            // 到 charId=-1 下的规则（大概率为空），而不是当前正在聊天的角色的规则。
+            // 与 schedule_create/heartbeat_* 等既有 Fix-#1 覆盖注册同一模式，用
+            // currentCharacterId 动态覆盖。
+            SelfReflectTool(
+                providerFn          = providerFn,
+                memoryDao           = memoryDao,
+                memoryRepo          = memoryRepo,
+                characterIdProvider = { currentCharacterId },
+            ),
+            RuleReviewTool(
+                providerFn          = providerFn,
+                memoryDao           = memoryDao,
+                characterIdProvider = { currentCharacterId },
+            ),
+        )
+        // 问题39修复：见上方 registerAll(...) 内注释——统一封装的 Soul/Memory/User
+        // 6 个工具注册，在此处传 currentCharacterId 覆盖 ZaijianApp 里的 -1 占位。
+        AgentToolRegistry.registerSoulMemoryUserTools(
+            identityDao = identityDao,
+            characterId = { currentCharacterId },
         )
         providerFn()?.let { p ->
             AgentToolRegistry.register(
@@ -1399,12 +1810,33 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         return text.substring(0, tailMatch.range.first).trimEnd()
     }
 
+    /**
+     * display 专用总入口（Fix-ThinkingLeak）：thinking 标签剥离 + mood 标签剥离（含半截）一起跑。
+     *
+     * 与 mood 的关键差异——mood 固定出现在全文最后一行，只需锚定字符串末尾；
+     * thinking 标签可能出现在正文任意位置（角色说一段台词、插一段思考、再说一段台词），
+     * 所以：
+     *   1) 先对全文做一次 THINKING_TAG_REGEX.replace，剥掉所有"已经完整闭合"的 thinking 标签；
+     *   2) 再跑原有的 stripPartialMoodTagForDisplay，处理末尾的 mood 标签（完整或半截）；
+     *   3) 最后检查处理完前两步后的文本末尾，是否残留一个"尚未闭合"的半截 thinking 前缀
+     *      （如 "...台词\n[think"）——由于模型在标签闭合前不会产出标签之后的新内容，
+     *      未闭合的 thinking 标签在任意时刻的流式文本里必然只会出现在末尾，
+     *      用与 PARTIAL_MOOD_TAG_REGEX 相同的"锚定末尾"策略即可覆盖，不需要更复杂的状态机。
+     */
+    private fun stripTagsForDisplay(fullText: String): String {
+        val afterThinking = THINKING_TAG_REGEX.replace(fullText, "")
+        val afterMood = stripPartialMoodTagForDisplay(afterThinking)
+        val tailMatch = PARTIAL_THINKING_TAG_REGEX.find(afterMood) ?: return afterMood
+        return afterMood.substring(0, tailMatch.range.first).trimEnd()
+    }
+
     private fun MessageEntity.toChatMessage() = ChatMessage(
         id = id,
         role = role,
         content = content,
         createdAt = createdAt,
         exportedFileJson = exportedFileJson,
+        thinkingText = thinkingText,
     )
 
     /**
@@ -1430,6 +1862,34 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         return cleaned to parseMoodType(moodWord)
     }
 
+    /**
+     * 剥离正文中所有 `[thinking:...]` 内心推理标签，返回（净文本, 合并后的思考内容或null）。
+     *
+     * 背景（Fix-ThinkingLeak）：Output Layer（PromptOrchestrator.WORK_OUTPUT_CONSTRAINTS /
+     * COMPANION_OUTPUT_CONSTRAINTS / NARRATIVE_OUTPUT_CONSTRAINTS）新增规则，要求 LLM 把
+     * 内心推理、收到的指令原文、工具调用意图包进 `[thinking:...]` 标签，不能直接写进标签外的
+     * 正文——这套"结构化标记 + 客户端剥离"完全复用 stripMoodTag 已验证过的技术路径。
+     *
+     * 与 mood 标签的两点差异：
+     *   1) mood 固定只出现一次、且在全文最后一行；thinking 可能出现在正文任意位置，
+     *      也可能出现不止一次（模型分几段记录思考），所以用 findAll + replace 而非单次 find。
+     *   2) mood 命中即返回单个 MoodType；thinking 命中多段时按出现顺序拼接，中间用空行分隔，
+     *      交给想法卡片作为一段完整内容展示。
+     *
+     * @return Pair(去除所有 thinking 标签后的正文, 按出现顺序拼接的思考内容；未命中则为 null)
+     */
+    private fun stripThinkingTag(reply: String): Pair<String, String?> {
+        val matches = THINKING_TAG_REGEX.findAll(reply).toList()
+        if (matches.isEmpty()) return reply to null
+        val thoughts = matches.joinToString(separator = "\n\n") { it.groupValues[1].trim() }.trim()
+        // 标签原地整段抠掉后，原来标签独占一行的位置会留下多余空行，
+        // 压缩连续 3 行及以上空行为 1 个空行，避免正文出现大片空白。
+        val cleaned = THINKING_TAG_REGEX.replace(reply, "")
+            .replace(Regex("""\n{3,}"""), "\n\n")
+            .trim()
+        return cleaned to thoughts.ifBlank { null }
+    }
+
     companion object {
         /**
          * 单次请求按字符预算保留的历史消息（字符总量上限）。
@@ -1445,6 +1905,22 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         // display 专用：末尾出现 "[mood" 任意未闭合前缀时也要隐藏，前面允许换行/空格。
         // 例如 "[", "[m", "[mo", "[moo", "[mood", "[mood:", "[mood:平" 等streaming中间态。
         private val PARTIAL_MOOD_TAG_REGEX = Regex("""\s*\[m(o(o(d(\s*[:：]\s*[^\[\]]*)?)?)?)?$""")
+
+        // Fix-ThinkingLeak：匹配 [thinking:...] 或 [thinking：...]（中英文冒号都兼容），
+        // DOT_MATCHES_ALL 允许标签内部跨行（内心推理可能是多行文本）。
+        // 与 MOOD_TAG_REGEX 一样限定内部不含方括号，避免贪婪匹配跨越多个标签、误吞中间的
+        // 正文——已知局限：如果模型的思考内容本身包含方括号（较少见），会在此处截断，
+        // 可接受，不为这个边缘情况引入更复杂的括号计数解析。
+        private val THINKING_TAG_REGEX = Regex(
+            """\[thinking[:：]\s*([^\[\]]*?)\s*]""",
+            RegexOption.DOT_MATCHES_ALL,
+        )
+
+        // display 专用：末尾出现 "[thinking" 任意未闭合前缀时也要隐藏，前面允许换行/空格，
+        // 用法与 PARTIAL_MOOD_TAG_REGEX 同一思路——见 stripTagsForDisplay 顶部注释。
+        private val PARTIAL_THINKING_TAG_REGEX = Regex(
+            """\s*\[t(h(i(n(k(i(n(g(\s*[:：]\s*[^\[\]]*)?)?)?)?)?)?)?)?$"""
+        )
 
         /**
          * Fix⑥：COMPANION_OUTPUT_CONSTRAINTS / NARRATIVE_OUTPUT_CONSTRAINTS 里

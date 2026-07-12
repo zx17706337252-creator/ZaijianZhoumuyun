@@ -21,7 +21,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.outlined.CheckBox
 import androidx.compose.material.icons.outlined.CheckBoxOutlineBlank
@@ -34,6 +34,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -85,7 +86,17 @@ fun ProjectDetailScreen(
     viewModel: ProjectViewModel = viewModel(),
 ) {
     val detail by viewModel.detailState.collectAsStateWithLifecycle()
+    // P3-32 修复：硬编码 fontSize 替换为 ZaijianTheme.typography
     val colors = ZaijianTheme.colors
+    val type   = ZaijianTheme.typography
+
+    // 审查报告问题10修复：DefaultCharacters 只覆盖 ID 1-9，已注册的女儿角色
+    // （ID>=1000）此前无法出现在"成员选择器""成员名字/头像反查"任何一处。
+    // allSelectableCharacters 是 DefaultCharacters 与已注册女儿角色的合并列表，
+    // 本文件所有原先 `DefaultCharacters.find { it.id == charId }` /
+    // `DefaultCharacters.filter { ... }` 均改用这份合并列表。
+    val daughterCharacters by viewModel.daughterCharacters.collectAsStateWithLifecycle()
+    val allSelectableCharacters = remember(daughterCharacters) { DefaultCharacters + daughterCharacters }
 
     LaunchedEffect(projectId) { viewModel.openProject(projectId) }
 
@@ -108,7 +119,7 @@ fun ProjectDetailScreen(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(colors.background),
+                .background(colors.bgBase), // P3-17 修复：统一使用 bgBase 替代 background
             contentAlignment = Alignment.Center,
         ) {
             CircularProgressIndicator(color = colors.primary)
@@ -120,7 +131,7 @@ fun ProjectDetailScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .background(colors.background),
+                .background(colors.bgBase), // P3-17 修复：统一使用 bgBase 替代 background
         ) {
             Row(
                 modifier = Modifier
@@ -130,14 +141,14 @@ fun ProjectDetailScreen(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 IconButton(onClick = onBack) {
-                    Icon(Icons.Default.Close, contentDescription = "返回", tint = colors.onBackground)
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回", tint = colors.onBackground)
                 }
             }
             Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                 Text(
                     text = detail.error ?: "项目不存在或已被删除",
                     color = colors.onBackground.copy(alpha = 0.5f),
-                    fontSize = 14.sp,
+                    style = type.body,
                 )
             }
         }
@@ -147,7 +158,7 @@ fun ProjectDetailScreen(
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
-            .background(colors.background),
+            .background(colors.bgBase), // P3-17 修复：统一使用 bgBase 替代 background
         contentPadding = PaddingValues(bottom = 80.dp),
     ) {
         // ── 顶栏 ───────────────────────────────────────────
@@ -160,12 +171,13 @@ fun ProjectDetailScreen(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 IconButton(onClick = onBack) {
-                    Icon(Icons.Default.Close, contentDescription = "返回", tint = colors.onBackground)
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回", tint = colors.onBackground)
                 }
                 Text(
                     text = detail.project?.title ?: "项目详情",
                     color = colors.onBackground,
-                    fontSize = 18.sp,
+                    // P3-32 修复：移除硬编码 fontSize 覆写
+                    style = type.titleBold,
                     fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.weight(1f).padding(start = 8.dp),
                 )
@@ -179,7 +191,7 @@ fun ProjectDetailScreen(
                 Text(
                     text = desc,
                     color = colors.onBackground.copy(alpha = 0.6f),
-                    fontSize = 14.sp,
+                    style = type.body,
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = Spacing.screenHorizontal)
@@ -218,13 +230,13 @@ fun ProjectDetailScreen(
                     Text(
                         text     = "完成进度",
                         color    = colors.onBackground.copy(alpha = 0.6f),
-                        fontSize = 13.sp,
+                        style    = type.caption,
                         fontWeight = FontWeight.Medium,
                     )
                     Text(
                         text     = "$completedMs / $totalMs",
                         color    = colors.primary,
-                        fontSize = 14.sp,
+                        style    = type.body,
                         fontWeight = FontWeight.SemiBold,
                     )
                 }
@@ -258,6 +270,7 @@ fun ProjectDetailScreen(
             TodayGrowthSection(
                 byCharacter  = detail.todayGrowthByCharacter,
                 members      = detail.members,
+                allCharacters = allSelectableCharacters,
                 onTaskToggle = { taskId -> viewModel.toggleGrowthTask(taskId) },
             )
         }
@@ -268,6 +281,7 @@ fun ProjectDetailScreen(
                 GrowthHistorySection(
                     summaries = detail.recentGrowthSummary,
                     members   = detail.members,
+                    allCharacters = allSelectableCharacters,
                 )
             }
         }
@@ -286,7 +300,7 @@ fun ProjectDetailScreen(
                 Text(
                     text = "还没有里程碑",
                     color = colors.onBackground.copy(alpha = 0.35f),
-                    fontSize = 13.sp,
+                    style = type.caption,
                     modifier = Modifier.padding(
                         horizontal = Spacing.screenHorizontal,
                         vertical = Spacing.sm,
@@ -315,7 +329,8 @@ fun ProjectDetailScreen(
                 Text(
                     text = "项目知识",
                     color = colors.onBackground.copy(alpha = 0.45f),
-                    fontSize = 12.sp,
+                    // P3-32 修复：移除硬编码 fontSize
+                    style = type.caption,
                     fontWeight = FontWeight.Medium,
                     modifier = Modifier.weight(1f),
                 )
@@ -346,22 +361,22 @@ fun ProjectDetailScreen(
                             tint = colors.primary,
                         )
                         Spacer(Modifier.width(4.dp))
-                        Text("导入", color = colors.primary, fontSize = 12.sp)
+                        Text("导入", color = colors.primary, style = type.label)
                     }
                 }
                 TextButton(
                     onClick = { showAddKnowledgeDialog = true },
                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
                 ) {
-                    Text("+ 添加", color = colors.primary, fontSize = 12.sp)
+                    Text("+ 添加", color = colors.primary, style = type.label)
                 }
             }
             // 导入错误提示
             if (detail.importError != null) {
                 Text(
                     text = "导入失败：${detail.importError}",
-                    color = Palette.SemanticDanger,
-                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.error,
+                    style = type.label,
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = Spacing.screenHorizontal)
@@ -375,7 +390,7 @@ fun ProjectDetailScreen(
                 Text(
                     text = "还没有知识条目",
                     color = colors.onBackground.copy(alpha = 0.35f),
-                    fontSize = 13.sp,
+                    style = type.caption,
                     modifier = Modifier.padding(
                         horizontal = Spacing.screenHorizontal,
                         vertical = Spacing.sm,
@@ -396,7 +411,7 @@ fun ProjectDetailScreen(
             Spacer(Modifier.height(Spacing.lg))
             SectionHeader(
                 title       = "参与角色",
-                actionLabel = if (detail.members.size < DefaultCharacters.size) "+ 添加" else null,
+                actionLabel = if (detail.members.size < allSelectableCharacters.size) "+ 添加" else null,
                 onAction    = { showAddMemberPicker = true },
             )
         }
@@ -405,7 +420,7 @@ fun ProjectDetailScreen(
                 Text(
                     text     = "还没有参与角色",
                     color    = colors.onBackground.copy(alpha = 0.35f),
-                    fontSize = 13.sp,
+                    style    = type.caption,
                     modifier = Modifier.padding(
                         horizontal = Spacing.screenHorizontal,
                         vertical   = Spacing.sm,
@@ -414,9 +429,9 @@ fun ProjectDetailScreen(
             }
         } else {
             items(detail.members, key = { "mem_${it.id}" }) { member ->
-                // 用 DefaultCharacters 查真实名字
+                // 用合并后的角色列表（DefaultCharacters + 已注册女儿）查真实名字
                 val charId   = member.characterId.toIntOrNull()
-                val charName = DefaultCharacters.find { it.id == charId }?.name
+                val charName = allSelectableCharacters.find { it.id == charId }?.name
                     ?: member.characterId
                 val roleLabel = when (member.role) {
                     "OWNER"       -> "主导"
@@ -430,7 +445,7 @@ fun ProjectDetailScreen(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     // 角色颜色标记
-                    val accentColor = DefaultCharacters.find { it.id == charId }?.accentColor
+                    val accentColor = allSelectableCharacters.find { it.id == charId }?.accentColor
                         ?: Palette.SemanticNeutral
                     Box(
                         modifier = Modifier
@@ -442,13 +457,14 @@ fun ProjectDetailScreen(
                     Text(
                         text     = charName,
                         color    = colors.onBackground.copy(alpha = 0.85f),
-                        fontSize = 14.sp,
+                        style    = type.body,
                         modifier = Modifier.weight(1f),
                     )
                     Text(
                         text     = roleLabel,
                         color    = colors.onBackground.copy(alpha = 0.38f),
-                        fontSize = 12.sp,
+                        // P3-32 修复：移除硬编码 fontSize
+                        style    = type.caption,
                     )
                     Spacer(Modifier.width(8.dp))
                     // 移除按钮（视觉28dp，触摸区扩展至48dp）
@@ -498,7 +514,7 @@ fun ProjectDetailScreen(
     // ── 角色选择器 ─────────────────────────────────────────
     if (showAddMemberPicker) {
         val alreadyAdded = detail.members.mapNotNull { it.characterId.toIntOrNull() }.toSet()
-        val available    = DefaultCharacters.filter { it.id !in alreadyAdded }
+        val available    = allSelectableCharacters.filter { it.id !in alreadyAdded }
         AlertDialog(
             onDismissRequest = { showAddMemberPicker = false },
             title = { Text("添加参与角色", color = colors.onBackground) },
@@ -529,7 +545,7 @@ fun ProjectDetailScreen(
                                 Text(
                                     text  = char.name,
                                     color = colors.onBackground,
-                                    fontSize = 14.sp,
+                                    style = type.body,
                                 )
                             }
                         }
@@ -542,7 +558,7 @@ fun ProjectDetailScreen(
                     Text("取消", color = colors.onBackground.copy(alpha = 0.5f))
                 }
             },
-            containerColor = colors.surface,
+            containerColor = colors.bgCard, // P3-17 修复：统一使用 bgCard 替代 surface
         )
     }
 }
@@ -558,6 +574,8 @@ private fun SectionHeader(
     onAction: () -> Unit = {},
 ) {
     val colors = ZaijianTheme.colors
+    // P3-32 修复：添加 type 引用，使用主题排印系统
+    val type   = ZaijianTheme.typography
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -567,7 +585,8 @@ private fun SectionHeader(
         Text(
             text = title,
             color = colors.onBackground.copy(alpha = 0.45f),
-            fontSize = 12.sp,
+            // P3-32 修复：移除硬编码 fontSize
+            style = type.caption,
             fontWeight = FontWeight.SemiBold,
             letterSpacing = 1.sp,
             modifier = Modifier.weight(1f),
@@ -576,7 +595,7 @@ private fun SectionHeader(
             Text(
                 text = actionLabel,
                 color = colors.primary.copy(alpha = 0.8f),
-                fontSize = 13.sp,
+                style = type.caption,
                 modifier = Modifier.clickable(onClick = onAction),
             )
         }
@@ -586,20 +605,22 @@ private fun SectionHeader(
 @Composable
 private fun StatItem(label: String, value: Int) {
     val colors = ZaijianTheme.colors
+    // P3-32 修复：添加 type 引用，使用主题排印系统
+    val type   = ZaijianTheme.typography
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Text(
             text     = value.toString(),
             color    = colors.onBackground.copy(alpha = 0.85f),
-            fontSize = 20.sp,
+            style    = type.titleBold,
             fontWeight = FontWeight.Bold,
         )
         Spacer(Modifier.height(2.dp))
         Text(
             text     = label,
             color    = colors.onBackground.copy(alpha = 0.4f),
-            fontSize = 11.sp,
+            style    = type.label,
         )
     }
 }
@@ -610,6 +631,8 @@ private fun MilestoneRow(
     onComplete: () -> Unit,
 ) {
     val colors = ZaijianTheme.colors
+    // P3-32 修复：添加 type 引用，使用主题排印系统
+    val type   = ZaijianTheme.typography
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -634,7 +657,7 @@ private fun MilestoneRow(
             text = milestone.title,
             color = if (milestone.isCompleted) colors.onBackground.copy(alpha = 0.35f)
                     else colors.onBackground,
-            fontSize = 14.sp,
+            style = type.body,
         )
     }
 }
@@ -645,12 +668,14 @@ private fun KnowledgeRow(
     onDelete: () -> Unit,
 ) {
     val colors = ZaijianTheme.colors
+    // P3-32 修复：添加 type 引用，使用主题排印系统
+    val type   = ZaijianTheme.typography
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = Spacing.screenHorizontal, vertical = 4.dp)
             .clip(RoundedCornerShape(8.dp))
-            .background(colors.surface.copy(alpha = GlassOpacity.low))
+            .background(colors.bgCard.copy(alpha = GlassOpacity.low)) // P3-17 修复：统一使用 bgCard 替代 surface
             .padding(Spacing.sm),
         verticalAlignment = Alignment.Top,
     ) {
@@ -672,13 +697,13 @@ private fun KnowledgeRow(
         Spacer(Modifier.width(8.dp))
         Column(modifier = Modifier.weight(1f)) {
             if (entry.title.isNotEmpty()) {
-                Text(entry.title, color = colors.onBackground, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                Text(entry.title, color = colors.onBackground, style = type.caption, fontWeight = FontWeight.Medium)
                 Spacer(Modifier.height(2.dp))
             }
             Text(
                 text = entry.content,
                 color = colors.onBackground.copy(alpha = 0.65f),
-                fontSize = 13.sp,
+                style = type.caption,
                 maxLines = 4,
             )
             // Phase 31：来源徽章 + 字数
@@ -693,14 +718,14 @@ private fun KnowledgeRow(
                 Text(
                     text = sourceLabel,
                     color = colors.onBackground.copy(alpha = 0.35f),
-                    fontSize = 11.sp,
+                    style = type.label,
                 )
                 val charCount = if (entry.charCount > 0) entry.charCount else entry.content.length
                 if (charCount > 0) {
                     Text(
                         text = "  ·  ${charCount} 字",
                         color = colors.onBackground.copy(alpha = 0.3f),
-                        fontSize = 11.sp,
+                        style = type.label,
                     )
                 }
             }
@@ -735,11 +760,15 @@ private fun KnowledgeRow(
 private fun TodayGrowthSection(
     byCharacter: Map<Int, List<TaskEntity>>,
     members: List<com.zaijian.zhoumuyun.data.db.entity.ProjectMemberEntity>,
+    allCharacters: List<com.zaijian.zhoumuyun.data.model.CharacterConfig>,
     onTaskToggle: (taskId: String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val colors      = ZaijianTheme.colors
-    val growthGreen = Color(0xFF7BAE7F)
+    // P3-32 修复：添加 type 引用，使用主题排印系统
+    val type        = ZaijianTheme.typography
+    // P3-55 扩展：硬编码绿色统一为主题常量 Palette.GrowthGreen
+    val growthGreen = Palette.GrowthGreen
 
     Column(
         modifier = modifier
@@ -762,7 +791,8 @@ private fun TodayGrowthSection(
             Text(
                 text      = "今日规划",
                 color     = colors.onBackground.copy(alpha = 0.55f),
-                fontSize  = 12.sp,
+                // P3-32 修复：移除硬编码 fontSize
+                style     = type.caption,
                 fontWeight = FontWeight.Medium,
                 modifier  = Modifier.weight(1f),
             )
@@ -790,7 +820,7 @@ private fun TodayGrowthSection(
                     Text(
                         text     = "今日规划将在 21:00 自动生成",
                         color    = colors.onBackground.copy(alpha = 0.35f),
-                        fontSize = 13.sp,
+                        style    = type.caption,
                     )
                 }
             }
@@ -805,7 +835,7 @@ private fun TodayGrowthSection(
 
             orderedIds.forEach { charId ->
                 val tasks    = byCharacter[charId] ?: return@forEach
-                val charConf = DefaultCharacters.find { it.id == charId }
+                val charConf = allCharacters.find { it.id == charId }
 
                 Column(
                     modifier = Modifier
@@ -831,7 +861,7 @@ private fun TodayGrowthSection(
                             Text(
                                 text     = charConf?.name?.take(1) ?: "?",
                                 color    = Color.White,
-                                fontSize = 11.sp,
+                                style    = type.label,
                                 fontWeight = FontWeight.Bold,
                             )
                         }
@@ -839,7 +869,7 @@ private fun TodayGrowthSection(
                         Text(
                             text     = charConf?.name ?: "角色 $charId",
                             color    = colors.onBackground.copy(alpha = 0.7f),
-                            fontSize = 13.sp,
+                            style    = type.caption,
                             fontWeight = FontWeight.Medium,
                         )
                     }
@@ -870,13 +900,12 @@ private fun TodayGrowthSection(
                                     colors.onBackground.copy(alpha = 0.35f)
                                 else
                                     colors.onBackground.copy(alpha = 0.82f),
-                                fontSize = 14.sp,
                                 style = if (isDone)
-                                    androidx.compose.ui.text.TextStyle(
+                                    type.body.copy(
                                         textDecoration = androidx.compose.ui.text.style.TextDecoration.LineThrough,
                                     )
                                 else
-                                    androidx.compose.ui.text.TextStyle.Default,
+                                    type.body,
                                 modifier = Modifier.weight(1f),
                             )
                         }
@@ -902,10 +931,14 @@ private fun TodayGrowthSection(
 private fun GrowthHistorySection(
     summaries: List<DayGrowthSummary>,
     members: List<com.zaijian.zhoumuyun.data.db.entity.ProjectMemberEntity>,
+    allCharacters: List<com.zaijian.zhoumuyun.data.model.CharacterConfig>,
     modifier: Modifier = Modifier,
 ) {
     val colors      = ZaijianTheme.colors
-    val growthGreen = Color(0xFF7BAE7F)
+    // P3-32 修复：添加 type 引用，使用主题排印系统
+    val type        = ZaijianTheme.typography
+    // P3-55 扩展：硬编码绿色统一为主题常量 Palette.GrowthGreen
+    val growthGreen = Palette.GrowthGreen
 
     // 最多展示 5 天，防止区块过高
     val displaySummaries = summaries.take(5)
@@ -931,7 +964,8 @@ private fun GrowthHistorySection(
             Text(
                 text      = "成长记录",
                 color     = colors.onBackground.copy(alpha = 0.55f),
-                fontSize  = 12.sp,
+                // P3-32 修复：移除硬编码 fontSize
+                style     = type.caption,
                 fontWeight = FontWeight.Medium,
             )
         }
@@ -958,7 +992,8 @@ private fun GrowthHistorySection(
                     Text(
                         text     = summary.dateLabel,
                         color    = colors.onBackground.copy(alpha = 0.45f),
-                        fontSize = 12.sp,
+                        // P3-32 修复：移除硬编码 fontSize
+                        style    = type.caption,
                         modifier = Modifier.width(52.dp),
                     )
                     Spacer(Modifier.width(Spacing.sm))
@@ -971,7 +1006,7 @@ private fun GrowthHistorySection(
                         summary.countByCharacter.entries
                             .sortedBy { it.key }
                             .forEach { (charId, count) ->
-                                val charConf = DefaultCharacters.find { it.id == charId }
+                                val charConf = allCharacters.find { it.id == charId }
                                 val charName = charConf?.name ?: "角色$charId"
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Box(
@@ -987,7 +1022,8 @@ private fun GrowthHistorySection(
                                     Text(
                                         text     = "$charName 规划了 $count 件",
                                         color    = colors.onBackground.copy(alpha = 0.62f),
-                                        fontSize = 12.sp,
+                                        // P3-32 修复：移除硬编码 fontSize
+                                        style    = type.caption,
                                     )
                                 }
                             }
@@ -997,7 +1033,8 @@ private fun GrowthHistorySection(
                     Text(
                         text     = "${summary.totalCount} 件",
                         color    = growthGreen,
-                        fontSize = 12.sp,
+                        // P3-32 修复：移除硬编码 fontSize
+                        style    = type.caption,
                         fontWeight = FontWeight.Medium,
                     )
                 }
@@ -1008,7 +1045,7 @@ private fun GrowthHistorySection(
                 Text(
                     text     = "仅显示近5天记录",
                     color    = colors.onBackground.copy(alpha = 0.25f),
-                    fontSize = 11.sp,
+                    style    = type.label,
                     modifier = Modifier.padding(top = 2.dp),
                 )
             }

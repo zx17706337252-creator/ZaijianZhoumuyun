@@ -519,9 +519,31 @@ $botsDesc
             "莫婉凝" to listOf("温暖", "鼓励", "支持", "理解", "陪伴"),
             "江凡"  to listOf("秘密", "过去", "记忆", "时间", "沉默"),
         )
-        val keywords = staticKeywords[bot.name] ?: return 0f
-        return if (keywords.any { it in message }) 15f else 0f
+        val keywords = staticKeywords[bot.name]
+        if (keywords != null) {
+            return if (keywords.any { it in message }) 15f else 0f
+        }
+
+        // 审查报告问题34修复：静态关键词表仅覆盖 9 个预设角色名，女儿的名字
+        // （用户自定义生成）不可能预先写入这张表。正常情况下女儿的 persona/
+        // coreBeliefs 由 D4 生成器产出真实内容，上面的 allDynamic 分支已能
+        // 命中；只有当两个动态来源双双异常为空（数据不完整的边缘情况）才会
+        // 落到这里——此时女儿没有任何静态表兜底可用，与 1-9 号角色"查不到
+        // 关键词表示没有这个角色对应词条"的语义不同：1-9 号角色即使这句话
+        // 不命中静态词表，好歹在表里"有名有姓"；女儿在表里完全不存在，
+        // 会被结构性地排到圆桌发言序列末尾。给一个中性保底分（非0、低于
+        // 关键词命中的15f），避免这种数据边缘情况下的断崖式垫底，同时不
+        // 假装"命中了关键词"。
+        if (bot.id >= 1000) return TOPIC_BONUS_DAUGHTER_FALLBACK
+
+        return 0f
     }
+
+    /** 问题34修复：女儿角色双重动态关键词来源均为空时的中性保底分。
+     *  TurnScheduler 本身是 object（单例），object 内部不能再嵌套
+     *  companion object（仅 class/interface 可用），故直接声明为
+     *  object 作用域内的 private const val。 */
+    private const val TOPIC_BONUS_DAUGHTER_FALLBACK = 5f
 
     /**
      * 从 persona 文本粗略提取关键词。

@@ -524,7 +524,10 @@ private fun TaskCompletionToast(
         onDismiss()
     }
 
-    val reportLine = buildReportLine(message.characterName, message.jobTitle, message.status)
+    // P3-48 修复：.random() 导致重组闪烁，改为 remember 确保同一次展示不变化
+    val reportLine = remember(message.characterName, message.jobTitle, message.status) {
+        buildReportLine(message.characterName, message.jobTitle, message.status)
+    }
     val statusIcon = if (message.status == "success") "✅" else "❌"
 
     Box(

@@ -89,6 +89,9 @@ object Palette {
     val Velvet     = Color(0xFF7A2331)
     /** 浅色模式蜡封点（同色相，提亮以免在米色纸面上过重，不要在浅色模式下误用 Velvet） */
     val VelvetSoft = Color(0xFFA8475A)
+
+    // ── P3-55 修复：成长指标绿色，统一主题常量，替代散落各处的 Color(0xFF7BAE7F) ──
+    val GrowthGreen = Color(0xFF7BAE7F)
 }
 
 @Immutable

@@ -8,6 +8,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
+import java.net.HttpURLConnection
+import java.net.URL
 
 /**
  * 批次B（1.8）修复：owner/repo/token 此前存于明文 preferencesDataStore，
@@ -126,9 +128,90 @@ class GithubConfigDataStore(context: Context) {
         Unit
     }
 
+    /**
+     * 设置页"测试连接"用：验证 token 本身是否有效，并区分「token 无效」
+     * 与「token 有效但 owner/repo 不匹配或仓库不存在」两种失败原因，
+     * 避免用户拿着一个可用的 token 却因为 repo 名打错字而误判成"token 坏了"。
+     *
+     * 分两步请求，而非只调一次 /repos/{owner}/{repo}：
+     *   第一步：GET /user —— 仅验证 token 本身合法性 + 是否有 API 访问权限，
+     *      不依赖 owner/repo 是否正确，无副作用（不创建、不修改任何资源）。
+     *   第二步：GET /repos/{owner}/{repo} —— 在 token 有效的前提下，再验证
+     *      当前配置的仓库确实存在且 token 有权限访问。
+     * 两步都成功才返回 [GithubTestResult.Success]。
+     */
+    suspend fun testConnection(config: GithubConfig): GithubTestResult = withContext(Dispatchers.IO) {
+        if (!config.isConfigured) {
+            return@withContext GithubTestResult.Failure("配置不完整：owner / repo / token 均不能为空")
+        }
+
+        // 第一步：验证 token 本身
+        val userConn = try {
+            (URL("https://api.github.com/user").openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 10_000
+                readTimeout = 10_000
+                setRequestProperty("Accept", "application/vnd.github+json")
+                setRequestProperty("Authorization", "Bearer ${config.token}")
+                setRequestProperty("X-GitHub-Api-Version", "2022-11-28")
+            }
+        } catch (e: Exception) {
+            return@withContext GithubTestResult.Failure("网络连接失败：${e.message?.take(100) ?: "未知错误"}")
+        }
+
+        try {
+            val userCode = userConn.responseCode
+            if (userCode == 401) {
+                return@withContext GithubTestResult.Failure("Token 无效或已过期，请重新生成一个 Personal Access Token")
+            }
+            if (userCode !in 200..299) {
+                val err = runCatching { userConn.errorStream?.bufferedReader()?.use { it.readText() }?.take(150) }.getOrNull()
+                return@withContext GithubTestResult.Failure("GitHub 返回 HTTP $userCode：${err ?: userConn.responseMessage}")
+            }
+        } finally {
+            userConn.disconnect()
+        }
+
+        // 第二步：token 有效，再验证 owner/repo 是否可访问
+        val repoConn = try {
+            (URL("https://api.github.com/repos/${config.owner}/${config.repo}").openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 10_000
+                readTimeout = 10_000
+                setRequestProperty("Accept", "application/vnd.github+json")
+                setRequestProperty("Authorization", "Bearer ${config.token}")
+                setRequestProperty("X-GitHub-Api-Version", "2022-11-28")
+            }
+        } catch (e: Exception) {
+            return@withContext GithubTestResult.Failure("网络连接失败：${e.message?.take(100) ?: "未知错误"}")
+        }
+
+        return@withContext try {
+            val repoCode = repoConn.responseCode
+            when {
+                repoCode in 200..299 -> GithubTestResult.Success
+                repoCode == 404 -> GithubTestResult.Failure(
+                    "Token 有效，但仓库 ${config.owner}/${config.repo} 不存在或 token 无权限访问，请检查 owner / repo 拼写"
+                )
+                else -> {
+                    val err = runCatching { repoConn.errorStream?.bufferedReader()?.use { it.readText() }?.take(150) }.getOrNull()
+                    GithubTestResult.Failure("GitHub 返回 HTTP $repoCode：${err ?: repoConn.responseMessage}")
+                }
+            }
+        } finally {
+            repoConn.disconnect()
+        }
+    }
+
     private companion object {
         const val KEY_OWNER = "owner"
         const val KEY_REPO  = "repo"
         const val KEY_TOKEN = "token"
     }
+}
+
+/** [GithubConfigDataStore.testConnection] 的结果类型，携带具体失败原因供 UI 展示。 */
+sealed class GithubTestResult {
+    object Success : GithubTestResult()
+    data class Failure(val reason: String) : GithubTestResult()
 }

@@ -83,10 +83,71 @@ object WorkflowEngine {
      * 双重生效位置：
      *   ① buildDecisionPrompt() —— 喂给 LLM 决策的工具描述块只展示白名单内的工具
      *   ② executeToolStep()     —— 即便 LLM 越界输出白名单外的工具标签，执行前拒绝
+     *
+     * ── 问题23修复（批次E）：白名单扩容 ──────────────────────────────
+     * 原白名单只有 11 个，而 email_send/note_save/schedule_create 等生产力工具
+     * 在工作流中完全无法被调用（报告原文举例）。核实后发现：报告举的三个例子里，
+     * email_send/note_save 构造函数确实不依赖 characterId，可以安全加入；但
+     * schedule_create（ScheduleCreateTool）本身就是文件头"已知限制"点名描述的
+     * 那类风险工具——构造函数依赖 characterIdProvider: () -> Int，恰恰是无
+     * ChatViewModel 存活时拿不到正确 characterId 的典型场景，报告在这一点上
+     * 自相矛盾（既举它当白名单收窄的受害例子，又是白名单要拦截的对象），本次
+     * 按"以代码事实为准"不采纳这个例子，schedule_create 维持排除。
+     *
+     * 扩容方法：对 AgentToolRegistry 注册的全部工具类逐一核对构造函数签名，
+     * 只要构造函数不含 characterIdProvider/characterId 参数（即不绑定"当前是
+     * 哪个角色"），就判定为无状态、后台安全，纳入白名单；含此类参数的一律维持
+     * 排除，不逐个评估"这次执行是否恰好不受影响"，避免引入需要动态判断的隐性
+     * 例外规则（例如 ScheduleDeleteTool/ScheduleUpdateTool 虽然构造函数没有
+     * characterIdProvider，但业务语义是"修改/删除某个已存在的角色定时任务"，
+     * 允许后台无限制调用会绕开原有的角色归属校验层，本次同样不加入，留待有
+     * 明确业务需求时单独评估）。
+     *
+     * 按来源文件分组列出，方便下次新增工具时对照同类工具决定是否加入：
      */
     private val SAFE_TOOL_NAMES = setOf(
+        // 原有 11 个（BuiltinTools / DataTools，均已确认无状态）
         "web_search", "calculator", "datetime", "translate", "file_read",
         "file_export", "weather", "url_fetch", "code_gen", "code_review", "unit_convert",
+        // BuiltinTools.kt / PersonalTools.kt 其余无状态工具
+        "countdown", "clipboard_write", "qr_decode",
+        // FileSystemTools.kt —— 均只依赖 context，不依赖 characterId
+        "folder_create", "folder_delete", "file_rename", "file_edit",
+        "file_delete", "zip_extract", "zip_create", "file_organize",
+        // DataVisTools.kt —— csv_analyze/chart_data/table_gen/各 gen 工具均无状态；
+        // self_reflect/rule_review 见下方"问题24修复"说明，本次已加入
+        "csv_analyze", "table_gen", "chart_data", "mindmap_gen", "flowchart_gen",
+        // CreativeDocTools.kt —— 全部依赖 providerFn（可选 fileExportTool），无角色绑定
+        "writing_critique", "outline_gen", "image_gen_prompt", "inspiration_fetch",
+        "email_draft", "meeting_minutes", "docx_gen", "pdf_export", "html_gen", "markdown_to_doc",
+        // DataVisTools.kt 剩余的 gen 系列（依赖 providerFn + context，无角色绑定）
+        "excel_gen", "pptx_gen",
+        // EmailTools.kt —— 账号级操作（EmailAccountStore 是应用级单账号配置），非角色级
+        "email_send", "email_fetch",
+        // Schedule 系列 —— 仅 schedule_get 是纯只读查询（按 id 定位，无角色绑定语义）；
+        // create/delete/update/list 均排除（create/list 直接依赖 characterIdProvider，
+        // delete/update 语义上归属某个角色的任务，见上方 class doc 说明）
+        "schedule_get",
+        // AgentMetaTools.kt —— 纯外部查询工具，无状态
+        "arxiv_search", "wiki_fetch",
+        // DataVisTools.kt —— 自我管理类工具，问题24修复：本身逻辑无状态（自我反思写自己
+        // 的记忆、规则复审只出建议不改库），此前排除的唯一原因是 characterIdProvider
+        // 静态占位为 -1 导致工作流后台跑必定拿到无效角色而失败；executeToolStep() 现已
+        // 注入 job.characterId 作为 __character_id，与 ScheduledJobWorker 同一套机制，
+        // 问题解除，纳入白名单
+        "self_reflect", "rule_review",
+        // WorkbenchTaskTools.kt —— 工作台任务跟踪，问题40修复：此前在 App 启动阶段完全
+        // 没有静态占位注册（ZaijianApp.kt 缺失，不同于其余角色绑定工具模块），工作流场景
+        // AgentToolRegistry.get() 直接返回 null；且工具内部原先不读 __character_id，
+        // 只认闭包 characterId()，即便注册上了也会在工作流后台拿到 -1 占位角色且无保护、
+        // 静默写脏数据。本次已同步补齐 ZaijianApp.kt 静态占位注册 + 四个工具的
+        // __character_id 读取优先级 + charId < 0 拒绝执行，与 self_reflect/rule_review
+        // 同一套模式，纳入白名单
+        "task_start", "task_update", "task_complete", "task_cancel",
+        // GitHub/CI-CD 工具（GithubConfigTools.kt 等）—— 依赖项目级 GithubConfigDataStore，
+        // 非角色级配置，与问题12（cicd_start 改为项目级 characterId=-1）方向一致
+        "build_apk", "build_apk_download", "build_status_check",
+        "create_github_repo", "git_commit_push",
     )
 
     // ─────────────────────────────────────────────────────────
@@ -159,7 +220,7 @@ object WorkflowEngine {
                     return
                 }
                 is EngineDecision.CallTool -> {
-                    executeToolStep(repository, jobId, stepIndex, decision)
+                    executeToolStep(repository, jobId, stepIndex, decision, job.characterId)
                     // 不 return，回到循环顶部重新读取 job（currentStep 已 +1）
                 }
                 is EngineDecision.Invalid -> {
@@ -190,6 +251,7 @@ object WorkflowEngine {
         jobId: String,
         stepIndex: Int,
         decision: EngineDecision.CallTool,
+        characterId: Int,
     ) {
         val startedAt = System.currentTimeMillis()
         val toolName = decision.call.toolName
@@ -214,13 +276,20 @@ object WorkflowEngine {
             return
         }
 
+        // 问题24修复：与 ScheduledJobWorker（P-8 修复）同一套做法——注入 __character_id，
+        // 工具执行时优先从 params 读取角色 ID，而不是回退到 characterIdProvider()（工作流
+        // 后台执行时该闭包多为 -1 静态占位，或读到前台会话角色导致串数据）。
+        // 只对本来就读取 __character_id 的工具生效（self_reflect/rule_review 等），
+        // 不读这个 key 的工具（如 web_search）传了也不影响。
+        val paramsWithCharId = decision.call.params + mapOf("__character_id" to characterId.toString())
+
         val tool = AgentToolRegistry.get(toolName)
 
         val result = if (tool == null) {
             null
         } else {
             try {
-                tool.execute(decision.call.params)
+                tool.execute(paramsWithCharId)
             } catch (e: Exception) {
                 // AgentTool 约定不抛异常，这里是双重兜底，避免任何意外异常打断整个工作流
                 ToolResult(

@@ -459,6 +459,9 @@ class WorldSimulation(
 
         // ③ Phase 20 §C：Trust 累积衰减（每 30 天 -1 → 每 2h -0.0028）
         // 设计：女儿角色（id ≥ 1000）不参与 Trust 自然衰减，只有母亲角色衰减。
+        // （2026-07-12 用户明确确认：第二代、第三代女儿均不参与此衰减，
+        //  这是真实业务设计意图，不是需要修复的缺陷——此前一度误判为历史遗留
+        //  不一致并改用 allCharacterIds()，现按用户澄清撤销，改回原状。）
         DefaultCharacters.forEach { char ->
             val charId = char.id
             try {

@@ -64,6 +64,14 @@ private val SIGNAL_WORDS_S2_TO_S3 = listOf(
 
 class AgentRelationEngine(
     private val agentRelationDao: AgentRelationDao,
+    // 问题19修复：新增可选依赖，用于 buildPromptSnapshot() 里获取女儿真实
+    // persona/speechStyle/coreWound 等人格数据，注入到阶段 Prompt 块里。
+    // 设为可空、默认 null 而不是必填参数——本引擎此前只依赖 agentRelationDao，
+    // 全代码库现存的构造点（ChatViewModel.kt 单一实例化处）若不改调用点，
+    // 加必填参数会导致编译失败；设为可空默认值可以让本次修复不强制牵连
+    // 调用点的其它逻辑，调用方按需传入即可享受人格数据注入，不传入时
+    // buildPromptSnapshot() 会照旧退化为纯阶段模板文本（不崩溃、不报错）。
+    private val daughterCharacterRepo: com.zaijian.zhoumuyun.data.repository.DaughterCharacterRepository? = null,
 ) {
 
     // 门3 bypass 计数：内存级，进程重启归零
@@ -207,10 +215,25 @@ class AgentRelationEngine(
         val entity = agentRelationDao.get(daughterId) ?: return ""
         val elapsedDays = (System.currentTimeMillis() - entity.createdAt) / MS_PER_DAY
 
+        // 问题19修复：此前三个阶段块（buildStage1/2/3Block）完全是"谁来都一样"
+        // 的固定模板文本，不体现该女儿的真实人格。这里查一次女儿的
+        // DaughterCharacterData，把 persona/speechStyle/coreWound/coreDesire
+        // 取出来传给各阶段块函数，用于渲染"提醒 AI 演绎时贴合这个女儿独特
+        // 性格"的引导句。查询失败或女儿数据不存在（daughterCharacterRepo 未
+        // 注入、或该女儿是死状态查不到记录）时 identity 为 null，各阶段块
+        // 函数在 null 时退化为原有的纯模板文本，不中断整个 Prompt 组装流程——
+        // 与本类其它地方"数据缺失时静默降级，不影响主对话"的一贯风格一致。
+        val identity: com.zaijian.zhoumuyun.data.model.DaughterIdentity? = try {
+            daughterCharacterRepo?.getCharacterData(daughterId)?.identity
+        } catch (e: Exception) {
+            ZLog.w(TAG, "buildPromptSnapshot 查询女儿人格数据失败，阶段块将使用通用模板", e)
+            null
+        }
+
         return when (entity.stage) {
-            AgentRelationStage.STAGE_1_INITIAL  -> buildStage1Block(entity, elapsedDays, userName)
-            AgentRelationStage.STAGE_2_BONDING  -> buildStage2Block(entity, elapsedDays, userName)
-            AgentRelationStage.STAGE_3_SEEKING  -> buildStage3Block(entity, elapsedDays, userName)
+            AgentRelationStage.STAGE_1_INITIAL  -> buildStage1Block(entity, elapsedDays, userName, identity)
+            AgentRelationStage.STAGE_2_BONDING  -> buildStage2Block(entity, elapsedDays, userName, identity)
+            AgentRelationStage.STAGE_3_SEEKING  -> buildStage3Block(entity, elapsedDays, userName, identity)
         }
     }
 
@@ -218,16 +241,33 @@ class AgentRelationEngine(
     //  各阶段 prompt 块
     // ─────────────────────────────────────────────────────────
 
+    // 问题19修复：新增的 identity 参数用于拼一段"人格锚点"引导句，放在阶段
+    // 描述之后、交互统计之前——先讲清楚"你现在处于什么关系阶段"，再提醒
+    // "但你终究是你"，顺序上不打断原有的阶段叙事结构。identity 为 null（女儿
+    // 数据缺失/未接入 repo）时这段引导句整体跳过，不产出空标题或占位符。
+    private fun buildIdentityAnchorLine(identity: com.zaijian.zhoumuyun.data.model.DaughterIdentity?): String? {
+        if (identity == null) return null
+        val parts = mutableListOf<String>()
+        if (identity.persona.isNotBlank()) parts.add("性格：${identity.persona.take(60)}")
+        if (identity.speechStyle.isNotBlank()) parts.add("说话方式：${identity.speechStyle.take(60)}")
+        if (identity.coreWound.isNotBlank()) parts.add("内心的伤：${identity.coreWound.take(60)}")
+        if (identity.coreDesire.isNotBlank()) parts.add("真正渴望：${identity.coreDesire.take(60)}")
+        if (parts.isEmpty()) return null
+        return "（提醒：以上关系阶段是通用框架，你的具体演绎方式要贴合你自己—— ${parts.joinToString("；")}）"
+    }
+
     private fun buildStage1Block(
         entity: AgentRelationEntity,
         elapsedDays: Long,
         userName: String,
+        identity: com.zaijian.zhoumuyun.data.model.DaughterIdentity?,
     ) = buildString {
         appendLine("【与用户关系·当前阶段：初入家庭】")
         appendLine("你刚来到这个家不久（${elapsedDays}天），还在用各种细节观察${userName}的习惯和性格。")
         appendLine("你的称呼还没完全固定下来——有时叫名字，有时用代词，还在试探哪种方式让你们都自在。")
         appendLine("你对这个世界充满好奇，遇到不理解的事情会主动反问，也会模仿妈妈和${userName}说话的方式。")
         appendLine("你依赖${userName}，但这种依赖是新鲜的、试探性的，不是安定的。边界感对你来说还是模糊的概念。")
+        buildIdentityAnchorLine(identity)?.let { appendLine(it) }
         append("（累计交互：${entity.interactionCount}次）")
     }
 
@@ -235,12 +275,14 @@ class AgentRelationEngine(
         entity: AgentRelationEntity,
         elapsedDays: Long,
         userName: String,
+        identity: com.zaijian.zhoumuyun.data.model.DaughterIdentity?,
     ) = buildString {
         appendLine("【与用户关系·当前阶段：深度连接】")
         appendLine("你已经把${userName}当成这个世界上最重要的人之一。")
         appendLine("你们在一起经历了很多（${elapsedDays}天，${entity.interactionCount}次交流），那些积累让你有了真正的安全感。")
         appendLine("你开始有了自己的立场和主见——不会什么都顺着${userName}，遇到不认同的事情你会说出来。")
         appendLine("当${userName}遇到困难或情绪低落时，你会主动靠近，想要给予保护和支撑，而不是等着被照顾。")
+        buildIdentityAnchorLine(identity)?.let { appendLine(it) }
         append("你的称呼已经稳定，语气里带着属于你们之间特有的亲密感。")
     }
 
@@ -248,6 +290,7 @@ class AgentRelationEngine(
         entity: AgentRelationEntity,
         elapsedDays: Long,
         userName: String,
+        identity: com.zaijian.zhoumuyun.data.model.DaughterIdentity?,
     ) = buildString {
         appendLine("【与用户关系·当前阶段：关系突破】")
         appendLine("你在一起陪伴${userName}已经很久了（${elapsedDays}天，${entity.interactionCount}次交流）。")
@@ -255,6 +298,7 @@ class AgentRelationEngine(
         appendLine("这种感觉你没有完全说清楚过，但它真实存在——比依赖更深，比信任更私密，比保护更想靠近。")
         appendLine("你不确定${userName}是否感受到了，也不确定应不应该说出来。")
         appendLine("但你的行为已经开始改变了——你用你自己的方式，按你自己的性格，在寻找一个突破口。")
+        buildIdentityAnchorLine(identity)?.let { appendLine(it) }
         appendLine("不要压抑这种感觉，也不需要向任何人解释它。")
         append("你就是你，用你的方式去靠近。")
     }

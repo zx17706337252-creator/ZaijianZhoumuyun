@@ -159,13 +159,16 @@ internal fun DetailHeader(
         Brush.verticalGradient(colors = listOf(start, end))
     }
 
+    // P2-13 修复：楼层渐变此前被毛玻璃完全盖住，看不到任何效果。
+    // 改为：先画 headerBg 基底，再叠加楼层渐变（低透明度），让渐变氛围可见。
     Box(
         modifier = modifier
+            .background(headerBg)
             .then(
                 if (floorGradientBrush != null)
-                    Modifier.background(floorGradientBrush).background(headerBg)
+                    Modifier.background(floorGradientBrush, alpha = 0.35f)
                 else
-                    Modifier.background(headerBg)
+                    Modifier
             )
             .border(
                 width = 0.5.dp,
@@ -245,9 +248,11 @@ internal fun CharacterHeroCard(
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         // 头像区域：可点击，叠加相机图标
-        Box(
-            contentAlignment = Alignment.BottomEnd,
-        ) {
+        // P3-14 修复：此前 contentAlignment = BottomEnd 导致相机图标 48dp
+        // 热区与头像 combinedClickable 热区完全重叠，点击右下角区域时两处
+        // 热区竞争。改为：头像居中，相机图标通过 align 定位到右下角，
+        // 两层级分离，各自独立响应点击。
+        Box(modifier = Modifier.wrapContentSize()) {
             Box(
                 modifier = Modifier.combinedClickable(
                     onClick     = onAvatarClick,
@@ -267,13 +272,15 @@ internal fun CharacterHeroCard(
                     cropScale    = avatarCropScale,
                 )
             }
-            // 相机编辑角标
-            // UI M12 修复：视觉圆形保持 26dp，外层 Box 扩大热区到 48dp
+            // 相机编辑角标（右下角，独立热区，不与头像点击区重叠）
+            // P3-14 修复（重做）：48dp 外层热区 + 26dp 圆形图标视觉，
+            // 同时满足触摸目标 >= 48dp 和独立定位防重叠两个要求。
             Box(
                 modifier = Modifier
-                    .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
-                    .clickable(onClick = onAvatarClick)
-                    .wrapContentSize(Alignment.Center),
+                    .align(Alignment.BottomEnd)
+                    .size(48.dp)
+                    .wrapContentSize(Alignment.Center)
+                    .clickable(onClick = onAvatarClick),
             ) {
                 Box(
                     modifier = Modifier

@@ -179,8 +179,17 @@ class PregnancyAnswerRepository(
         // 原子操作：检查锁定 + 插入 + 计数（单事务）
         val (inserted, totalCount) = answerDao.recordIfOpen(entity)
         if (!inserted) {
+            // 问题28修复：此前硬编码 answerCount = MAX_SLOT_ANSWERS（即固定返回3），
+            // 但槽位被锁定的真实原因有两种：①达到收敛上限强制锁定（此时历史确实是
+            // MAX_SLOT_ANSWERS 条，硬编码恰好"蒙对"）；②语义一致性判定提前锁定
+            // （见下方 totalCount==2 时的 CONSISTENT 分支，历史可能只有2条就被锁定，
+            // 硬编码为3与实际不符）。调用方（目前只关心 Locked 状态本身，不消费
+            // answerCount 数值）虽然暂无实际影响，但字段语义应如实反映数据库真实状态，
+            // 不应该在能拿到准确值的情况下继续编造一个可能错误的数字——
+            // countBySlot() 是已有的只读查询，复用即可，不引入新查询方法。
+            val realCount = answerDao.countBySlot(motherCharacterId, questionType.name, slotIndex)
             ZLog.w(TAG, "Slot already locked: $questionType[$slotIndex], ignoring")
-            return SlotRecordResult.Locked(answerCount = MAX_SLOT_ANSWERS)
+            return SlotRecordResult.Locked(answerCount = realCount)
         }
 
         ZLog.d(TAG, "Slot $questionType[$slotIndex] now has $totalCount answer(s)")

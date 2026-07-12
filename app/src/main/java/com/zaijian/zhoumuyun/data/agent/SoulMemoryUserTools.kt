@@ -131,3 +131,36 @@ class UserImpressionClearTool(
         }
     }
 }
+
+// ─────────────────────────────────────────────────────────────
+//  模块注册入口
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * 问题39修复：统一注册入口，取代此前在 ZaijianApp.kt（-1 静态占位）和
+ * ChatViewModel.kt（currentCharacterId 动态覆盖）两处各自手写同一份
+ * 6 个工具实例化代码的重复写法——两处任何一处新增/改参数都要记得同步改
+ * 另一处，容易漏改（`registerAll` 对同名工具"后注册覆盖先注册"，两阶段
+ * 注册的顺序依赖仍然保留，本次只收敛"怎么构造这6个工具"这一份重复代码，
+ * 不改变调用顺序/时机）。
+ *
+ * @param characterId 由调用方决定绑定策略：
+ *   - ZaijianApp.onCreate() 传 `{ -1 }`（App 启动阶段占位，工具"先存在"）
+ *   - ChatViewModel.init() 传 `{ currentCharacterId }`（覆盖为真实会话角色，
+ *     否则 updateSoulNote/updateNarrativeMemory/updateUserImpression 全部
+ *     打到 characterId=-1 的行，永远改不了实际角色的数据——同 Fix-ToolWire
+ *     注释描述的原因，未改变）
+ */
+fun AgentToolRegistry.registerSoulMemoryUserTools(
+    identityDao: IdentityRepository,
+    characterId: () -> Int,
+) {
+    registerAll(
+        SoulUpdateTool(identityDao = identityDao, characterId = characterId),
+        SoulClearTool(identityDao = identityDao, characterId = characterId),
+        NarrativeMemoryUpdateTool(identityDao = identityDao, characterId = characterId),
+        NarrativeMemoryClearTool(identityDao = identityDao, characterId = characterId),
+        UserImpressionUpdateTool(identityDao = identityDao, characterId = characterId),
+        UserImpressionClearTool(identityDao = identityDao, characterId = characterId),
+    )
+}

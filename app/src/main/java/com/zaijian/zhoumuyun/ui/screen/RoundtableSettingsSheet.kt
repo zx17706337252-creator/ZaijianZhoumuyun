@@ -41,6 +41,7 @@ import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -147,7 +148,6 @@ internal fun RoundtableSettingsSheet(
     hasCustomBackground: Boolean,
     onToggleMother: (characterId: Int, blocked: Boolean) -> Unit,
     onAddDaughter: (Int) -> Unit,
-    onRemoveDaughter: (Int) -> Unit,
     onModeChange: (ScheduleMode) -> Unit,
     onSpontaneousToggle: (Boolean) -> Unit,
     onSetBackground: () -> Unit,
@@ -220,10 +220,16 @@ internal fun RoundtableSettingsSheet(
             }
         }
 
-        // ── B. 女儿/第三代区（拉入/移出） ────────────────────
+        // ── B. 女儿/第三代区 ──────────────────────────────────
+        //   已拉入的女儿：跟 A 区母角色完全一致的勾选框屏蔽/取消屏蔽交互
+        //   （复用 onToggleMother，state 保留在 blockedMotherIds 里，
+        //   随时可勾回来，不会丢失头像/人设）。
+        //   尚未拉入的候选：仍是"拉入"按钮，拉入动作本身不变。
+        //   女儿不再提供"彻底移出圆桌"的入口——跟母角色一样，只能屏蔽。
         Spacer(Modifier.height(Spacing.lg))
+        val activeDaughterCount = extraDaughters.count { it.id !in blockedMotherIds }
         Text(
-            text     = "女儿（${extraDaughters.size} 位已拉入）",
+            text     = "女儿（$activeDaughterCount/${extraDaughters.size} 在场，已拉入 ${extraDaughters.size} 位）",
             style    = type.label,
             color    = colors.textSecondary,
             modifier = Modifier.padding(bottom = Spacing.sm),
@@ -238,11 +244,13 @@ internal fun RoundtableSettingsSheet(
             )
         } else {
             extraDaughters.forEach { bot ->
+                val blocked = bot.id in blockedMotherIds
                 MemberSettingsRow(
                     bot        = bot,
-                    action     = MemberAction.REMOVE,
-                    actionTint = Palette.SemanticDanger,
-                    onAction   = { onRemoveDaughter(bot.id) },
+                    action     = if (blocked) MemberAction.ADD else MemberAction.REMOVE,
+                    actionTint = if (blocked) colors.accent else Palette.SemanticDanger,
+                    onAction   = { onToggleMother(bot.id, !blocked) },
+                    dimmed     = blocked,
                 )
             }
             if (pullableDaughters.isNotEmpty()) {
@@ -415,20 +423,27 @@ private fun MemberSettingsRow(
             modifier = Modifier.weight(1f),
         )
         // 操作按钮
+        // P3-33 修复（重做）：操作按钮视觉维持 32dp，外层 48dp 透明热区承载 clickable，
+        // 参照问题5/问题14的模式——视觉尺寸与触摸目标分离，避免按钮色块比头像还大。
         Box(
             modifier = Modifier
-                .size(32.dp)
-                .clip(CircleShape)
-                .background(
-                    when (action) {
-                        MemberAction.ADD    -> actionTint.copy(alpha = 0.12f)
-                        MemberAction.REMOVE -> actionTint.copy(alpha = 0.10f)
-                        MemberAction.LOCKED -> Color.Transparent
-                    }
-                )
+                .size(48.dp)
+                .wrapContentSize(Alignment.Center)
                 .clickable(enabled = action != MemberAction.LOCKED) { onAction() },
-            contentAlignment = Alignment.Center,
         ) {
+            Box(
+                modifier = Modifier
+                    .size(32.dp)
+                    .clip(CircleShape)
+                    .background(
+                        when (action) {
+                            MemberAction.ADD    -> actionTint.copy(alpha = 0.12f)
+                            MemberAction.REMOVE -> actionTint.copy(alpha = 0.10f)
+                            MemberAction.LOCKED -> Color.Transparent
+                        }
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
             Icon(
                 imageVector = when (action) {
                     MemberAction.ADD    -> Icons.Outlined.Add
@@ -439,7 +454,8 @@ private fun MemberSettingsRow(
                 tint               = actionTint,
                 modifier           = Modifier.size(18.dp),
             )
-        }
+            } // 闭合内层 Box 内容
+        } // 闭合外层 Box 内容
     }
 }
 

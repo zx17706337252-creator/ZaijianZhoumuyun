@@ -64,6 +64,10 @@ data class DaughterIdentity(
 
     val relationAssumption: String = "",
     val conflictStrategy: String = "",
+
+    // P1-47 修复：新增性别字段，解决 FamilyScreen 代数标签硬编码 "女儿"/"孙女" 的问题。
+    // 由 D4 生成器根据 NAME_PREF 答案中的性别偏好写入，可能为 null（旧数据无此字段）。
+    val gender: String? = null,
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("persona", persona)
@@ -84,6 +88,7 @@ data class DaughterIdentity(
         put("relationships", relationships)
         put("relationAssumption", relationAssumption)
         put("conflictStrategy", conflictStrategy)
+        if (gender != null) put("gender", gender)
     }
 
     companion object {
@@ -121,6 +126,7 @@ data class DaughterIdentity(
                 relationships = json.optString("relationships"),
                 relationAssumption = json.optString("relationAssumption"),
                 conflictStrategy = json.optString("conflictStrategy"),
+                gender = json.optStringOrNull("gender"),
             )
         }
 
@@ -586,54 +592,72 @@ fun DaughterCharacterData.toCharacterConfig(
 
         goals = emptyList(),
 
-        // ── 简化数据：女儿的初始情绪/动机/隐藏/注意力状态 ──────────
+        // ── 复核修复 #7/#13：女儿的初始情绪/动机/隐藏/注意力状态 ──────
         // 女儿的 stateLayer（DaughterStateLayer）用的是 LLM 自由生成的
         // 字符串 key（如 maskKey="DEFAULT"），而母亲走的 CharacterStateLayer
         // 用的是写死的枚举（MaskType/EmotionType/NeedType/FearType）——
-        // 两套类型结构不兼容，不能逐字段直接转换，这正是产品决定里
-        // "心情快照可以简化，不用完全复刻母亲路线"的地方：
-        // 数值维度（强度/疲劳/紧迫感等）照搬女儿生成的真实数值，
-        // 种类维度（具体是哪种情绪/哪种面具）暂用中性默认值占位，
-        // 不强行映射成可能失真的枚举值。等女儿专属枚举系统接入
-        // Prompt 注入（customEnums 已经生成好了，只是还没接进
-        // buildSystemPrompt）之后，这里再换成读取女儿自己的枚举描述。
-        initialState = CharacterStateLayer(
-            publicState = PublicState(
-                currentMask = MaskType.NORMAL,
-                socialMode = SocialMode.ONE_ON_ONE,
-                talkativeness = state.talkativeness,
-                openness = state.openness,
-                patience = state.patience,
-                vigilance = state.vigilance,
-            ),
-            emotionalState = EmotionalState(
-                primaryEmotion = EmotionType.CALM,
-                secondaryEmotion = null,
-                intensity = state.intensity,
-                emotionalFatigue = state.emotionalFatigue,
-                emotionalStability = state.emotionalStability,
-            ),
-            motivationalState = MotivationalState(
-                currentNeed = NeedType.ATTENTION,
-                currentGoal = state.currentGoal,
-                desireStrength = state.desireStrength,
-                urgency = state.urgency,
-                resistance = state.resistance,
-            ),
-            hiddenState = HiddenState(
-                currentFear = FearType.ABANDONMENT,
-                secretDesire = state.secretDesire,
-                exposureRisk = state.exposureRisk,
-                selfControl = state.selfControl,
-                emotionalSuppression = state.emotionalSuppression,
-            ),
-            attentionState = AttentionState(
-                focusTarget = state.focusTarget,
-                focusStrength = state.focusStrength,
-                observationLevel = state.observationLevel,
-                concernLevel = state.concernLevel,
-            ),
-        ),
+        // 两套类型结构不兼容，不能逐字段直接转换，种类维度在这里（编译期
+        // CharacterConfig.initialState）只能用中性默认值占位，这一点无法改变。
+        // 但这不再是"占位符永久生效"：PromptOrchestrator.buildCharacterStateBlock()
+        // 现在单独接收 daughterStateLayer/daughterCustomEnums 参数（由 ChatViewModel
+        // 通过 DaughterCharacterRepository.getCharacterData() 单独查询后传入），
+        // 渲染面具/情绪/需求/恐惧四个种类维度时优先用女儿专属 customEnums 的
+        // description 文本，这里的占位符只在极端 fallback 路径（例如 ChatViewModel
+        // 未能查到 DaughterCharacterData）下才会真正被 LLM 看到。
+        // 数值维度（强度/疲劳/紧迫感等）复用同一份真实数据，转换逻辑抽取到
+        // DaughterStateLayer.toCharacterStateLayer()，避免这里和该函数各写一份。
+        initialState = state.toCharacterStateLayer(),
     )
 }
+
+/**
+ * 复核修复 #7/#13：DaughterStateLayer 数值维度 → CharacterStateLayer 的转换。
+ * 从 [toCharacterConfig] 中抽取为独立扩展函数，供 ChatViewModel 在组装 Prompt 前
+ * 复用（修正 CharacterStateRepository.getState() 对女儿角色的 fallback 缺口，
+ * 详见该类的类注释）。
+ *
+ * 种类维度（currentMask/primaryEmotion/currentNeed/currentFear）固定使用中性
+ * 默认值占位——母亲侧是编译期枚举，无法承载女儿的运行时字符串枚举，这是类型
+ * 系统层面的硬约束，不是待办事项。真实种类维度的文本描述通过
+ * PromptOrchestrator 的 daughterStateLayer/daughterCustomEnums 参数单独注入，
+ * 不经过这个函数。
+ */
+fun DaughterStateLayer.toCharacterStateLayer(): CharacterStateLayer =
+    CharacterStateLayer(
+        publicState = PublicState(
+            currentMask = MaskType.NORMAL,
+            socialMode = SocialMode.ONE_ON_ONE,
+            talkativeness = talkativeness,
+            openness = openness,
+            patience = patience,
+            vigilance = vigilance,
+        ),
+        emotionalState = EmotionalState(
+            primaryEmotion = EmotionType.CALM,
+            secondaryEmotion = null,
+            intensity = intensity,
+            emotionalFatigue = emotionalFatigue,
+            emotionalStability = emotionalStability,
+        ),
+        motivationalState = MotivationalState(
+            currentNeed = NeedType.ATTENTION,
+            currentGoal = currentGoal,
+            desireStrength = desireStrength,
+            urgency = urgency,
+            resistance = resistance,
+        ),
+        hiddenState = HiddenState(
+            currentFear = FearType.ABANDONMENT,
+            secretDesire = secretDesire,
+            exposureRisk = exposureRisk,
+            selfControl = selfControl,
+            emotionalSuppression = emotionalSuppression,
+        ),
+        attentionState = AttentionState(
+            focusTarget = focusTarget,
+            focusStrength = focusStrength,
+            observationLevel = observationLevel,
+            concernLevel = concernLevel,
+        ),
+    )
 

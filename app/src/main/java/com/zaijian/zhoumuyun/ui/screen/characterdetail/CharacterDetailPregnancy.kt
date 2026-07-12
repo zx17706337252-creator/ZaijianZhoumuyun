@@ -129,6 +129,8 @@ internal fun PregnancyPanel(
     onRequestTerminate: () -> Unit,
     onDismissTerminate: () -> Unit,
     onConfirmTerminate: () -> Unit,
+    // P3-44 修复：生育记录可点击导航到子代角色详情页
+    onBirthRecordClick: (Int) -> Unit = {},
 ) {
     val colors = ZaijianTheme.colors
     val type   = ZaijianTheme.typography
@@ -220,8 +222,11 @@ internal fun PregnancyPanel(
                     .format(java.util.Date(record.bornAt))
                 val genderLabel = if (record.isDaughter) "女儿" else "儿子"
                 // WorldCard 接入（精修方案 v1.3）：独立列表项，归属当前角色。
+                // P3-44 修复：生育记录可点击跳转到子代角色详情页
                 WorldCard(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onBirthRecordClick(record.characterId) },
                     ownerAccent = accentColor,
                 ) {
                     Row(

@@ -612,7 +612,6 @@ fun RoundtableScreen(
                         if (blocked) viewModel.blockMother(id) else viewModel.unblockMother(id)
                     },
                     onAddDaughter         = { viewModel.addDaughter(it) },
-                    onRemoveDaughter      = { viewModel.removeDaughter(it) },
                     onModeChange          = { viewModel.setScheduleMode(it) },
                     onSpontaneousToggle   = { viewModel.setSpontaneousEnabled(it) },
                     onSetBackground       = {

@@ -23,6 +23,7 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Fill
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.Canvas
 import com.zaijian.zhoumuyun.ui.theme.AnimDuration
@@ -109,10 +110,12 @@ fun OnboardingTooltip(
 
             // ── 三角指针（向下，对齐「书架」Tab）─────────────
             // 书架 Tab 是第 2 个（共 4 个），左边距约 screenWidth * 0.25 - 8dp
-            // 这里使用 padding(start = 46dp) 对齐（屏幕 390dp 布局下估算）
+            // P3-27 修复（重做）：改用屏幕宽度比例计算，而非对 390dp 屏幕的固定估算值
+            val screenWidthDp = LocalConfiguration.current.screenWidthDp
+            val pointerIndent = (screenWidthDp * 0.25f).dp - 8.dp
             Canvas(
                 modifier = Modifier
-                    .padding(start = 46.dp)
+                    .padding(start = pointerIndent)
                     .size(width = 16.dp, height = 8.dp),
             ) {
                 val path = Path().apply {

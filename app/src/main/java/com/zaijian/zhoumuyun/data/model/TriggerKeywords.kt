@@ -146,22 +146,29 @@ val CharacterTriggerKeywords: Map<Int, List<String>> = mapOf(
 
 /**
  * 用户"同意"的意图关键词——供伴侣同意判定使用。
- * 判定逻辑见 PregnancyTriggerManager.detectUserConsent()。
+ * 判定逻辑见 PregnancyTriggerManager.detectUserConsentByKeyword()——
+ * 问题17第二阶段修复后，本表只在 AI 语义判定（UserConsentIntentJudge）
+ * 不可用或调用异常/超时时，作为 detectUserConsent() 的兜底路径被使用，
+ * 不再是唯一判定路径。
  * 采用 OR 关系，命中任意一条视为同意。
  *
  * 设计原则：只接受明确同意，模糊回复（如"也许""随便"）不算同意，
  * 避免用户被动"误同意"——这与待办清单"用户不同意是真实分叉，不被绕过"一致。
+ *
+ * 问题17修复：原表把"好""嗯""行""想""要"这类单字高频词与"好的""愿意"等
+ * 双字/短语混在同一个列表里，全部用 String.contains() 子串匹配。单字在
+ * 中文里几乎不带独立语义边界，"你好"包含"好"、"想要"包含"想"和"要"、
+ * "还好""行吧"同样会被命中，误判率高到不可用。拆成两个列表后，
+ * detectUserConsentByKeyword() 对下面的 [UserConsentShortWords] 改用"整句
+ * 去除首尾标点空白后完全等于该词"的严格匹配（用户真的就回复了一个
+ * "好"/"嗯"字时才算数），对本列表（双字及以上，区分度足够）维持原有
+ * 子串匹配。
  */
 val UserConsentKeywords: List<String> = listOf(
-    "好",
     "好的",
-    "嗯",
     "可以",
-    "行",
     "同意",
     "愿意",
-    "想",
-    "要",
     "好啊",
     "当然",
     "没问题",
@@ -175,21 +182,37 @@ val UserConsentKeywords: List<String> = listOf(
 )
 
 /**
+ * 问题17修复：从 [UserConsentKeywords] 拆出的单字高频同意词。
+ * 只有当用户整条消息去除首尾标点/空白后恰好等于这几个字之一
+ * （或该字加语气词后缀，如"好啊""嗯呐"——但这类已经进入上面的短语表，
+ * 这里只保留裸字本身），才判定为同意；出现在句子中间一律不算，
+ * 避免"你好""还好""行吧里的行"这类误命中。见 detectUserConsentByKeyword()。
+ */
+val UserConsentShortWords: List<String> = listOf(
+    "好",
+    "嗯",
+    "行",
+    "想",
+    "要",
+)
+
+/**
  * 用户"拒绝"的意图关键词。
  * 明确拒绝时触发 REJECTED 分叉，副作用写入 CharacterStateLayer。
  * 同样采用 OR 关系。
  *
  * 注意：既非同意也非拒绝的回复（如"说什么呢""什么意思"），
  * 不计为同意，也不触发 REJECTED 副作用——静默处理，保持正常对话。
+ *
+ * 问题17修复：同 [UserConsentKeywords]，单字"不""别"拆到
+ * [UserRefusalShortWords]，改用整句严格匹配；本表维持双字及以上子串匹配。
  */
 val UserRefusalKeywords: List<String> = listOf(
-    "不",
     "不要",
     "不行",
     "不可以",
     "不同意",
     "拒绝",
-    "别",
     "算了",
     "不想",
     "不愿意",
@@ -199,4 +222,15 @@ val UserRefusalKeywords: List<String> = listOf(
     "还不行",
     "还没准备好",
     "没准备好",
+)
+
+/**
+ * 问题17修复：从 [UserRefusalKeywords] 拆出的单字高频拒绝词。
+ * "不"、"别"极易作为其他词的组成部分出现（"不错""别的事""特别"），
+ * 原 contains() 子串匹配下"不错"这种正面评价反而被判定为拒绝。
+ * 改用整句严格匹配，只有用户整条消息就是这一个字时才算数。
+ */
+val UserRefusalShortWords: List<String> = listOf(
+    "不",
+    "别",
 )

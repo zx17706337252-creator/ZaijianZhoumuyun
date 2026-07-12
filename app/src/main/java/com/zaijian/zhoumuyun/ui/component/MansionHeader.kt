@@ -32,6 +32,10 @@ import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
 @Composable
 fun MansionHeader(
     title: String = "永恒之家",
+    // P3-49 修复（重做）：hasNewNotification 当前无动态数据源。
+    // 待确认：通知数据来源（未读任务数/未读消息数/系统通知等），
+    // 确认后接入 BottomNavBadgeViewModel 或 PresenceViewModel 的通知标记。
+    // 在此之前，该参数无实际效果，红点通知功能不可用。
     hasNewNotification: Boolean = false,
     onNotificationClick: () -> Unit = {},
     onTaskCenterClick: () -> Unit = {},

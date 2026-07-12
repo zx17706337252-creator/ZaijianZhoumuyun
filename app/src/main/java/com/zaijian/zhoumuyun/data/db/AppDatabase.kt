@@ -154,6 +154,9 @@ import com.zaijian.zhoumuyun.data.db.entity.JudgeAccuracyLogEntity           // 
  *                                    + competition_entries（参赛条目，含三方评分记录）
  *                                    + competition_weight_configs（项目级评分权重配置）
  *                                    + judge_accuracy_log（裁判排名与用户排名吻合度历史）
+ *   v50（Fix-ThinkingLeak：输出格式约束修复）：messages 新增 thinkingText 列
+ *                                    （从回复正文剥离出的内心推理/工具调用意图，
+ *                                    对齐 exportedFileJson 既有"非空即代表附加内容"设计）
  */
 @Database(
     entities = [
@@ -201,7 +204,11 @@ import com.zaijian.zhoumuyun.data.db.entity.JudgeAccuracyLogEntity           // 
         CompetitionWeightConfigEntity::class,
         JudgeAccuracyLogEntity::class,
     ],
-    version = 48,  // 47 → 48：离线简报复核修复——competition_rounds 补 completedAt 索引，
+    version = 50,  // 49 → 50：Fix-ThinkingLeak 修复——messages 表新增 thinkingText 列，
+    // 承接从回复正文剥离出的内心推理/工具调用意图，气泡下方"想法"卡片据此渲染。
+    // 纯新增可空列，不涉及任何现有表结构或数据变更。
+    // 48 → 49：P1-47 修复——daughter_character 表新增 gender 列，
+    // 用于 FamilyScreen 代数标签展示，替代硬编码 "女儿"/"孙女"。
     // 纯新增索引，不涉及任何表结构或数据变更。
     // 46 → 47：清理 30 个历史遗留索引（改名式冗余 + 无替代覆盖的孤儿索引），
     // 不涉及任何表结构或数据变更。
@@ -290,6 +297,8 @@ abstract class AppDatabase : RoomDatabase() {
                         *com.zaijian.zhoumuyun.data.db.migration.MIGRATIONS_21_30,
                         *com.zaijian.zhoumuyun.data.db.migration.MIGRATIONS_31_40,
                         *com.zaijian.zhoumuyun.data.db.migration.MIGRATIONS_41_47,
+                        com.zaijian.zhoumuyun.data.db.migration.MIGRATION_48_49,
+                        com.zaijian.zhoumuyun.data.db.migration.MIGRATION_49_50,
                     )
                     .fallbackToDestructiveMigrationOnDowngrade()
                     // P1-11 修复：原先仅有 fallbackToDestructiveMigrationOnDowngrade()

@@ -1,6 +1,7 @@
 package com.zaijian.zhoumuyun.data
 
 import android.content.Context
+import com.zaijian.zhoumuyun.data.datastore.PregnancyPressureDataStore
 import com.zaijian.zhoumuyun.data.db.AppDatabase
 import com.zaijian.zhoumuyun.data.memory.MemoryEngine
 import com.zaijian.zhoumuyun.data.repository.CharacterStateRepository
@@ -38,6 +39,12 @@ import com.zaijian.zhoumuyun.domain.RelationshipEngine
 class AppContainer private constructor(context: Context) {
 
     private val db = AppDatabase.getInstance(context)
+
+    // 问题4修复：PregnancyPressureDataStore 完整实现但此前零实例化，
+    // ChatViewModel/PregnancyTriggerManager 所有 pressureScale 参数一直硬编码
+    // 1.0f。与其余 DataStore 类（AppearanceDataStore 等）持有模式一致，
+    // 由容器构造函数收到的 context 直接构造，无需额外依赖。
+    val pregnancyPressureDataStore: PregnancyPressureDataStore = PregnancyPressureDataStore(context)
 
     val eventRepo: EventRepository = EventRepository(db.worldEventDao())
     val memoryRepo: MemoryRepository = MemoryRepository(db.memoryDao(), db.memoryCandidateDao())

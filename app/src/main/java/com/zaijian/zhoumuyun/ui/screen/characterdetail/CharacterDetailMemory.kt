@@ -11,7 +11,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -434,11 +433,13 @@ private fun MemorySecondaryChips(
     // 根据主维度决定次维度 Chip 组
     val chips = listOf("重要")
 
-    FlowRow(
+    // P3-46 修复：当前只有"重要"一个 Chip，FlowRow（自动换行布局）
+    // 在此场景下是多余开销，改为普通 Row +水平间距即可。
+    Row(
         modifier            = Modifier
             .fillMaxWidth()
             .padding(horizontal = Spacing.screenHorizontal, vertical = 6.dp),
-        horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         chips.forEachIndexed { index, label ->
             val chipAccent = when (dimIndex) {

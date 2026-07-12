@@ -156,8 +156,19 @@ class ReminderTool(
             file.writeText(jsonObj.toString(), Charsets.UTF_8)
 
             // ── 2. AlarmManager 调度（Phase 20 §D）────────────
+            // 批次C·问题22 修复：原先直接 id.toInt() 截断 System.currentTimeMillis()
+            // （13 位毫秒时间戳）为 32 位 Int，任何两条提醒只要创建时间相差 2^32 毫秒
+            // （约 49.7 天）的整数倍，requestCode 就会完全相同，PendingIntent.getBroadcast()
+            // 配合 FLAG_UPDATE_CURRENT 会静默覆盖旧提醒的闹钟——不报错，用户毫无感知，
+            // 旧提醒永远不会触发。改为对 id 的字符串形式取 hashCode()，与
+            // ReminderReceiver.kt 里"查看日程"按钮 PendingIntent 已经采用的
+            // ("reminder_schedule_$reqId").hashCode() 同一思路（保留该文件用法不变，
+            // 两处各自独立派生，不需要额外传参）——hashCode() 参与了 Long 的全部数位，
+            // 不再只取低 32 位，把碰撞概率从"确定性碰撞"降为"哈希碰撞"（32 位空间下
+            // 约 2^16 条同时存活的提醒才会有 50% 碰撞概率，对单机提醒场景足够安全）。
+            val requestCode = id.toString().hashCode()
             if (triggerAtMs > System.currentTimeMillis()) {
-                scheduleAlarm(id.toInt(), text, triggerAtMs, params["__character_id"]?.toIntOrNull() ?: characterIdProvider())
+                scheduleAlarm(requestCode, text, triggerAtMs, params["__character_id"]?.toIntOrNull() ?: characterIdProvider())
             }
 
             val timeDesc = buildString {

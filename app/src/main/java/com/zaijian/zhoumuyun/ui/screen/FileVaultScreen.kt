@@ -54,7 +54,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -361,7 +360,8 @@ fun FileVaultScreen(
                     .background(colors.bgElevated)
                     .padding(horizontal = Spacing.md, vertical = Spacing.sm),
             ) {
-                Text(msg, color = colors.textPrimary, fontSize = 13.sp)
+                // P3-32 修复：硬编码 fontSize 替换为 ZaijianTheme.typography
+                Text(msg, color = colors.textPrimary, style = type.caption)
             }
         }
     }
@@ -432,7 +432,8 @@ private fun VaultTabRow(selectedIndex: Int, onSelect: (Int) -> Unit) {
             ) {
                 Text(
                     text       = label,
-                    fontSize   = 13.sp,
+                    // P3-32 修复：硬编码 fontSize 替换为 ZaijianTheme.typography
+                    style      = type.caption,
                     fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
                     color      = if (selected) Palette.Ink900 else colors.textSecondary,
                 )
@@ -485,7 +486,8 @@ private fun VaultFileCard(
             Spacer(Modifier.height(2.dp))
             Text(
                 text  = "${vaultFile.sizeLabel}  ·  ${vaultFile.dateLabel}",
-                fontSize = 11.sp,
+                // P3-32 修复：硬编码 fontSize 替换为 ZaijianTheme.typography
+                style = type.label,
                 color = colors.textSecondary,
             )
         }
@@ -528,6 +530,8 @@ private fun VaultFileCard(
 @Composable
 private fun EmptyVaultHint() {
     val colors = ZaijianTheme.colors
+    // P3-32 修复：添加 type 引用，使用主题排印系统
+    val type   = ZaijianTheme.typography
 
     Column(
         modifier = Modifier
@@ -545,13 +549,15 @@ private fun EmptyVaultHint() {
         Spacer(Modifier.height(Spacing.sm))
         Text(
             text     = "还没有文件",
-            fontSize = 15.sp,
+            // P3-32 修复：硬编码 fontSize 替换为主题排印，移除 copy 覆写
+            style    = type.body,
             color    = colors.textSecondary,
         )
         Spacer(Modifier.height(Spacing.xs))
         Text(
             text     = "让角色用 file_export 工具生成文件后会出现在这里",
-            fontSize = 12.sp,
+            // P3-32 修复：硬编码 fontSize 替换为主题排印，移除 copy 覆写
+            style    = type.caption,
             color    = colors.textSecondary.copy(alpha = 0.6f),
         )
     }

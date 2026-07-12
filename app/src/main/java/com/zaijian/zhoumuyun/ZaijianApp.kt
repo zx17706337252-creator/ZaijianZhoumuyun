@@ -13,8 +13,6 @@ import com.zaijian.zhoumuyun.data.agent.HeartbeatSetTool
 import com.zaijian.zhoumuyun.data.agent.HeartbeatUpdateTool
 import com.zaijian.zhoumuyun.data.agent.MemoryQueryTool
 import com.zaijian.zhoumuyun.data.agent.MemoryWriteTool
-import com.zaijian.zhoumuyun.data.agent.NarrativeMemoryClearTool
-import com.zaijian.zhoumuyun.data.agent.NarrativeMemoryUpdateTool
 import com.zaijian.zhoumuyun.data.agent.PlanSaveTool
 import com.zaijian.zhoumuyun.data.agent.RuleDistillTool
 import com.zaijian.zhoumuyun.data.agent.ScheduleCreateTool
@@ -22,15 +20,11 @@ import com.zaijian.zhoumuyun.data.agent.ScheduleDeleteTool
 import com.zaijian.zhoumuyun.data.agent.ScheduleGetTool
 import com.zaijian.zhoumuyun.data.agent.ScheduleListTool
 import com.zaijian.zhoumuyun.data.agent.ScheduleUpdateTool
-import com.zaijian.zhoumuyun.data.agent.SoulClearTool
-import com.zaijian.zhoumuyun.data.agent.SoulUpdateTool
 import com.zaijian.zhoumuyun.data.agent.BuildApkDownloadTool
 import com.zaijian.zhoumuyun.data.agent.BuildApkTool
 import com.zaijian.zhoumuyun.data.agent.BuildStatusCheckTool
 import com.zaijian.zhoumuyun.data.agent.CreateGithubRepoTool
 import com.zaijian.zhoumuyun.data.agent.GitCommitPushTool
-import com.zaijian.zhoumuyun.data.agent.UserImpressionClearTool
-import com.zaijian.zhoumuyun.data.agent.UserImpressionUpdateTool
 import com.zaijian.zhoumuyun.data.agent.registerBuiltinTools
 import com.zaijian.zhoumuyun.data.agent.registerCreativeTools
 import com.zaijian.zhoumuyun.data.agent.registerFileSystemTools
@@ -40,6 +34,11 @@ import com.zaijian.zhoumuyun.data.agent.registerCreativeDocTools
 import com.zaijian.zhoumuyun.data.agent.registerDataVisTools
 import com.zaijian.zhoumuyun.data.agent.registerAgentMetaTools
 import com.zaijian.zhoumuyun.data.agent.registerEmailTools
+import com.zaijian.zhoumuyun.data.agent.registerSoulMemoryUserTools
+import com.zaijian.zhoumuyun.data.agent.TaskStartTool
+import com.zaijian.zhoumuyun.data.agent.TaskUpdateTool
+import com.zaijian.zhoumuyun.data.agent.TaskCompleteTool
+import com.zaijian.zhoumuyun.data.agent.TaskCancelTool
 import com.zaijian.zhoumuyun.data.datastore.AppearanceDataStore
 import com.zaijian.zhoumuyun.data.datastore.EmailAccountStore
 import com.zaijian.zhoumuyun.data.datastore.GithubConfig
@@ -57,6 +56,7 @@ import com.zaijian.zhoumuyun.data.repository.IdentityRepository
 import com.zaijian.zhoumuyun.data.repository.AgentPlanRepository
 import com.zaijian.zhoumuyun.data.repository.LearningGoalRepository
 import com.zaijian.zhoumuyun.data.repository.ScheduleRepository
+import com.zaijian.zhoumuyun.data.repository.TaskRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -280,6 +280,22 @@ class ZaijianApp : Application() {
             }
         }
 
+        // 批次C·问题5 修复：分娩到期结算调度。
+        // PregnancyRepository.settleDueDeliveries() 此前全项目零调用点，怀孕满 30 天
+        // 不会自动触发分娩结算，isPregnant 永远卡在 true。
+        // 两步：①挂上 12h 周期兜底轮询（PeriodicWorkRequest，幂等，重复 onCreate 不会
+        // 重复入队）；②立即做一次检查，避免用户刚好在满 30 天那一刻打开 App 却要等
+        // 下一个轮询点。与其它后台初始化同一模式：独立 launch + try-catch + ZLog。
+        com.zaijian.zhoumuyun.data.agent.PregnancySettlementScheduler.ensurePeriodicWork(this)
+        scope.launch(Dispatchers.Default) {
+            val container = com.zaijian.zhoumuyun.data.AppContainer.instance
+            com.zaijian.zhoumuyun.data.agent.PregnancySettlementScheduler.runImmediateCheck(
+                pregnancyRepo = container.pregnancyRepo,
+                memoryRepo    = container.memoryRepo,
+                daughterRepo  = container.daughterCharacterRepo,
+            )
+        }
+
         // 报告第5条：PresenceEngine 收敛。原先在此处单独 new 一份 PresenceEngine
         // 再赋给 sharedPresenceEngine；现在 AppContainer.init(this) 内部已经
         // 自包含构造了同一个实例（见 AppContainer.presenceEngine 注释），这里
@@ -397,10 +413,15 @@ class ZaijianApp : Application() {
         )
 
         // ── Phase 30 方案五：App 启动时异步生成当日 Presence 文案 ──
+        // 审查报告问题9修复：补传 daughterRepo，让已注册的女儿角色也能收到
+        // 每日 Presence 便签（此前仅遍历 DefaultCharacters，女儿 ID>=1000 永远
+        // 被排除，与 BriefingRepository 早已支持 mothers+daughters 合并的
+        // 现状不一致）。
         scope.launch {
             generateDailyPresenceTexts(
                 goalDao        = db.characterGoalDao(),
                 presenceEngine = presenceEngine,
+                daughterRepo   = container.daughterCharacterRepo,
             )
         }
 
@@ -528,6 +549,7 @@ class ZaijianApp : Application() {
     private suspend fun generateDailyPresenceTexts(
         goalDao:        com.zaijian.zhoumuyun.data.db.dao.CharacterGoalDao,
         presenceEngine: com.zaijian.zhoumuyun.domain.PresenceEngine,
+        daughterRepo:   DaughterCharacterRepository,
     ) {
         val provider = try {
             ProviderManager.instance.activeProvider
@@ -552,6 +574,44 @@ class ZaijianApp : Application() {
                 goalTitle     = topGoal?.title,
                 provider      = provider,
             )
+        }
+
+        // 审查报告问题9修复：DefaultCharacters 只覆盖 ID 1-9，已注册的女儿角色
+        // （ID>=1000）此前永远不会走到这里，家族页面看到的女儿便签是空的。
+        // 女儿的 name/persona/speechStyle 不在 DefaultCharacters 里，必须逐个
+        // 反查 daughterRepo.getCharacterConfig() 才能拿到——不是简单把 ID 追加
+        // 进同一个 forEach 就够了。单个女儿反查/生成失败不应影响其余女儿或
+        // 已完成的原生角色，用独立 try-catch 逐条隔离。
+        val daughterIds = try {
+            daughterRepo.getAllDaughterCharacterIds()
+        } catch (e: Exception) {
+            ZLog.w("ZaijianApp", "getAllDaughterCharacterIds failed, skip daughter daily note gen", e)
+            emptyList()
+        }
+        daughterIds.forEach daughterLoop@{ daughterId ->
+            if (presenceEngine.isDailyNoteGenerated(daughterId)) return@daughterLoop
+
+            val daughterConfig = try {
+                daughterRepo.getCharacterConfig(daughterId)
+            } catch (e: Exception) {
+                ZLog.w("ZaijianApp", "getCharacterConfig failed for daughterId=$daughterId, skip", e)
+                null
+            } ?: return@daughterLoop
+
+            val topGoal = try { goalDao.getTopGoal(daughterId) } catch (_: Exception) { null }
+
+            try {
+                presenceEngine.generateDailyNoteText(
+                    characterId   = daughterId,
+                    characterName = daughterConfig.name,
+                    persona       = daughterConfig.identityConfig.persona,
+                    speechStyle   = daughterConfig.identityConfig.speechStyle,
+                    goalTitle     = topGoal?.title,
+                    provider      = provider,
+                )
+            } catch (e: Exception) {
+                ZLog.w("ZaijianApp", "generateDailyNoteText failed for daughterId=$daughterId", e)
+            }
         }
     }
 
@@ -592,6 +652,9 @@ class ZaijianApp : Application() {
         // ChatViewModel.registerCharacterTools() 同构的静态占位注册）也要同步改，
         // 否则类型不匹配无法编译。
         val learningGoalRepository = LearningGoalRepository(db.learningGoalDao())
+        // 问题40修复：与 ChatViewModel.kt 的 taskRepo 构造完全一致，供下方
+        // TaskStartTool 等4个工具的静态占位注册使用。
+        val taskRepo = TaskRepository(db, db.taskDao(), db.worldEventDao())
         AgentToolRegistry.registerAll(
             PlanSaveTool(
                 agentPlanDao = agentPlanRepository,
@@ -609,31 +672,40 @@ class ZaijianApp : Application() {
                 goalDao     = learningGoalRepository,
                 characterId = { -1 },
             ),
-            // ── Soul/Memory/User 三模块 ──────────────────────────
-            SoulUpdateTool(
-                identityDao = identityRepository,
+            // ── 问题40修复：工作台任务跟踪 4 个工具，此前只在 ChatViewModel.init()
+            // 动态覆盖注册，App 启动阶段完全没有静态占位注册（不同于同目录其余工具
+            // 模块，如下方 registerSoulMemoryUserTools() 六个工具都有本文件内的
+            // -1 占位）。后果：工作流后台执行（WorkflowEngine，无 ChatViewModel
+            // 存活）想调用 task_start 等时，AgentToolRegistry.get() 直接返回 null
+            // （"工具未注册"），而不是 self_reflect/rule_review 那种"注册了但
+            // 角色ID会错"——是更彻底的缺失。
+            // taskRepo 构造与 ChatViewModel.kt 完全一致（TaskRepository(db, db.taskDao(),
+            // db.worldEventDao())），characterId 用 -1 占位，等 ChatViewModel.init()
+            // 时按真实角色覆盖，与本文件其余角色绑定工具同一套两阶段注册模式。
+            TaskStartTool(
+                taskRepo    = taskRepo,
                 characterId = { -1 },
             ),
-            SoulClearTool(
-                identityDao = identityRepository,
+            TaskUpdateTool(
+                taskRepo    = taskRepo,
                 characterId = { -1 },
             ),
-            NarrativeMemoryUpdateTool(
-                identityDao = identityRepository,
+            TaskCompleteTool(
+                taskRepo    = taskRepo,
                 characterId = { -1 },
             ),
-            NarrativeMemoryClearTool(
-                identityDao = identityRepository,
+            TaskCancelTool(
+                taskRepo    = taskRepo,
                 characterId = { -1 },
             ),
-            UserImpressionUpdateTool(
-                identityDao = identityRepository,
-                characterId = { -1 },
-            ),
-            UserImpressionClearTool(
-                identityDao = identityRepository,
-                characterId = { -1 },
-            ),
+        )
+        // 问题39修复：Soul/Memory/User 三模块 6 个工具此前在本文件与 ChatViewModel.kt
+        // 各自手写一份完全重复的实例化代码（唯一区别是 characterId 闭包），改用
+        // registerSoulMemoryUserTools() 统一封装，本处传 -1 占位；ChatViewModel.init()
+        // 改传 currentCharacterId 覆盖，两阶段注册的顺序/时机不变，只消除重复代码。
+        AgentToolRegistry.registerSoulMemoryUserTools(
+            identityDao = identityRepository,
+            characterId = { -1 },
         )
 
         // 若 provider 此时为 null（首次启动未配置 Key），工具将在

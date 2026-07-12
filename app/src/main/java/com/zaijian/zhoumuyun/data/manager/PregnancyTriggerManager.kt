@@ -8,7 +8,9 @@ import com.zaijian.zhoumuyun.data.model.EmotionType
 import com.zaijian.zhoumuyun.data.model.PregnancyState
 import com.zaijian.zhoumuyun.data.model.PregnancyTriggerResult
 import com.zaijian.zhoumuyun.data.model.UserConsentKeywords
+import com.zaijian.zhoumuyun.data.model.UserConsentShortWords
 import com.zaijian.zhoumuyun.data.model.UserRefusalKeywords
+import com.zaijian.zhoumuyun.data.model.UserRefusalShortWords
 import com.zaijian.zhoumuyun.data.model.isDaughterMother
 import com.zaijian.zhoumuyun.data.provider.LLMMessage
 import com.zaijian.zhoumuyun.data.repository.CharacterStateRepository
@@ -52,6 +54,16 @@ import kotlin.math.min
 //    1-6 号逻辑不变：仍走 checkTrigger() + evaluateConsent() 关键词兜底链路，
 //    与新链路并行存在，互不影响。
 //
+//  问题17（第二阶段）新增：
+//    detectUserConsent() 改为 AI 判定优先、关键词判定兜底：
+//      ① 优先调用 consentJudge.judge()（UserConsentIntentJudge，AI 语义判定）；
+//      ② consentJudge 未注入 / LLM 调用异常 / 超时：捕获后降级到
+//         detectUserConsentByKeyword()（原关键词链路，含问题17第一阶段的
+//         单字严格匹配收紧，逻辑原样保留，未做任何删减）。
+//    两套判定逻辑同时存在、优先级明确：平时走 AI 判定（更贴近用户真实
+//    语义，不受固定词表覆盖面限制），只有 Provider 不可用或调用异常/超时
+//    时才退回关键词匹配兜底，多一层容错。
+//
 //  ChatViewModel 接入（新增）：
 //    发消息后，若 result is FertileButFailed：
 //      appendPromptPatch(result.immediatePromptPatch)  // 即时失落感，无门控
@@ -70,6 +82,11 @@ class PregnancyTriggerManager(
     // （PregnancyViewModel 等只用流产/手动入口的调用方不需要传，留 null 即可）。
     private val relationshipEngine: RelationshipEngine? = null,
     private val aiJudge: FertileWindowConsentJudge? = null,
+    // 问题17（第二阶段）：1-6 号关键词兜底链路的 AI 判定优先层，可空向后兼容——
+    // 未传时 detectUserConsent() 直接走关键词兜底（与传了但 LLM 调用失败时
+    // 的降级路径结果一致，PregnancyViewModel/RoundtableViewModel 均未传，
+    // 行为与本次修复前完全一致，不受影响）。
+    private val consentJudge: UserConsentIntentJudge? = null,
 ) {
 
     // ── 累积副作用数值 ────────────────────────────────────────
@@ -114,6 +131,13 @@ class PregnancyTriggerManager(
 
     // ── D2.6 流产跨周期悲伤余波：有效窗口（天） ────────────────
     private val MISCARRIAGE_AFTERMATH_WINDOW_DAYS = 5
+
+    // ── 问题17修复：单字高频同意/拒绝词的整句严格匹配用——首尾裁剪标点集合 ─
+    private val TRIM_PUNCTUATION = setOf(
+        '。', '！', '？', '，', '、', '；', '：',
+        '“', '”', '‘', '’', '（', '）', '《', '》', '…', '~', '～',
+        '.', '!', '?', ',', ';', ':', '"', '\'', '(', ')',
+    )
 
     // =========================================================
     //  ① 触发词检测
@@ -307,14 +331,97 @@ class PregnancyTriggerManager(
     //  正常判定链内部方法
     // =========================================================
 
-    fun detectUserConsent(userText: String): Boolean? {
-        val isConsent = UserConsentKeywords.any { userText.contains(it) }
-        val isRefusal = UserRefusalKeywords.any { userText.contains(it) }
+    /**
+     * 问题17（第二阶段）：detectUserConsent() 现在是 AI 判定优先、关键词判定
+     * 兜底的统一入口。
+     *
+     * 判定优先级：
+     *  ① [consentJudge] 非空时，优先调用 [UserConsentIntentJudge.judge]（AI
+     *     语义判定），三态映射为 Boolean?：CONSENT -> true，REFUSAL -> false，
+     *     UNCLEAR -> null（与关键词兜底路径的"既非同意也非拒绝"语义一致）。
+     *  ② 以下任一情况触发降级到 [detectUserConsentByKeyword]（原关键词链路，
+     *     逻辑原样保留，未做任何删减）：
+     *       - [consentJudge] 未注入（构造时未传，向后兼容旧调用方）；
+     *       - AI 判定调用抛出异常（Provider 未配置、网络异常、重试后仍失败、
+     *         [UserConsentIntentJudge] 内部超时上限触发的
+     *         [kotlinx.coroutines.TimeoutCancellationException] 等）。
+     *
+     * 异常分类处理（关键，不能简单 catch(Exception)）：
+     *  - [kotlinx.coroutines.TimeoutCancellationException]：这是
+     *    [UserConsentIntentJudge] 内部 withTimeout 触发的"自己的"超时，
+     *    是设计内的正常降级信号，捕获后走关键词兜底。
+     *  - 其余 [kotlinx.coroutines.CancellationException]：这是外部真正的协程
+     *    取消（例如 ViewModel 作用域被清理、上层调用方取消了整个协程），
+     *    必须重新抛出，不能吞掉——吞掉外部取消信号并继续返回一个"兜底结果"
+     *    违反结构化并发的基本约定（协程被取消后不应该继续产出计算结果）。
+     *  - 其他 [Exception]（Provider 未配置、网络异常、JSON 解析失败等）：
+     *    这才是真正意义上的"LLM 调用失败"，捕获后走关键词兜底。
+     *
+     * 这样处理之后，"AI 判定优先，关键词判定兜底"精确对应的是"LLM 调用
+     * 失败/超时"这一种情况，不会误吞真正的协程取消，是本次修复要求的
+     * "完美严谨"的关键一环。
+     */
+    suspend fun detectUserConsent(userText: String): Boolean? {
+        val judge = consentJudge
+        if (judge != null) {
+            try {
+                return when (judge.judge(userText)) {
+                    ConsentJudgeResult.CONSENT -> true
+                    ConsentJudgeResult.REFUSAL -> false
+                    ConsentJudgeResult.UNCLEAR -> null
+                }
+            } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+                // AI 判定组件自身的超时上限触发，属于设计内的降级信号。
+                ZLog.w("PregnancyTriggerManager", "AI 同意判定超时，降级到关键词兜底", e)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                // 非本组件超时导致的取消（外部协程真正被取消），必须放行，
+                // 不能当作"调用失败"吞掉后继续走兜底——否则违反结构化并发约定。
+                throw e
+            } catch (e: Exception) {
+                ZLog.w("PregnancyTriggerManager", "AI 同意判定调用失败，降级到关键词兜底", e)
+                // 落到下面的关键词兜底，不在此处重新抛出——关键词判定是
+                // 兜底容错层，本身就是为了在 AI 判定不可用时仍能正常出结果。
+            }
+        }
+        return detectUserConsentByKeyword(userText)
+    }
+
+    /**
+     * 问题17修复（第一阶段，原关键词判定，现降级为 AI 判定不可用时的兜底）：
+     * 原实现对 [UserConsentKeywords]/[UserRefusalKeywords] 里的单字
+     * 高频词（"好""嗯""行""想""要""不""别"）也用 String.contains() 子串匹配，
+     * 导致"你好""还好""行吧""不错""别的事"这类与同意/拒绝无关的日常回复被
+     * 误判。现在双字及以上短语（区分度足够）维持 contains() 子串匹配；单字词
+     * 改用 [isExactShortWordMatch]（整句去除首尾标点/空白后严格相等）—— 只有
+     * 用户整条消息就是"好""嗯"这一个字时才算数，字出现在句子中间一律不算。
+     *
+     * 本函数逻辑与第一阶段修复完全一致，未做任何改动——第二阶段修复只是把
+     * 调用入口从"唯一判定路径"改为"AI 判定失败时的兜底路径"，不改变本函数
+     * 自身的判定规则。
+     */
+    private fun detectUserConsentByKeyword(userText: String): Boolean? {
+        val isConsent = UserConsentKeywords.any { userText.contains(it) } ||
+            UserConsentShortWords.any { isExactShortWordMatch(userText, it) }
+        val isRefusal = UserRefusalKeywords.any { userText.contains(it) } ||
+            UserRefusalShortWords.any { isExactShortWordMatch(userText, it) }
         return when {
             isConsent && !isRefusal -> true
             isRefusal               -> false
             else                    -> null
         }
+    }
+
+    /**
+     * 判断 [userText] 去除首尾常见中英文标点/空白后是否恰好等于 [word]。
+     * 用于单字高频词的严格匹配（见 detectUserConsentByKeyword() 顶部说明）。
+     * 只裁剪首尾，不处理句中标点——"好好好"这种重复表态不在本函数处理范围内，
+     * 维持"未命中"（返回 false），不影响原有行为（这类重复表态此前也不在
+     * 单字直接子串匹配的考虑范围之外，只是恰好因为包含"好"而命中，本次收紧
+     * 后不再命中——如需支持可在后续窗口按需补充，不在本次问题17修复范围内）。
+     */
+    private fun isExactShortWordMatch(userText: String, word: String): Boolean {
+        val trimmed = userText.trim { it.isWhitespace() || it in TRIM_PUNCTUATION }
+        return trimmed == word
     }
 
     private suspend fun applyRejectedEffect(
@@ -531,26 +638,36 @@ class PregnancyTriggerManager(
 
         val pregnancyDay = pregnancyState.currentDay(now)
 
-        // 落库：isPregnant→false，miscarriedAt 记录时间戳
-        pregnancyRepository.triggerMiscarriage(characterId, now)
+        // 问题16修复：落库（isPregnant→false）与情绪副作用写入此前分两步、
+        // 无事务保护——与 evaluateCycleAndProceed() 成功分支（怀孕触发）
+        // 已用 db.withTransaction 包裹的既有模式不对称。如果进程在两步之间
+        // 崩溃（或协程被取消），会出现"已结束孕期但情绪副作用未写入"的
+        // 不一致状态：孕期状态已清空，但角色应有的悲伤/压抑情绪反应缺失，
+        // 下次对话时 LLM 看到的是一个刚流产却毫无情绪痕迹的角色状态。
+        // 用 db.withTransaction 合并为原子操作，任一失败则整体回滚，与
+        // evaluateCycleAndProceed() 保持同一套事务边界处理风格。
+        db.withTransaction {
+            // 落库：isPregnant→false，miscarriedAt 记录时间戳
+            pregnancyRepository.triggerMiscarriage(characterId, now)
 
-        // CharacterStateLayer 情绪副作用
-        val state = stateRepository.getState(characterId)
-        val updated = state.copy(
-            emotionalState = state.emotionalState.copy(
-                primaryEmotion   = EmotionType.SAD,
-                secondaryEmotion = EmotionType.LONELY,
-                intensity        = MISCARRIAGE_INTENSITY,
-                emotionalFatigue = MISCARRIAGE_FATIGUE,
-            ),
-            hiddenState = state.hiddenState.copy(
-                emotionalSuppression = MISCARRIAGE_SUPPRESSION,
-            ),
-            motivationalState = state.motivationalState.copy(
-                desireStrength = 0,
-            ),
-        )
-        stateRepository.updateState(characterId, updated)
+            // CharacterStateLayer 情绪副作用
+            val state = stateRepository.getState(characterId)
+            val updated = state.copy(
+                emotionalState = state.emotionalState.copy(
+                    primaryEmotion   = EmotionType.SAD,
+                    secondaryEmotion = EmotionType.LONELY,
+                    intensity        = MISCARRIAGE_INTENSITY,
+                    emotionalFatigue = MISCARRIAGE_FATIGUE,
+                ),
+                hiddenState = state.hiddenState.copy(
+                    emotionalSuppression = MISCARRIAGE_SUPPRESSION,
+                ),
+                motivationalState = state.motivationalState.copy(
+                    desireStrength = 0,
+                ),
+            )
+            stateRepository.updateState(characterId, updated)
+        }
 
         return PregnancyTriggerResult.Miscarried(
             characterId          = characterId,
@@ -577,8 +694,14 @@ class PregnancyTriggerManager(
         userText: String,
         isOneOnOne: Boolean,
         pressureScale: Float,
+        // 问题29修复：miscarriageDaysAgo() 的函数注释明确要求"由调用方传入统一
+        // 的时间快照"，此前本函数内部调用时省略了这个参数，退回其自身默认值
+        // System.currentTimeMillis()，与调用方（ChatViewModel.sendMessage()）
+        // 同一轮内其余判断使用的时间快照不一致。默认值维持
+        // System.currentTimeMillis()，向后兼容未显式传参的调用方（如有）。
+        now: Long = System.currentTimeMillis(),
     ): String? {
-        val daysAgo = pregnancyState.miscarriageDaysAgo()
+        val daysAgo = pregnancyState.miscarriageDaysAgo(now)
         if (daysAgo > MISCARRIAGE_AFTERMATH_WINDOW_DAYS) return null
 
         // 门控①：必须是单独对话模式

@@ -321,7 +321,7 @@ class PresenceViewModel(application: Application) : AndroidViewModel(application
                 val map = mutableMapOf<Int, List<Int>>()
                 DefaultCharacters.forEach { char ->
                     val descendants = daughterRepo.getFamilyChain(char.id)
-                    map[char.id] = descendants.map { it.id }
+                    map[char.id] = descendants.map { it.config.id }
                 }
                 _uiState.update { it.copy(familyChainMap = map) }
             } catch (e: Exception) {

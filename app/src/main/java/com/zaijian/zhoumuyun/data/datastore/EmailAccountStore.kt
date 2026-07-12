@@ -2,6 +2,10 @@ package com.zaijian.zhoumuyun.data.datastore
 
 import android.content.Context
 import android.content.SharedPreferences
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.util.Properties
+import javax.mail.Session
 
 /**
  * 邮件账号配置（真实收发用）。
@@ -88,9 +92,60 @@ class EmailAccountStore(context: Context) {
         prefs.edit().clear().commit()
     }
 
+    /**
+     * 设置页"测试连接"用：只做 IMAP 登录握手验证账号+授权码是否正确，
+     * 不打开任何文件夹、不拉取邮件内容，登录成功立即断开。
+     *
+     * 用 IMAP 而非 SMTP 做验证：SMTP 的 connect() 在部分实现下对错误凭据的
+     * 反馈不如 IMAP 明确（有些服务器 SMTP 鉴权失败要等到实际 MAIL FROM 才报错），
+     * IMAP store.connect() 鉴权失败会直接抛 AuthenticationFailedException，
+     * 判定更可靠；且 IMAP/SMTP 用同一套地址+授权码，验证一个即可代表两者均可用。
+     */
+    suspend fun testConnection(account: EmailAccount): EmailTestResult = withContext(Dispatchers.IO) {
+        if (!account.isConfigured) {
+            return@withContext EmailTestResult.Failure("配置不完整：邮箱地址 / 授权码均不能为空")
+        }
+
+        var store: javax.mail.Store? = null
+        try {
+            val props = Properties().apply {
+                put("mail.imap.host", account.provider.imapHost)
+                put("mail.imap.port", account.provider.imapPort.toString())
+                put("mail.imap.ssl.enable", "true")
+                put("mail.imap.socketFactory.class", "javax.net.ssl.SSLSocketFactory")
+                put("mail.imap.connectiontimeout", "10000")
+                put("mail.imap.timeout", "10000")
+            }
+            val session = Session.getInstance(props)
+            store = session.getStore("imap")
+            store.connect(account.provider.imapHost, account.address, account.authCode)
+            EmailTestResult.Success
+        } catch (e: javax.mail.AuthenticationFailedException) {
+            EmailTestResult.Failure("登录失败：邮箱地址或授权码不正确（注意 QQ 邮箱需用「授权码」而非 QQ 登录密码）")
+        } catch (e: Exception) {
+            val msg = e.message ?: "未知错误"
+            val friendly = when {
+                msg.contains("timed out", ignoreCase = true) || msg.contains("timeout", ignoreCase = true) ->
+                    "连接超时：请检查网络连接"
+                msg.contains("Unknown IMAP host", ignoreCase = true) ->
+                    "无法连接邮件服务器：请检查网络连接"
+                else -> "连接失败：${msg.take(100)}"
+            }
+            EmailTestResult.Failure(friendly)
+        } finally {
+            runCatching { store?.close() }
+        }
+    }
+
     private companion object {
         const val KEY_PROVIDER  = "provider"
         const val KEY_ADDRESS   = "address"
         const val KEY_AUTH_CODE = "auth_code"
     }
+}
+
+/** [EmailAccountStore.testConnection] 的结果类型，携带具体失败原因供 UI 展示。 */
+sealed class EmailTestResult {
+    object Success : EmailTestResult()
+    data class Failure(val reason: String) : EmailTestResult()
 }

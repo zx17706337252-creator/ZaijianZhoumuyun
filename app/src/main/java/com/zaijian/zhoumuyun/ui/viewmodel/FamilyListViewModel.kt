@@ -48,6 +48,9 @@ sealed class FamilyListUiState {
 data class FamilyMember(
     val config: CharacterConfig,
     val generation: Int,
+    // P1-47 修复：新增性别字段，从 DaughterCharacterEntity.gender 读取。
+    // 母亲角色（generation=1）为 null，后代角色可能为 "男"/"女"/null。
+    val gender: String? = null,
 )
 
 class FamilyListViewModel(application: Application) : AndroidViewModel(application) {
@@ -81,8 +84,12 @@ class FamilyListViewModel(application: Application) : AndroidViewModel(applicati
 
                 val members = mutableListOf<FamilyMember>()
                 members.add(FamilyMember(config = motherWithAvatar, generation = 1))
-                descendants.forEachIndexed { index, config ->
-                    members.add(FamilyMember(config = config, generation = index + 2))
+                descendants.forEachIndexed { index, entry ->
+                    members.add(FamilyMember(
+                        config     = entry.config,
+                        generation = index + 2,
+                        gender     = entry.gender,
+                    ))
                 }
 
                 _uiState.value = FamilyListUiState.Ready(members)

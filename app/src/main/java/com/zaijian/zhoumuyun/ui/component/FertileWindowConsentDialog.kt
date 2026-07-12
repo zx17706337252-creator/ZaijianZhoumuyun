@@ -13,7 +13,10 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -196,40 +199,50 @@ fun FertileWindowConsentDialog(
                     .clip(RoundedCornerShape(Radius.lg))
                     .parchmentSurface(isDark = isDark),
             ) {
+                // P2-10 修复（重做）：将内容与按钮拆分为两个独立区域。
+                // 文本内容区域可滚动（heightIn(max=480.dp) + verticalScroll），
+                // 同意/拒绝按钮 Row 放在滚动区域之外，始终常驻显示。
                 Column(
                     modifier = Modifier
                         .padding(horizontal = Spacing.lg, vertical = Spacing.lg)
                         .alpha(textAlpha.value),
                 ) {
-                    // ── 郑重感标记：金色菱形分隔线 ──────────────
-                    GoldDivider(withDiamond = true, fadeEdges = true)
+                    // ── 可滚动内容区 ──────────────────────────
+                    Column(
+                        modifier = Modifier
+                            .weight(1f, fill = false)
+                            .heightIn(max = 480.dp)
+                            .verticalScroll(rememberScrollState()),
+                    ) {
+                        GoldDivider(withDiamond = true, fadeEdges = true)
 
-                    Spacer(modifier = Modifier.height(Spacing.sm))
+                        Spacer(modifier = Modifier.height(Spacing.sm))
 
-                    Text(
-                        text = "$characterName…",
-                        style = type.cardTitle,
-                        color = colors.textPrimary,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
+                        Text(
+                            text = "$characterName…",
+                            style = type.cardTitle,
+                            color = colors.textPrimary,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+
+                        Spacer(modifier = Modifier.height(Spacing.md))
+
+                        Text(
+                            text = dialogText,
+                            style = type.body,
+                            color = colors.textSecondary,
+                            textAlign = TextAlign.Start,
+                        )
+
+                        Spacer(modifier = Modifier.height(Spacing.lg))
+
+                        GoldDivider(withDiamond = false, fadeEdges = true)
+                    }
 
                     Spacer(modifier = Modifier.height(Spacing.md))
 
-                    Text(
-                        text = dialogText,
-                        style = type.body,
-                        color = colors.textSecondary,
-                        textAlign = TextAlign.Start,
-                    )
-
-                    Spacer(modifier = Modifier.height(Spacing.lg))
-
-                    GoldDivider(withDiamond = false, fadeEdges = true)
-
-                    Spacer(modifier = Modifier.height(Spacing.md))
-
-                    // ── 按钮区：同意=实心强调，拒绝=纯文字弱化 ──────
+                    // ── 按钮区（常驻，不参与滚动）──────────────
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(Spacing.sm),

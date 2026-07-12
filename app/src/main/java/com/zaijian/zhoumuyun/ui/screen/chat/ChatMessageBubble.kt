@@ -1,9 +1,12 @@
 package com.zaijian.zhoumuyun.ui.screen.chat
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -39,8 +42,10 @@ import androidx.compose.material.icons.outlined.AccountCircle
 import com.zaijian.zhoumuyun.ui.design.WorldCard
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.DeleteSweep
+import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
+import androidx.compose.material.icons.outlined.Lightbulb
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.Send
 import androidx.compose.material.icons.outlined.Work
@@ -82,6 +87,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -107,7 +113,6 @@ import com.zaijian.zhoumuyun.data.db.entity.ProjectEntity
 import com.zaijian.zhoumuyun.data.model.DefaultPresenceStates
 import com.zaijian.zhoumuyun.data.model.StatusType
 import com.zaijian.zhoumuyun.ui.component.BreathingAvatar
-import com.zaijian.zhoumuyun.ui.component.FertileWindowConsentDialog
 import com.zaijian.zhoumuyun.ui.component.MarkdownText
 import com.zaijian.zhoumuyun.ui.theme.AnimDuration
 import com.zaijian.zhoumuyun.ui.theme.AppTheme
@@ -181,9 +186,15 @@ internal fun MessageBubble(
                     .padding(horizontal = Spacing.md, vertical = Spacing.sm),
             ) {
                 Text(
-                    text  = message.content,
-                    style = type.body,
-                    color = Color.White,
+                    text     = message.content,
+                    style    = type.body,
+                    color    = Color.White,
+                    // P2-6 修复（重做）：maxLines 是 overflow 生效的前提，
+                    // 无行数上限时 Ellipsis 不会触发。设高限值兼容长文本，
+                    // 超长无空格字符串（如 URL）在足够行数内自然换行。
+                    softWrap = true,
+                    maxLines = 12,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
         }
@@ -248,6 +259,17 @@ internal fun MessageBubble(
                             style     = type.body,
                         )
                     }
+                }
+
+                // Fix-ThinkingLeak：想法卡（有 thinkingText 时显示），插在台词气泡与
+                // 文件卡之间——"先想后做"的阅读顺序，与 FileExportCard 同级挂在 Column 里。
+                message.thinkingText?.takeIf { it.isNotBlank() }?.let { thought ->
+                    ThoughtCard(
+                        thinkingText  = thought,
+                        accentColor   = accentColor,
+                        characterName = characterName,
+                        maxWidth      = maxBubbleWidth,
+                    )
                 }
 
                 // Phase 18：文件导出卡片（有 exportedFile 时显示）
@@ -349,6 +371,87 @@ private fun FileExportCard(
 }
 
 // ─────────────────────────────────────────────────────────────
+//  ThoughtCard — 想法卡（Fix-ThinkingLeak）
+//
+//  展示在角色气泡下方，纯折叠交互——默认只露标题行（图标 + "谁的想法" + chevron），
+//  点开才展开正文，不预览摘要（想法长度不定，摘要要额外截断逻辑，不划算）。
+//  外壳复用 WorldCard（与 FileExportCard 同构），展开动效抄
+//  LearningGoalScreen.kt 的 RulePanelToggleRow（chevron 180° 旋转 +
+//  expandVertically/shrinkVertically，同一组时间曲线，保证和"规则面板"那张卡
+//  是一个手感，不会显得是另一套系统）。
+// ─────────────────────────────────────────────────────────────
+
+@Composable
+private fun ThoughtCard(
+    thinkingText: String,
+    accentColor: Color,
+    characterName: String,
+    maxWidth: androidx.compose.ui.unit.Dp,
+) {
+    val colors = ZaijianTheme.colors
+    val type   = ZaijianTheme.typography
+    var expanded by remember { mutableStateOf(false) }
+
+    val chevronAngle by animateFloatAsState(
+        targetValue   = if (expanded) 180f else 0f,
+        animationSpec = tween(250),
+        label         = "thoughtChevron",
+    )
+
+    WorldCard(
+        modifier    = Modifier.widthIn(max = maxWidth),
+        ownerAccent = accentColor,
+    ) {
+        Column(
+            modifier = Modifier
+                .clickable { expanded = !expanded }
+                .padding(horizontal = Spacing.md, vertical = Spacing.sm),
+        ) {
+            Row(
+                verticalAlignment     = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Spacing.xs),
+            ) {
+                Icon(
+                    imageVector        = Icons.Outlined.Lightbulb,
+                    contentDescription = null,
+                    tint               = accentColor,
+                    modifier           = Modifier.size(14.dp),
+                )
+                Text(
+                    text     = "${characterName}的想法",
+                    style    = type.label,
+                    color    = accentColor,
+                    modifier = Modifier.weight(1f),
+                )
+                Icon(
+                    imageVector        = Icons.Outlined.ExpandMore,
+                    contentDescription = if (expanded) "收起" else "展开",
+                    tint               = colors.textDisabled,
+                    modifier           = Modifier
+                        .size(16.dp)
+                        .rotate(chevronAngle),
+                )
+            }
+
+            AnimatedVisibility(
+                visible = expanded,
+                enter   = expandVertically(tween(250)) + fadeIn(tween(200)),
+                exit    = shrinkVertically(tween(200)) + fadeOut(tween(150)),
+            ) {
+                Column {
+                    Spacer(Modifier.height(Spacing.xs))
+                    Text(
+                        text  = thinkingText,
+                        style = type.caption,
+                        color = colors.textSecondary,
+                    )
+                }
+            }
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
 //  StreamingMessageItem — 流式打字机气泡
 //  H1 修复：独立子组件，自己收集 streamingContent。
 //  每个 token 只触发此组件重组，ChatScreen 顶层保持稳定。
@@ -401,8 +504,9 @@ internal fun ToolHintRow(
     hint: String,
     accentColor: Color,
 ) {
-    val colors = com.zaijian.zhoumuyun.ui.theme.LocalAppColors.current
-    val type   = com.zaijian.zhoumuyun.ui.theme.LocalAppTypography.current
+    // P3-42 修复：统一主题引用方式，使用 ZaijianTheme 而非直接访问 LocalAppColors/LocalAppTypography
+    val colors = ZaijianTheme.colors
+    val type   = ZaijianTheme.typography
 
     Row(
         modifier = Modifier

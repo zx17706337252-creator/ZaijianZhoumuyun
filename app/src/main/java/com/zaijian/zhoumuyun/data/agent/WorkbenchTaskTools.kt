@@ -31,7 +31,13 @@ import com.zaijian.zhoumuyun.data.repository.TaskRepository
  *   "进行中"的任务，匹配不到时回退到"最近一条进行中任务"。
  *
  * 注册方式：与 PlanSaveTool 等角色绑定工具一致，characterId 闭包由
- * ChatViewModel.init(characterId) 动态覆盖注册。
+ * ChatViewModel.init(characterId) 动态覆盖注册；App 启动阶段在 ZaijianApp.kt
+ * 内以 characterId = { -1 } 静态占位注册（问题40修复，此前完全没有这层占位）。
+ *
+ * 角色 ID 读取优先级（问题40修复，与 self_reflect/rule_review 同一套）：
+ * execute() 内优先读 params["__character_id"]（WorkflowEngine 后台执行工作流
+ * 任务时会注入该任务绑定的 characterId），读不到才回退到闭包 characterId()
+ * （前台聊天场景）；charId < 0 时直接拒绝执行，不静默把无效角色写进任务表。
  */
 
 // ─────────────────────────────────────────────────────────────
@@ -56,12 +62,20 @@ class TaskStartTool(
         val title = params["title"]?.trim()?.take(60)
             ?: return ToolResult(name, false, "", "缺少 title 参数（任务标题）")
         val description = params["description"]?.trim() ?: ""
+        // 问题40修复：与 self_reflect/rule_review 同一套读取优先级——工作流引擎
+        // 会注入 __character_id（该任务本就绑定的角色），优先读它；不存在时
+        // （前台聊天场景）回退到闭包 characterId()。charId < 0 时直接拒绝，
+        // 不静默把无效角色写进任务表（此前无此保护，会直接落库成 -1）。
+        val charId = params["__character_id"]?.toIntOrNull() ?: characterId()
+        if (charId < 0) {
+            return ToolResult(name, false, "", "角色未初始化")
+        }
 
         return try {
             taskRepo.createTask(
                 title       = title,
                 description = description,
-                characterId = characterId(),
+                characterId = charId,
             )
             ToolResult(
                 toolName = name,
@@ -97,9 +111,14 @@ class TaskUpdateTool(
         val titleHint = params["title"]?.trim()?.takeIf { it.isNotBlank() }
         val note      = params["note"]?.trim() ?: ""
         val progress  = params["progress"]?.trim()?.toFloatOrNull()?.coerceIn(0f, 1f)
+        // 问题40修复：同 TaskStartTool，优先读工作流注入的 __character_id
+        val charId = params["__character_id"]?.toIntOrNull() ?: characterId()
+        if (charId < 0) {
+            return ToolResult(name, false, "", "角色未初始化")
+        }
 
         return try {
-            val task = taskRepo.findActiveTask(characterId(), titleHint)
+            val task = taskRepo.findActiveTask(charId, titleHint)
                 ?: return ToolResult(name, false, "", "没有找到进行中的任务，先用 task_start 开始一个吧")
 
             taskRepo.updateDescription(
@@ -141,9 +160,14 @@ class TaskCompleteTool(
         val titleHint = params["title"]?.trim()?.takeIf { it.isNotBlank() }
         val result    = params["result"]?.trim()
             ?: return ToolResult(name, false, "", "缺少 result 参数（任务结果总结）")
+        // 问题40修复：同 TaskStartTool，优先读工作流注入的 __character_id
+        val charId = params["__character_id"]?.toIntOrNull() ?: characterId()
+        if (charId < 0) {
+            return ToolResult(name, false, "", "角色未初始化")
+        }
 
         return try {
-            val task = taskRepo.findActiveTask(characterId(), titleHint)
+            val task = taskRepo.findActiveTask(charId, titleHint)
                 ?: return ToolResult(name, false, "", "没有找到进行中的任务可以标记完成")
 
             taskRepo.completeTask(id = task.id, resultSummary = result)
@@ -179,9 +203,14 @@ class TaskCancelTool(
     override suspend fun execute(params: Map<String, String>): ToolResult {
         val titleHint = params["title"]?.trim()?.takeIf { it.isNotBlank() }
         val reason    = params["reason"]?.trim() ?: ""
+        // 问题40修复：同 TaskStartTool，优先读工作流注入的 __character_id
+        val charId = params["__character_id"]?.toIntOrNull() ?: characterId()
+        if (charId < 0) {
+            return ToolResult(name, false, "", "角色未初始化")
+        }
 
         return try {
-            val task = taskRepo.findActiveTask(characterId(), titleHint)
+            val task = taskRepo.findActiveTask(charId, titleHint)
                 ?: return ToolResult(name, false, "", "没有找到进行中的任务可以取消")
 
             taskRepo.cancelTask(task.id)

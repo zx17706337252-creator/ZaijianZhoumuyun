@@ -51,6 +51,7 @@ import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImagePainter
 import coil.compose.rememberAsyncImagePainter
@@ -62,6 +63,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
@@ -107,7 +109,6 @@ import com.zaijian.zhoumuyun.data.db.entity.ProjectEntity
 import com.zaijian.zhoumuyun.data.model.DefaultPresenceStates
 import com.zaijian.zhoumuyun.data.model.StatusType
 import com.zaijian.zhoumuyun.ui.component.BreathingAvatar
-import com.zaijian.zhoumuyun.ui.component.FertileWindowConsentDialog
 import com.zaijian.zhoumuyun.ui.component.MarkdownText
 import com.zaijian.zhoumuyun.ui.theme.AnimDuration
 import com.zaijian.zhoumuyun.ui.theme.AppTheme
@@ -222,6 +223,9 @@ internal fun ChatHeader(
                     text  = name,
                     style = type.navTitle,
                     color = colors.textPrimary,
+                    // P2-7 修复：角色名增加 maxLines + Ellipsis，防止长名字溢出
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
                 if (statusText.isNotEmpty()) {
                     Text(
@@ -230,8 +234,10 @@ internal fun ChatHeader(
                             fontStyle     = FontStyle.Italic,
                             letterSpacing = 0.3.sp,
                         ),
-                        color   = accentColor.copy(alpha = if (colors.isDark) 0.80f else 0.70f),
+                        color    = accentColor.copy(alpha = if (colors.isDark) 0.80f else 0.70f),
                         maxLines = 1,
+                        // P3-23 修复：maxLines=1 时补充 overflow = Ellipsis，防止长状态文本溢出
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
                 // 待办10：关系状态胶囊行（紧凑，仅有数据时显示）
@@ -330,16 +336,20 @@ private fun ModeChip(
         modifier = modifier
             .clip(RoundedCornerShape(16.dp))
             .background(bg)
+            .minimumInteractiveComponentSize()
             .clickable { onClick() }
             .padding(horizontal = 10.dp, vertical = 4.dp),
         verticalAlignment     = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
+        // P3-21 修复（重做）：图标视觉维持 16dp，外层 Row 通过 minimumInteractiveComponentSize
+        // 扩大触摸区至 48dp。核心问题是触摸区不足而非图标看不清，直接放大图标
+        // 会导致 Chip 整体视觉变粗，与旁边元素比例失调。
         Icon(
             imageVector        = icon,
             contentDescription = label,
             tint               = content,
-            modifier           = Modifier.size(14.dp),
+            modifier           = Modifier.size(16.dp),
         )
         Text(
             text  = label,
@@ -356,11 +366,12 @@ private fun ModeChip(
 @Composable
 private fun ChatRelCapsule(text: String, color: Color) {
     val colors = ZaijianTheme.colors
+    // P3-40 修复：ChatRelCapsule padding 从 5dp/1dp 增加至 8dp/2dp，避免文字贴边过紧
     Box(
         modifier = Modifier
             .clip(RoundedCornerShape(10.dp))
             .background(color.copy(alpha = 0.10f))
-            .padding(horizontal = 5.dp, vertical = 1.dp),
+            .padding(horizontal = 8.dp, vertical = 2.dp),
     ) {
         Text(
             text  = text,

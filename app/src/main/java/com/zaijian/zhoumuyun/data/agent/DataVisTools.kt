@@ -680,8 +680,20 @@ class ChartDataTool(
                 return@withContext ToolResult(name, false, "", "需要 description 参数")
             }
 
-            val chartType  = params["type"]?.lowercase()
-                ?.takeIf { it in setOf("bar", "line", "pie", "radar") } ?: "bar"
+            // 问题36修复：原逻辑不区分"未传 type（合理默认为 bar）"和"传了但不是
+            // 支持的4种之一（如拼写错误、或想要本工具未实现的散点图/scatter等）"——
+            // 两者都静默落到 "bar"，调用方（LLM 角色 / 工作流）无法感知类型被换过，
+            // 拿到的图表和请求的不一致却毫无提示。
+            // 修复：不再用一次 ?.takeIf { } ?: 兜底悄悄完成，而是显式判断分支，
+            // 仅在"确实传了值但不被支持"时记录下来，在结果 content 里如实告知，
+            // 不影响图表本身仍按 bar 生成（保持向后兼容，不新增"直接失败"这种更
+            // 破坏性的行为——用户大概率仍然想要一张图，只是类型不对，需要的是
+            // 被告知，而不是任务直接失败）。
+            val requestedType = params["type"]?.trim()?.takeIf { it.isNotEmpty() }
+            val supportedTypes = setOf("bar", "line", "pie", "radar")
+            val normalizedRequestedType = requestedType?.lowercase()
+            val typeWasUnsupported = normalizedRequestedType != null && normalizedRequestedType !in supportedTypes
+            val chartType  = normalizedRequestedType?.takeIf { it in supportedTypes } ?: "bar"
             val chartTitle = params["title"]?.trim() ?: description.take(30)
 
             val prompt = """
@@ -726,10 +738,18 @@ class ChartDataTool(
                 if (!exportResult.success) {
                     ToolResult(name, false, "图表生成失败：文件写入错误。", exportResult.error)
                 } else {
+                    // 问题36修复：type 被换过时，在提示前面加一句醒目说明，不再
+                    // 悄无声息——调用方（角色/工作流）能看到"你要的类型不支持，
+                    // 换成了 bar"，而不是拿到一张类型不对的图却毫不知情。
+                    val typeMismatchNotice = if (typeWasUnsupported) {
+                        "⚠️ 不支持的图表类型「$requestedType」（仅支持 bar/line/pie/radar），已改用 bar（柱状图）。\n"
+                    } else {
+                        ""
+                    }
                     ToolResult(
                         toolName = name,
                         success  = true,
-                        content  = "[Chart.js 图表已生成：$chartTitle（$chartType）]\n${exportResult.content}",
+                        content  = "$typeMismatchNotice[Chart.js 图表已生成：$chartTitle（$chartType）]\n${exportResult.content}",
                         userHint = "正在生成图表…",
                     )
                 }

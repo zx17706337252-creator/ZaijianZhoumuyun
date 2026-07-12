@@ -15,6 +15,8 @@ import com.zaijian.zhoumuyun.data.db.entity.TaskStatus
 import com.zaijian.zhoumuyun.data.repository.ProjectRepository
 import com.zaijian.zhoumuyun.data.repository.ScheduleRepository
 import com.zaijian.zhoumuyun.data.repository.TaskRepository
+import com.zaijian.zhoumuyun.data.repository.DaughterCharacterRepository
+import com.zaijian.zhoumuyun.data.model.CharacterConfig
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -100,6 +102,35 @@ class ProjectViewModel(application: Application) : AndroidViewModel(application)
     // 直接在此构造一个专属实例即可。
     private val taskRepo     = TaskRepository(db, db.taskDao(), db.worldEventDao())
     private val scheduleRepo = ScheduleRepository(db.scheduledJobDao(), db.jobResultDao())
+    // 审查报告问题10修复：项目成员选择此前只遍历 DefaultCharacters（ID 1-9），
+    // 女儿角色（ID>=1000）无法被添加到项目，与 RoundtableViewModel 早已支持
+    // addDaughter() 的现状不一致。
+    private val daughterCharacterRepo = DaughterCharacterRepository(db.daughterCharacterDao())
+
+    // 已注册女儿角色的完整 CharacterConfig 列表（一次性加载，非响应式订阅——
+    // 女儿注册是低频事件，ProjectDetailScreen 只在 ViewModel 存活期间读取一次
+    // 快照即可满足"能被添加到项目"的需求；若后续新注册了女儿，下次重新进入
+    // 项目页/重建 ViewModel 会自然刷新，不引入额外的 Flow 订阅复杂度）。
+    private val _daughterCharacters = MutableStateFlow<List<CharacterConfig>>(emptyList())
+    val daughterCharacters: StateFlow<List<CharacterConfig>> = _daughterCharacters.asStateFlow()
+
+    init {
+        viewModelScope.launch {
+            val ids = try {
+                daughterCharacterRepo.getAllDaughterCharacterIds()
+            } catch (_: Exception) {
+                emptyList()
+            }
+            val configs = ids.mapNotNull { id ->
+                try {
+                    daughterCharacterRepo.getCharacterConfig(id)
+                } catch (_: Exception) {
+                    null
+                }
+            }
+            _daughterCharacters.value = configs
+        }
+    }
 
     // ── 项目列表 ─────────────────────────────────────────────
     // G2.5 修复：区分"正在加载"与"确实没有项目"。observeActive() 首次收集前

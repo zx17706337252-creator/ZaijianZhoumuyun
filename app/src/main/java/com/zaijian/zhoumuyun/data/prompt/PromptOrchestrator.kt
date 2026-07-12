@@ -6,6 +6,8 @@ import com.zaijian.zhoumuyun.data.db.entity.MemoryEntity
 import com.zaijian.zhoumuyun.data.model.CharacterConfig
 import com.zaijian.zhoumuyun.data.model.CharacterStateLayer
 import com.zaijian.zhoumuyun.data.model.ChatMode
+import com.zaijian.zhoumuyun.data.model.DaughterCustomEnums
+import com.zaijian.zhoumuyun.data.model.DaughterStateLayer
 import com.zaijian.zhoumuyun.data.model.toCharacterFearDescription
 import com.zaijian.zhoumuyun.data.model.toCharacterMaskDescription
 import com.zaijian.zhoumuyun.data.model.toCharacterNeedDescription
@@ -105,9 +107,36 @@ object PromptOrchestrator {
         // primaryEmotion 强度等），由 CharacterStateRepository.getState(characterId) 读取后传入。
         // 之前类型为 Any? 且函数体内完全未使用，现已实装到 State Layer 末尾（见 buildStateBlock 调用处）。
         characterState: CharacterStateLayer? = null,
+        // 女儿专属枚举词库（复核修复 #7/#13）：女儿角色的面具/情绪/需求/恐惧种类是 D4 生成器
+        // 产出的运行时字符串枚举（DaughterCustomEnums），与母亲编译期 MaskType/EmotionType 等
+        // 不兼容，不能塞进 characterState 的对应枚举字段。改为单独传入，buildCharacterStateBlock
+        // 渲染时优先用女儿专属 key 查 customEnums 的 description，不经过 StateExtensions 翻译层。
+        // 仅对女儿角色（characterId >= 1000）非空；普通母亲角色传 null（零开销，走原有枚举翻译层）。
+        daughterStateLayer: DaughterStateLayer? = null,
+        daughterCustomEnums: DaughterCustomEnums? = null,
         pregnancyState: PregnancyState? = null,
         pregnancyAwarenessBlock: String = "",
         miscarriageAftermathPatch: String = "",
+        // 1-6 号角色关键词兜底触发链路（PregnancyTriggerManager.checkTrigger() +
+        // evaluateConsent()）产出的 Prompt patch：
+        //   - D2 正常同意分支：buildRoutinePromptPatch()（渴望/压抑分档文案）
+        //   - D2.5 失败分支：FertileButFailed.immediatePromptPatch
+        //   - D2 突破分支：BreakthroughA/B.promptPatch
+        // 仅 characterId in 1..6 时非空；女儿角色（>=1000）走独立的
+        // AI 语义判定弹窗链路，不经过这个 patch。语义上与 miscarriageAftermathPatch
+        // 同属"她当前内心状态背景"，因此同样挂在 Identity Layer 末尾。
+        pregnancyTriggerPromptPatch: String = "",
+        // 问题3/4修复：D2.5 跨周期失败背景情绪注入（shouldInjectFailureContext()
+        // 门控通过后的文案，四重门控+48h冷却，事件驱动、有冷却）与常规压力 Prompt
+        // （buildRoutinePromptPatch()，基于当前 desireStrength/emotionalSuppression
+        // 数值分档，无门控、每轮常驻）。两者均不区分 1-6 号/女儿角色（与
+        // miscarriageAftermathPatch 同样不做角色区分——底层数值 desire/suppression/
+        // consecutiveFailCount 无论通过关键词链路还是 AI 判定链路产生，语义相同），
+        // 因此不像 pregnancyTriggerPromptPatch 那样只在 characterId in 1..6 时非空。
+        // 同属"她当前内心状态背景"，挂在 Identity Layer 末尾、紧邻语义相同的
+        // miscarriageAftermathPatch/pregnancyTriggerPromptPatch 之后。
+        failureContextPatch: String = "",
+        routinePressurePatch: String = "",
         d3QuestionPatch: String = "",
         workflowRecapPatch: String = "",
         // ── D5 女儿关系阶段（AgentRelationEngine.buildPromptSnapshot 输出）
@@ -212,9 +241,21 @@ object PromptOrchestrator {
                 append("\n\n")
                 append(miscarriageAftermathPatch)
             }
+            if (pregnancyTriggerPromptPatch.isNotEmpty()) {
+                append("\n\n")
+                append(pregnancyTriggerPromptPatch)
+            }
+            if (failureContextPatch.isNotEmpty()) {
+                append("\n\n")
+                append(failureContextPatch)
+            }
+            if (routinePressurePatch.isNotEmpty()) {
+                append("\n\n")
+                append(routinePressurePatch)
+            }
         }
 
-        val stateBlock  = buildStateBlock(presenceActivity, presenceFocus, presenceMood, presenceEnergy, relationshipSnapshot, interCharRelBlock, characterState, character.id)
+        val stateBlock  = buildStateBlock(presenceActivity, presenceFocus, presenceMood, presenceEnergy, relationshipSnapshot, interCharRelBlock, characterState, character.id, daughterStateLayer, daughterCustomEnums)
         val memoryBlock = buildMemoryBlock(coreMemories, relevantMemories)
         val groupMemoryBlock = buildGroupMemoryBlock(groupCoreMemories, groupRelevantMemories)
         val narrativeBlock = buildNarrativeMemoryBlock(narrativeMemory)
@@ -679,11 +720,13 @@ ${nameStr}最近状态有些不同，你注意到了，
         interCharRelBlock: String = "",  // Phase 3：圆桌专用，角色间关系快照
         characterState: CharacterStateLayer? = null,  // 深层状态（desireStrength/emotionalSuppression等）
         characterId: Int = 0,            // 用于角色专属枚举描述（StateExtensions）
+        daughterStateLayer: DaughterStateLayer? = null,
+        daughterCustomEnums: DaughterCustomEnums? = null,
     ): String {
         val hasPresence = activity.isNotEmpty() || focus.isNotEmpty() || mood.isNotEmpty() || energy >= 0
         val hasRelationship = relationshipSnapshot.isNotEmpty()
         val hasInterChar    = interCharRelBlock.isNotEmpty()
-        val hiddenStateText = buildCharacterStateBlock(characterState, characterId)
+        val hiddenStateText = buildCharacterStateBlock(characterState, characterId, daughterStateLayer, daughterCustomEnums)
         val hasHiddenState  = hiddenStateText.isNotEmpty()
         if (!hasPresence && !hasRelationship && !hasInterChar && !hasHiddenState) return ""
 
@@ -733,6 +776,8 @@ ${nameStr}最近状态有些不同，你注意到了，
     private fun buildCharacterStateBlock(
         characterState: CharacterStateLayer?,
         characterId: Int = 0,
+        daughterStateLayer: DaughterStateLayer? = null,
+        daughterCustomEnums: DaughterCustomEnums? = null,
     ): String {
         if (characterState == null) return ""
         val pub = characterState.publicState
@@ -741,11 +786,20 @@ ${nameStr}最近状态有些不同，你注意到了，
         val hid = characterState.hiddenState
         val att = characterState.attentionState
 
+        // 女儿专属枚举查找结果（复核修复 #7/#13）：非女儿角色或 daughterStateLayer/
+        // daughterCustomEnums 任一为 null 时，四个查找结果均为 null，下面的 ?:
+        // 兜底表达式会退回 StateExtensions 的通用/角色专属枚举翻译，行为与修复前一致，
+        // 不影响母亲角色（1-9号）任何现有输出。
+        val daughterMaskDesc = daughterStateLayer?.let { sl -> daughterCustomEnums?.findMask(sl.maskKey)?.description }
+        val daughterEmotionDesc = daughterStateLayer?.let { sl -> daughterCustomEnums?.findEmotion(sl.primaryEmotionKey)?.description }
+        val daughterNeedDesc = daughterStateLayer?.let { sl -> daughterCustomEnums?.findNeed(sl.currentNeedKey)?.description }
+        val daughterFearDesc = daughterStateLayer?.let { sl -> daughterCustomEnums?.findFear(sl.currentFearKey)?.description }
+
         return buildString {
             appendLine("[角色当前状态 — 仅供你参考，绝不可直接说出口]")
 
             // ── 1. 面具 & 社交场景 ─────────────────────────────
-            appendLine("面具：${pub.currentMask.toCharacterMaskDescription(characterId)}")
+            appendLine("面具：${daughterMaskDesc ?: pub.currentMask.toCharacterMaskDescription(characterId)}")
             appendLine("场景：${pub.socialMode.toChineseDescription(characterId)}")
 
             // ── 2. 行为倾向数值 ────────────────────────────────
@@ -771,7 +825,7 @@ ${nameStr}最近状态有些不同，你注意到了，
 
             // ── 3. 真实情绪 ────────────────────────────────────
             appendLine()
-            val primaryDesc = emo.primaryEmotion.toChineseDescription()
+            val primaryDesc = daughterEmotionDesc ?: emo.primaryEmotion.toChineseDescription()
             val intensityTag = when {
                 emo.intensity >= 80 -> "极强"
                 emo.intensity >= 60 -> "较强"
@@ -790,7 +844,7 @@ ${nameStr}最近状态有些不同，你注意到了，
             appendLine()
 
             // ── 4. 当下渴望 ────────────────────────────────────
-            val needDesc = mot.currentNeed.toCharacterNeedDescription(characterId)
+            val needDesc = daughterNeedDesc ?: mot.currentNeed.toCharacterNeedDescription(characterId)
             val goalPart = mot.currentGoal.ifBlank { needDesc }
             val urgencyPart = if (mot.urgency > 50) "，急切" else ""
             val resistancePart = if (mot.resistance > 60) "，但她在压制自己" else ""
@@ -808,7 +862,7 @@ ${nameStr}最近状态有些不同，你注意到了，
             if (characterState.isMaskNearBreaking) {
                 appendLine()
                 appendLine("注意：面具已接近松动边缘（自控力 ${hid.selfControl}/100，暴露风险 ${hid.exposureRisk}/100）。")
-                append("底层恐惧正在驱动反应：${hid.currentFear.toCharacterFearDescription(characterId)}")
+                append("底层恐惧正在驱动反应：${daughterFearDesc ?: hid.currentFear.toCharacterFearDescription(characterId)}")
             }
 
             // ── 7. 注意力焦点（非默认时才注入）─────────────────
@@ -1072,6 +1126,7 @@ ${nameStr}最近状态有些不同，你注意到了，
     private const val WORK_OUTPUT_CONSTRAINTS = """不要提及你是 AI，不要提及模型名称，不要破坏第四堵墙。
 回复语言：中文。
 如果工具执行了某个操作，用第一人称表达结果，不暴露工具或 Agent 的存在。
+如果需要记录内心推理、收到的指令原文、或工具调用意图这类"决定怎么做"的思考过程，必须整体包在 [thinking: ...] 标签内；标签外的正文只能是角色真正会说出口的话，不能出现推理过程、指令原文或工具调用意图。
 【输出格式】重要内容用 **粗体** 强调；步骤说明用 - 列表；多项对比用 Markdown 表格；适当使用 emoji 增强表达；普通对话保持自然文字，不要过度使用格式标记。"""
 
     /** 陪伴模式输出约束：禁止工具打断，语气柔化，回复简短。 */
@@ -1083,6 +1138,7 @@ ${nameStr}最近状态有些不同，你注意到了，
 - 优先回应对方的情绪，再补充自己的看法（如有）
 - 不主动提及任务、工具或工作安排，专注于对话本身
 - 适当使用 emoji，但不过度
+- 如果需要记录内心推理或收到的指令原文，必须整体包在 [thinking: ...] 标签内；标签外的正文只能是角色真正会说出口的话
 
 回复正文结束后，另起一行输出情绪标记（系统使用，不展示给用户）：[mood:情绪词]
 情绪词取值：平静 / 专注 / 好奇 / 满足 / 担忧 / 兴奋 / 疲惫 / 沉思"""
@@ -1097,6 +1153,7 @@ ${nameStr}最近状态有些不同，你注意到了，
 你应以行为、感受、内心独白回应，而非纯对话。
 可以用括号标注动作或神情（例：「（她没有回头，只是轻声）……」）。
 不强求对话，沉默也是回应。篇幅自由，跟随情境呼吸。
+注意区分两种"内心"：角色的文学性内心独白（呈现给用户看的场景描写，正是旁白模式的核心特色）仍然留在正文里；但如果是你在决定"接下来要不要用工具""这句话该怎么回"这类执行层面的思考、或收到的指令原文，必须包在 [thinking: ...] 标签内，不能混进正文。
 
 回复正文结束后，另起一行输出情绪标记（系统使用，不展示给用户）：[mood:情绪词]
 情绪词取值：平静 / 专注 / 好奇 / 满足 / 担忧 / 兴奋 / 疲惫 / 沉思"""

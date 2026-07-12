@@ -11,8 +11,10 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
@@ -172,6 +174,10 @@ fun AvatarCropDialog(
         Box(
             modifier = Modifier
                 .fillMaxSize()
+                // P3-31 修复：添加系统栏避让，此前 Dialog 全屏铺满但不避开
+                // 状态栏和导航栏，导致裁剪框顶部/底部被系统栏遮挡。
+                .statusBarsPadding()
+                .navigationBarsPadding()
                 .background(Color.Black.copy(alpha = 0.92f)),
             contentAlignment = Alignment.Center,
         ) {

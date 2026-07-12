@@ -49,6 +49,7 @@ import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.Wallpaper
 import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
@@ -223,7 +224,8 @@ fun ChatScreen(
     // 消息列表（来自 DB + 流式 streaming 追加）
     // Fix-1.1：上移至此，原位置在 headerMood 之后导致前向引用编译错误
     val messages = uiState.messages
-    // UI M3 ��复：心情直接读 uiState.currentMood，
+    // P3-39 修复：注释乱码，恢复正确文字。
+    // UI M3 修复：心情直接读 uiState.currentMood，
     // ViewModel 在 parsedMood != null 时推送， init() 时从缓存种子。
     // 不再访问全局单例 ZaijianApp.sharedPresenceEngine。
     val headerMood = uiState.currentMood
@@ -237,9 +239,21 @@ fun ChatScreen(
 
     // UI S4 修复：用户正在输入的文字在进程死亡后应能恢复，改用 rememberSaveable
     var inputText by rememberSaveable { mutableStateOf("") }
-    var emotionCardVisible by remember { mutableStateOf(presence?.activityHint != null) }
+    // P1-1+22 修复：情绪卡初始值与跨角色状态泄漏
+    // 根因：Navigation Compose 使用 launchSingleTop=true，切换角色时 ChatScreen composable
+    // 可能被复用而非重建，remember {} 无 key 的状态不会自动重置。
+    // 修复：(1) remember(characterId) 保证切换角色时重置所有本地UI状态
+    //       (2) LaunchedEffect 保证 presence 异步到达后情绪卡能响应式显示
+    var emotionCardVisible by remember(characterId) { mutableStateOf(false) }
     // Phase 16：聊天设置底部面板
-    var showChatSettings by remember { mutableStateOf(false) }
+    var showChatSettings by remember(characterId) { mutableStateOf(false) }
+
+    // 当 presence.activityHint 从 null 变为非空时，自动显示情绪卡
+    LaunchedEffect(presence?.activityHint) {
+        if (presence?.activityHint != null) {
+            emotionCardVisible = true
+        }
+    }
 
     // 聊天背景图：从 uiState 读取当前角色背景 URI
     val backgroundImageUri = uiState.backgroundImageUri
@@ -380,8 +394,11 @@ fun ChatScreen(
     // StateFlow.value，StateFlow 不是 Compose State，snapshotFlow 只在首次快照时发射一次，
     // 后续 streamingContent 更新不触发重发。修复：改为读已通过 collectAsState() 绑定的
     // Compose State 变量 uiState，snapshotFlow 能正确感知每次重组产生的新快照值。
+    // P1-3 修复：snapshotFlow 改为收集独立的 streamingContent（不再读 uiState.streamingContent）。
+    // 先通过 collectAsStateWithLifecycle 转为 Compose State，snapshotFlow 才能正确感知每次变化。
+    val streamingContentForScroll by chatViewModel.streamingContent.collectAsStateWithLifecycle()
     LaunchedEffect(listState) {
-        snapshotFlow { uiState.streamingContent?.length ?: 0 }
+        snapshotFlow { streamingContentForScroll?.length ?: 0 }
             .collect { len ->
                 if (len > 0) {
                     val totalItems = listState.layoutInfo.totalItemsCount
@@ -467,6 +484,11 @@ fun ChatScreen(
         colors.bgCard.copy(alpha = 0.92f)
     else
         colors.bgBase.copy(alpha = 0.95f)
+
+    // P2-9 修复：动态测量输入栏高度，替代硬编码 88.dp
+    val density = LocalDensity.current
+    var inputBarHeightPx by remember { mutableIntStateOf(0) }
+    val inputBarHeightDp = with(density) { inputBarHeightPx.toDp() }
 
     Box(
         modifier = Modifier
@@ -696,6 +718,9 @@ fun ChatScreen(
                 visible = emotionCardVisible && presence?.activityHint != null,
                 enter   = fadeIn(tween(AnimDuration.fast)) +
                           slideInVertically(tween(AnimDuration.fast)) { -it },
+                // P3-19 修复：为情绪卡添加 exit 动画，消失时 fadeOut + slideOut
+                exit    = fadeOut(tween(AnimDuration.fast)) +
+                          slideOutVertically(tween(AnimDuration.fast)) { -it },
             ) {
                 if (presence?.activityHint != null) {
                     Box(
@@ -790,7 +815,8 @@ fun ChatScreen(
                 .fillMaxWidth()
                 .align(Alignment.BottomCenter)
                 .navigationBarsPadding()
-                .imePadding(),
+                .imePadding()
+                .onSizeChanged { inputBarHeightPx = it.height },
         )
 
         // ── [5] 错误 Snackbar ─────────────────────────────────
@@ -800,7 +826,8 @@ fun ChatScreen(
                 .align(Alignment.BottomCenter)
                 .navigationBarsPadding()
                 .imePadding()
-                .padding(bottom = 88.dp),
+                // P2-9 修复：底部偏移由硬编码 88.dp 改为动态测量输入栏高度
+                .padding(bottom = inputBarHeightDp),
             snackbar = { data ->
                 Snackbar(
                     snackbarData   = data,

@@ -249,7 +249,7 @@ fun PersonalScheduleTabContent(
                     viewModel.deleteJob(job.id)
                     jobToDelete = null
                 }) {
-                    Text("删除", color = MaterialTheme.colorScheme.error)
+                    Text("删除", color = Palette.SemanticDanger)  // P3-53 修复：colorScheme.error → Palette.SemanticDanger
                 }
             },
             dismissButton = {

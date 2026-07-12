@@ -36,7 +36,6 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle // P1-11-2
 import coil.compose.AsyncImage
@@ -182,7 +181,8 @@ fun LearningGoalScreen(
                     ) {
                         Text(
                             text  = "$activeCount",
-                            style = type.caption.copy(fontWeight = FontWeight.Bold, fontSize = 12.sp),
+                            // P3-32 修复：移除硬编码 fontSize
+                            style = type.caption.copy(fontWeight = FontWeight.Bold),
                             color = colors.accent,
                         )
                     }
@@ -233,7 +233,7 @@ fun LearningGoalScreen(
                         GrowthSectionHeader(
                             icon  = Icons.Outlined.Spa,
                             label = "进化项目",
-                            color = Color(0xFF7BAE7F),
+                            color = Palette.GrowthGreen,
                         )
                     }
 
@@ -344,7 +344,8 @@ private fun GrowthSummaryCard(
 ) {
     val colors = ZaijianTheme.colors
     val type   = ZaijianTheme.typography
-    val growthGreen = Color(0xFF7BAE7F)
+    // P3-55 修复：硬编码绿色统一为主题常量 Palette.GrowthGreen
+    val growthGreen = Palette.GrowthGreen
 
     // WorldCard 接入（精修方案 v1.3 第2/6节）：L0-L2 常态层 + L3 身份脊。
     // 本卡片是「当前选中角色」的今日概览，ownerAccent 取该角色 accentColor
@@ -490,7 +491,8 @@ private fun ProjectGrowthCard(
 ) {
     val colors      = ZaijianTheme.colors
     val type        = ZaijianTheme.typography
-    val growthGreen = Color(0xFF7BAE7F)
+    // P3-55 修复：硬编码绿色统一为主题常量 Palette.GrowthGreen
+    val growthGreen = Palette.GrowthGreen
 
     val doneCount  = data.todayDoneCount
     val totalCount = data.todayTotalCount
@@ -694,8 +696,8 @@ private fun CharacterSelectorRow(
                 Spacer(Modifier.height(4.dp))
                 Text(
                     text  = char.name,
-                    style = ZaijianTheme.typography.caption.copy(
-                        fontSize   = 11.sp,
+                    // P3-32 修复：移除硬编码 fontSize，11.sp 改用 type.label
+                    style = ZaijianTheme.typography.label.copy(
                         fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
                     ),
                     color = if (isSelected) colors.accent else colors.textSecondary,
@@ -817,7 +819,8 @@ private fun GoalCard(
 
                 Text(
                     text  = "%.0f%%".format(goal.progress * 100),
-                    style = type.caption.copy(fontWeight = FontWeight.Bold, fontSize = 12.sp),
+                    // P3-32 修复：移除硬编码 fontSize
+                    style = type.caption.copy(fontWeight = FontWeight.Bold),
                     color = progressColor,
                 )
             }
@@ -838,7 +841,8 @@ private fun GoalCard(
                 }
                 Text(
                     text  = dateStr,
-                    style = type.caption.copy(fontSize = 11.sp),
+                    // P3-32 修复：移除硬编码 fontSize，11.sp 改用 type.label
+                    style = type.label,
                     color = colors.textDisabled,
                 )
             }
@@ -856,7 +860,8 @@ private fun GoalCard(
                     Spacer(Modifier.width(4.dp))
                     Text(
                         text     = goal.lastUpdateNote,
-                        style    = type.caption.copy(fontSize = 11.sp),
+                        // P3-32 修复：移除硬编码 fontSize，11.sp 改用 type.label
+                        style    = type.label,
                         color    = colors.textSecondary,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
@@ -936,7 +941,8 @@ private fun RulePanelToggleRow(
                 lockedCount == 0 -> "$totalCount 条候选规则"
                 else             -> "$lockedCount 条锁定 · $totalCount 条总计"
             },
-            style = type.caption.copy(fontSize = 12.sp, fontWeight = FontWeight.Medium),
+            // P3-32 修复：移除硬编码 fontSize
+            style = type.caption.copy(fontWeight = FontWeight.Medium),
             color = if (lockedCount > 0) colors.accent else colors.textSecondary,
             modifier = Modifier.weight(1f),
         )
@@ -983,7 +989,8 @@ private fun RulePanel(
                 Spacer(Modifier.width(4.dp))
                 Text(
                     text  = "已锁定规则（已注入 System Prompt）",
-                    style = type.caption.copy(fontSize = 11.sp, fontWeight = FontWeight.SemiBold),
+                    // P3-32 修复：移除硬编码 fontSize，11.sp 改用 type.label
+                    style = type.label.copy(fontWeight = FontWeight.SemiBold),
                     color = colors.accent,
                 )
             }
@@ -1021,7 +1028,8 @@ private fun RulePanel(
                 Spacer(Modifier.width(4.dp))
                 Text(
                     text  = "候选规则（积累 ${4 - (candidateRules.firstOrNull()?.importance ?: 3).coerceAtMost(3)} 次后锁定）",
-                    style = type.caption.copy(fontSize = 11.sp, fontWeight = FontWeight.SemiBold),
+                    // P3-32 修复：移除硬编码 fontSize，11.sp 改用 type.label
+                    style = type.label.copy(fontWeight = FontWeight.SemiBold),
                     color = colors.textSecondary,
                 )
             }
@@ -1055,7 +1063,8 @@ private fun RulePanel(
                         "与 Agent 多次对话后，规律将自动提炼为规则"
                     else
                         "目标已停用，规则不再注入",
-                    style = type.caption.copy(fontSize = 11.sp),
+                    // P3-32 修复：移除硬编码 fontSize，11.sp 改用 type.label
+                    style = type.label,
                     color = colors.textDisabled,
                 )
             }
@@ -1084,13 +1093,15 @@ private fun RuleItem(
         // 锁定/候选图标
         Text(
             text  = if (isLocked) "🔒" else "⏳",
-            style = type.caption.copy(fontSize = 12.sp),
+            // P3-32 修复：移除硬编码 fontSize
+            style = type.caption,
             modifier = Modifier.padding(top = 1.dp),
         )
         Spacer(Modifier.width(6.dp))
         Text(
             text     = content,
-            style    = type.caption.copy(fontSize = 12.sp),
+            // P3-32 修复：移除硬编码 fontSize
+            style    = type.caption,
             color    = if (isLocked) colors.textPrimary else colors.textSecondary,
             modifier = Modifier.weight(1f),
         )
@@ -1156,7 +1167,8 @@ private fun GoalStatusChip(status: String, isActive: Boolean) {
     ) {
         Text(
             text  = label,
-            style = ZaijianTheme.typography.caption.copy(fontSize = 11.sp, fontWeight = FontWeight.Medium),
+            // P3-32 修复：移除硬编码 fontSize，11.sp 改用 type.label
+            style = type.label.copy(fontWeight = FontWeight.Medium),
             color = chipText,
         )
     }
@@ -1398,7 +1410,8 @@ private fun GoalEditSheet(
                     Spacer(Modifier.width(Spacing.xs))
                     Text(
                         text  = "目标创建后，Agent 通过对话积累规律，高分 Session 后自动提炼为规则",
-                        style = type.caption.copy(fontSize = 11.sp),
+                        // P3-32 修复：移除硬编码 fontSize，11.sp 改用 type.label
+                        style = type.label,
                         color = colors.accent,
                     )
                 }

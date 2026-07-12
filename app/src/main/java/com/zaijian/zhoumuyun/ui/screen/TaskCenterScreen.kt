@@ -500,7 +500,8 @@ private fun TaskCard(
             // 同一入口按状态切换，避免卡片上同时挂两个操作按钮。
             val isCancellable = task.status == TaskStatus.PENDING.name ||
                 task.status == TaskStatus.RUNNING.name
-            IconButton(onClick = onDelete, modifier = Modifier.size(32.dp)) {
+            // P3-33 修复：触摸目标 < 48dp，移除 IconButton 的 size 限制，让 minimumInteractiveComponentSize 生效
+            IconButton(onClick = onDelete) {
                 Icon(
                     imageVector        = if (isCancellable) Icons.Outlined.Cancel else Icons.Outlined.DeleteOutline,
                     contentDescription = if (isCancellable) "取消任务" else "删除任务",
@@ -722,7 +723,7 @@ private fun TodayGroupedView(
                     TodaySectionHeader(
                         icon  = Icons.Outlined.Spa,
                         label = "成长任务 (${listItem.count})",
-                        color = Color(0xFF7BAE7F),
+                        color = Palette.GrowthGreen,
                     )
                 }
                 is TodayListItem.GrowthTask -> {
@@ -997,7 +998,8 @@ private fun GrowthTaskItem(
     val type      = ZaijianTheme.typography
     val character = DefaultCharacters.firstOrNull { it.id == task.characterId }
     val isDone    = task.status == TaskStatus.COMPLETED.name
-    val growthGreen = Color(0xFF7BAE7F)
+    // P3-55 扩展：硬编码绿色统一为主题常量 Palette.GrowthGreen
+    val growthGreen = Palette.GrowthGreen
 
     WorldCard(
         modifier = modifier.fillMaxWidth().clickable { onToggle() },

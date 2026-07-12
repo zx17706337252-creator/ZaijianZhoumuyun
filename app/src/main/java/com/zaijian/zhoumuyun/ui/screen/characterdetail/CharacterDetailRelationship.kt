@@ -92,6 +92,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.zaijian.zhoumuyun.data.model.CharacterConfig
 import com.zaijian.zhoumuyun.data.model.DefaultCharacters
 import com.zaijian.zhoumuyun.data.model.DefaultPresenceStates
@@ -452,6 +453,14 @@ private fun RelationshipRadarChart(
 ) {
     val colors = ZaijianTheme.colors
     val n = dimensions.size
+    // P3-28 修复：使用 TextMeasurer 将标签绘制到 Canvas 内，
+    // 此前标签在 Canvas 外部用 Row 渲染，与雷达图视觉分离。
+    val textMeasurer = androidx.compose.ui.text.rememberTextMeasurer()
+    val labelStyle = androidx.compose.ui.text.TextStyle(
+        color = colors.textSecondary,
+        fontSize = 11.sp,
+        fontFamily = ZaijianTheme.typography.label.fontFamily,
+    )
 
     Canvas(modifier = modifier) {
         val cx = size.width / 2f
@@ -501,6 +510,26 @@ private fun RelationshipRadarChart(
                 color  = accentColor,
                 radius = 3.dp.toPx(),
                 center = Offset(cx + r * kotlin.math.cos(angle.toDouble()).toFloat(), cy + r * kotlin.math.sin(angle.toDouble()).toFloat()),
+            )
+        }
+
+        // P3-28 修复：将维度标签绘制到 Canvas 内，标签位于轴线末端外侧
+        for (i in 0 until n) {
+            val (label, _) = dimensions[i]
+            val angle = (-kotlin.math.PI / 2 + i * angleStep).toFloat()
+            val labelR = maxR * 1.18f // 标签位置略超出最大半径
+            val labelX = cx + labelR * kotlin.math.cos(angle.toDouble()).toFloat()
+            val labelY = cy + labelR * kotlin.math.sin(angle.toDouble()).toFloat()
+            val measured = textMeasurer.measure(
+                text = label,
+                style = labelStyle,
+            )
+            drawText(
+                textLayoutResult = measured,
+                topLeft = Offset(
+                    labelX - measured.size.width / 2f,
+                    labelY - measured.size.height / 2f,
+                ),
             )
         }
     }

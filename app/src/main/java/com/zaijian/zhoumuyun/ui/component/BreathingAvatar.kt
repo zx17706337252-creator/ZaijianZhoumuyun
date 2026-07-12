@@ -492,11 +492,13 @@ private fun StatusDotOnly(
     modifier: Modifier = Modifier,
 ) {
     val dotColor = statusType.dotColor()
+    // P3-38 修复（重做）：不依赖 clipToBounds 裁剪，而是将 dotCenter 向内收缩
+    // 1.5f（白描边宽度），让含描边的完整圆点都落在容器边界内。
     Canvas(modifier = modifier) {
         val dotRadius = 5.dp.toPx()
         val dotCenter = Offset(
-            x = size.width  - dotRadius,
-            y = size.height - dotRadius,
+            x = size.width  - dotRadius - 1.5f,
+            y = size.height - dotRadius - 1.5f,
         )
         drawCircle(color = Color.White, radius = dotRadius + 1.5f, center = dotCenter)
         drawCircle(color = dotColor,    radius = dotRadius,         center = dotCenter)
@@ -536,10 +538,11 @@ private fun StatusRingCanvas(
         )
 
         // 状态点：右下角缺口处，直径约 10dp
+        // P3-38 修复：向内收缩 1.5f 避免白描边探出容器
         val dotRadius = 5.dp.toPx()
         val dotCenter = Offset(
-            x = size.width  - dotRadius,
-            y = size.height - dotRadius,
+            x = size.width  - dotRadius - 1.5f,
+            y = size.height - dotRadius - 1.5f,
         )
         // 白色底衬（防止状态点与光晕混淆）
         drawCircle(color = Color.White, radius = dotRadius + 1.5f, center = dotCenter)
