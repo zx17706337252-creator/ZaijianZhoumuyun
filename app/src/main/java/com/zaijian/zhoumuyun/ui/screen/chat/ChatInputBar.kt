@@ -177,9 +177,10 @@ internal fun ChatInputBar(
             onValueChange = onValueChange,
             textStyle     = type.body.copy(color = colors.textPrimary),
             cursorBrush   = SolidColor(accentColor),
-            // P2-4 修复（重做）：限制最大行数 + 内部可滚动
+            // P2-4 修复（重做）：限制最大行数（BasicTextField(String) 重载没有
+            // scrollState 参数，内部滚动由该重载自动处理，此前误传导致重载
+            // 决议失败、编译器报出一整串看似无关的 unresolved reference）
             maxLines      = 6,
-            scrollState   = rememberScrollState(),
             modifier      = Modifier
                 .weight(1f)
                 .clip(RoundedCornerShape(28.dp))
