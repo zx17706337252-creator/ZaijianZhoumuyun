@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">再见周慕云</string>
+    <string name="nav_home">公馆</string>
+    <string name="nav_characters">书架</string>
+    <string name="nav_tasks">任务</string>
+    <string name="nav_profile">我</string>
+    <string name="home_title">永恒之家</string>
+    <string name="home_subtitle">他们都在这里，等你回来</string>
+    <string name="floor_second">二楼</string>
+    <string name="floor_first">一楼</string>
+    <string name="floor_basement">地下室</string>
+    <string name="status_active">活跃</string>
+    <string name="status_idle">空闲</string>
+    <string name="status_focused">专注</string>
+    <string name="status_offline">离线</string>
+    <string name="empty_memory">还没有记忆，去聊聊吧</string>
+    <string name="error_generic">好像出了点问题，稍后再试？</string>
+    <string name="task_center">任务中心</string>
+    <string name="tooltip_guide">长按公馆里的窗口，可以翻开她的档案</string>
+</resources>
