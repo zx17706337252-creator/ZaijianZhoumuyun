@@ -88,6 +88,10 @@ android {
         targetCompatibility = JavaVersion.VERSION_11
     }
 
+    // 编译错误修复：本地 JDK 为 21（Android Studio 自带 JBR）时，Kotlin 编译器
+    // 默认跟随运行 Gradle 的 JDK 版本，与上面 compileOptions 显式指定的 Java 11
+    // 不一致，导致 compileReleaseJavaWithJavac(11) 与 kspReleaseKotlin(21) 冲突。
+    // 显式把 Kotlin 编译目标也钉在 11，与 Java 侧保持一致。
     kotlin {
         compilerOptions {
             jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_11)

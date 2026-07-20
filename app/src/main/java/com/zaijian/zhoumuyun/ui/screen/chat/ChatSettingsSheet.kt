@@ -18,6 +18,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AccountCircle
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.DeleteSweep
+import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Event
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
@@ -78,6 +79,9 @@ internal fun ChatSettingsSheet(
     hasCustomBackground: Boolean = false,
     onSetBackground: () -> Unit = {},
     onClearBackground: () -> Unit = {},
+    // 2.4：导出本次对话（Agent附件下发方案 v2.0 P2）。走 1.1 打通的
+    // exportedFileJson 回填链路，落地为一份可下载文件。默认空实现向后兼容。
+    onExportConversation: () -> Unit = {},
     // 批次4新增：跳转到该角色的个人日程页（PersonalScheduleScreen）。
     // 默认空实现保持向后兼容——ChatScreen 一定会透传真实回调，默认值只是让
     // 其他潜在调用点（如预览）不必关心此参数。
@@ -216,6 +220,39 @@ internal fun ChatSettingsSheet(
                     androidx.compose.material3.TextButton(onClick = onClearBackground) {
                         Text("恢复默认", style = type.caption, color = accentColor)
                     }
+                }
+            }
+
+            HorizontalDivider(color = colors.border, modifier = Modifier.padding(horizontal = Spacing.screenHorizontal))
+
+            // 条目：导出本次对话（2.4）
+            // 照抄"角色档案"/"日程"条目的 Row + IconBadge + Column 范式，
+            // 点击触发 onExportConversation 并关闭 Sheet——不需要确认弹窗
+            // （不是破坏性操作，导出失败会走 ChatScreen 已有的 snackbar 反馈）。
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable {
+                        onExportConversation()
+                        onDismiss()
+                    }
+                    .padding(
+                        horizontal = Spacing.screenHorizontal,
+                        vertical   = Spacing.md,
+                    ),
+                verticalAlignment     = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Spacing.md),
+            ) {
+                com.zaijian.zhoumuyun.ui.design.IconBadge(
+                    icon               = Icons.Outlined.Download,
+                    contentDescription = null,
+                    tint               = accentColor,
+                    background         = accentColor.copy(alpha = 0.12f),
+                    size               = 20.dp,
+                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(text = "导出本次对话", style = type.body, color = colors.textPrimary)
+                    Text(text = "生成文本文件，可在「文件」中下载分享", style = type.caption, color = colors.textSecondary)
                 }
             }
 

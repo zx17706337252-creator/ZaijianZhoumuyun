@@ -128,12 +128,18 @@ object ToolCallInterceptor {
      * 当注册表为空（未注册任何工具）时，直接透传 provider.chat() 的流，
      * 无任何额外开销。
      *
-     * @param provider      LLM 提供商
-     * @param messages      当前消息历史（不含 system）
-     * @param systemPrompt  系统提示（应已包含工具能力描述块）
-     * @param config        LLM 配置
-     * @param maxRounds     最大工具执行轮数（默认 [MAX_TOOL_ROUNDS]）
-     * @return              [StreamEvent] 的 Flow
+     * @param provider          LLM 提供商
+     * @param messages          当前消息历史（不含 system）
+     * @param systemPrompt      系统提示（应已包含工具能力描述块）
+     * @param config            LLM 配置
+     * @param maxRounds         最大工具执行轮数（默认 [MAX_TOOL_ROUNDS]）
+     * @param disabledToolNames 执行层强制禁用的工具名集合（默认空，不影响现有调用点）。
+     *   这是与 prompt 层描述过滤（[AgentToolRegistry.buildToolDescriptionBlock] 的
+     *   `excludeNames`）配合使用的第二道防线：即使模型因为幻觉/历史学习生成了
+     *   本不该出现的 `<tool:xxx>` 标签，只要标签名在此集合中，也会在 Phase 2
+     *   执行前被拦截，不会真的调用该工具。两层防御缺一不可——只做 prompt 层
+     *   过滤是"眼不见为净"，模型仍可能意外生成被排除工具的标签。
+     * @return                  [StreamEvent] 的 Flow
      */
     fun streamWithTools(
         provider: LLMProvider,
@@ -141,9 +147,16 @@ object ToolCallInterceptor {
         systemPrompt: String,
         config: LLMConfig,
         maxRounds: Int = MAX_TOOL_ROUNDS,
+        disabledToolNames: Set<String> = emptySet(),
     ): Flow<StreamEvent> = channelFlow {
 
         // 快速路径：注册表为空，直接透传
+        // 注意：这里判断的是全局注册表 allNames()，不考虑 disabledToolNames。
+        // 如果调用方传入了非空 disabledToolNames 但全局注册表本身非空，
+        // 会走下面的慢路径（循环 + parser），即使排除后可用工具集合为空。
+        // 这不会导致错误：pendingCalls 始终为空，第一轮 Phase 1 结束后就会
+        // 在 pendingCalls.isEmpty() 处正常 break，只是多了一点不必要的
+        // parser 构造开销，可接受。
         if (AgentToolRegistry.allNames().isEmpty()) {
             provider.chat(messages, systemPrompt, config).collect { delta ->
                 send(StreamEvent.TextDelta(delta))
@@ -206,6 +219,13 @@ object ToolCallInterceptor {
             val toolResultParts = mutableListOf<String>()
 
             for (call in pendingCalls) {
+                if (call.toolName in disabledToolNames) {
+                    // 执行层强制拦截：该工具在当前场景被禁用（即使模型生成了标签，
+                    // 也不真正执行）。与 prompt 层的描述过滤是同一份排除名单，
+                    // 这里是兜底的第二道防线。
+                    toolResultParts.add("[工具 ${call.toolName} 在当前场景不可用]")
+                    continue
+                }
                 val tool = AgentToolRegistry.get(call.toolName)
                 if (tool == null) {
                     // 未注册的工具：记录并跳过

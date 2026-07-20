@@ -172,7 +172,17 @@ class DailyPracticeWorker(
                         speakerName = speakerName,
                         content = briefText,
                         createdAt = System.currentTimeMillis(),
-                        exportedFileJson = null,
+                        // v65 修复：此前硬编码 null，导致补发播报必然丢失文件卡片
+                        // （即便文件本身已经安全写在磁盘上）。现在从 record 里读取
+                        // 首次落库时保存的文件元数据。历史记录（v65 之前生成、
+                        // 仍处于 PENDING 状态）没有这份数据，record.exportedFileJson
+                        // 为 null，此时行为退化为修复前的样子（无文件卡片的纯文字
+                        // 补发），不是新问题，只是没有变得更好——这是数据侧的
+                        // 天然限制，无法通过 migration 回填。
+                        exportedFileJson = record.exportedFileJson,
+                        // v66（1.7 P3）：同理透传多文件字段。v66 之前生成的
+                        // PENDING 记录这里也是 null，同样的退化逻辑。
+                        exportedFilesJson = record.exportedFilesJson,
                     )
                 )
                 db.practiceRecordDao().markRoundtablePosted(record.id)
@@ -252,6 +262,10 @@ class DailyPracticeWorker(
             observedTrait = comparison.observedTrait,
             createdAt = now,
             roundtablePosted = false,
+            // v65 修复：随记录一并保存文件元数据，repostPendingRecords() 补发时
+            // 不再需要重新生成文件（也做不到，LLM 产出不可重放），直接从这里读取。
+            exportedFileJson = exportMetaToJson(exportMeta),
+            exportedFilesJson = exportMetaToJsonArray(exportMeta),   // v66（1.7 P3）
         )
         db.practiceRecordDao().insert(record)
         repo.recordPracticeCompleted(profile.id)
@@ -427,15 +441,7 @@ class DailyPracticeWorker(
         val speakerName = config?.name ?: "角色${profile.characterId}"
 
         val briefText = buildBriefSummary(profile.domain, topic, comparison)
-
-        val fileJson = exportMeta?.let {
-            JSONObject().apply {
-                put("fileName", it.fileName)
-                put("mimeType", it.mimeType)
-                put("sizeBytes", it.sizeBytes)
-                put("absolutePath", it.absolutePath)
-            }.toString()
-        }
+        val fileJson = exportMetaToJson(exportMeta)
 
         db.roundtableMessageDao().insert(
             RoundtableMessageEntity(
@@ -446,9 +452,39 @@ class DailyPracticeWorker(
                 content = briefText,
                 createdAt = System.currentTimeMillis(),
                 exportedFileJson = fileJson,
+                exportedFilesJson = exportMetaToJsonArray(exportMeta),   // v66（1.7 P3）
             )
         )
         return true
+    }
+
+    /**
+     * v65 修复：ExportMeta → JSON 字符串序列化，从 postToRoundtable() 内联逻辑
+     * 提取为独立函数，供 runSinglePractice()（落库 PracticeRecordEntity 时）和
+     * postToRoundtable()（播报 RoundtableMessageEntity 时）共用同一份序列化，
+     * 避免两处格式各写一份、后续字段增减时忘记同步。
+     */
+    private fun exportMetaToJson(exportMeta: ExportMeta?): String? {
+        return exportMeta?.let {
+            JSONObject().apply {
+                put("fileName", it.fileName)
+                put("mimeType", it.mimeType)
+                put("sizeBytes", it.sizeBytes)
+                put("absolutePath", it.absolutePath)
+            }.toString()
+        }
+    }
+
+    /**
+     * v66（Agent附件下发方案 v2.0 · 1.7 P3）：ExportMeta → JSON 数组字符串，
+     * 写入 exportedFilesJson（多文件字段）。practice 每次只产出一个文件，
+     * 这里包成单元素数组——保持与 exportedFileJson 同一份 exportMeta 来源，
+     * 不是重新生成，纯粹是格式包装，不会与单文件字段的值产生分歧。
+     */
+    private fun exportMetaToJsonArray(exportMeta: ExportMeta?): String? {
+        return exportMetaToJson(exportMeta)?.let { single ->
+            org.json.JSONArray().apply { put(JSONObject(single)) }.toString()
+        }
     }
 
     /** 拼装播报文案（不调用 LLM，本身已经是结构化信息，直接拼句子即可，节省一次调用） */

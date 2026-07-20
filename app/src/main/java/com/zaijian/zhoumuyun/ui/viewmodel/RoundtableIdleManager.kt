@@ -1,6 +1,9 @@
 package com.zaijian.zhoumuyun.ui.viewmodel
 
 import android.content.SharedPreferences
+import com.zaijian.zhoumuyun.data.agent.AgentToolRegistry
+import com.zaijian.zhoumuyun.data.agent.StreamEvent
+import com.zaijian.zhoumuyun.data.agent.ToolCallInterceptor
 import com.zaijian.zhoumuyun.data.db.entity.RoundtableMessageEntity
 import com.zaijian.zhoumuyun.data.memory.MemoryEngine
 import com.zaijian.zhoumuyun.data.model.CharacterConfig
@@ -79,6 +82,8 @@ class RoundtableIdleManager(
         turnIndex       = turnIndex,
         thinkingText    = thinkingText,
         psychText       = psychText,
+        exportedFileJson = exportedFileJson,
+        exportedFilesJson = exportedFilesJson,   // v66（1.7 P3）
     )
 
     // ══════════════════════════════════════════════════════════
@@ -217,6 +222,10 @@ class RoundtableIdleManager(
         // 圆桌在场成员（除 initiator 自己）里是否有女儿角色（id >= 1000）。
         val daughterPresentInScene = _uiState.value.activeMembers.any { it.id != initiator.id && it.id >= 1000 }
 
+        // v1.39 圆桌工具调用接入：自发发言路径与常规回复路径（RoundtableBotReplyGenerator）
+        // 共用同一份 ROUNDTABLE_DISABLED_TOOL_NAMES 排除名单，保持行为一致。
+        val toolDesc = AgentToolRegistry.buildToolDescriptionBlock(excludeNames = ROUNDTABLE_DISABLED_TOOL_NAMES)
+
         val spontaneousSystemPrompt = buildString {
             append(PromptOrchestrator.buildSystemPrompt(
                 character               = initiator,
@@ -243,6 +252,7 @@ class RoundtableIdleManager(
                 // 否则用户身份注入会误判成私聊、用错私下称谓。
                 isRoundtableContext     = true,
                 daughterPresentInScene  = daughterPresentInScene,
+                toolDescriptionBlock    = toolDesc,
             ))
             appendLine()
             appendLine("【自发发言模式】")
@@ -291,23 +301,40 @@ class RoundtableIdleManager(
 
         var fullReply = ""
         val config = LLMConfig(model = "", maxTokens = 200, temperature = 0.92f, stream = true)
+        // v1.39 圆桌工具调用接入：与常规回复路径同语义，暂存本轮工具产出的文件元数据。
+        // v66（1.7 P3）：改用 list 收集本轮全部文件，与另外两条路径同步升级。
+        val pendingExportedFiles = mutableListOf<String>()
 
         try {
             withTimeoutOrNull(REPLY_TIMEOUT_MS) {
-                provider.chat(
-                    messages     = spontaneousHistory,
-                    systemPrompt = spontaneousSystemPrompt,
-                    config       = config,
-                ).collect { delta ->
-                    fullReply += delta
-                    // Fix-StreamingPsychLeak：与 generateBotReply 同一套流式圆括号剥离，
-                    // 见该函数内注释——避免自发发言路径与普通回复路径出现"一条修了
-                    // 一条没修"的不一致。
-                    val (displayText, streamingPsych) = ChatTagParser.stripTagsForDisplayWithPsych(fullReply)
-                    _uiState.update { s ->
-                        s.copy(messages = s.messages.map { msg ->
-                            if (msg.id == msgId) msg.copy(content = displayText, psychText = streamingPsych) else msg
-                        }.toImmutableList())
+                ToolCallInterceptor.streamWithTools(
+                    provider          = provider,
+                    messages          = spontaneousHistory,
+                    systemPrompt      = spontaneousSystemPrompt,
+                    config            = config,
+                    disabledToolNames = ROUNDTABLE_DISABLED_TOOL_NAMES,
+                ).collect { event ->
+                    when (event) {
+                        is StreamEvent.TextDelta -> {
+                            // event.text 已经过 ToolParser 清洗，不含 <tool:xxx> 标签，
+                            // 与常规回复路径（RoundtableBotReplyGenerator）语义一致。
+                            fullReply += event.text
+                            // Fix-StreamingPsychLeak：与 generateBotReply 同一套流式圆括号剥离，
+                            // 见该函数内注释——避免自发发言路径与普通回复路径出现"一条修了
+                            // 一条没修"的不一致。
+                            val (displayText, streamingPsych) = ChatTagParser.stripTagsForDisplayWithPsych(fullReply)
+                            _uiState.update { s ->
+                                s.copy(messages = s.messages.map { msg ->
+                                    if (msg.id == msgId) msg.copy(content = displayText, psychText = streamingPsych) else msg
+                                }.toImmutableList())
+                            }
+                        }
+                        is StreamEvent.ToolStarted -> Unit
+                        is StreamEvent.ToolDone -> {
+                            // v66（1.7 P3）：add 而不是覆盖赋值。
+                            extractExportedFileJson(event.result)?.let { pendingExportedFiles.add(it) }
+                        }
+                        is StreamEvent.RoundDone -> Unit
                     }
                 }
             }
@@ -335,6 +362,9 @@ class RoundtableIdleManager(
                         thinkingText = parsedThinking,
                         psychText    = parsedPsych,
                         isStreaming  = false,
+                        // v66（1.7 P3）：两个字段都写，exportedFileJson 保留兼容旧路径。
+                        exportedFileJson = pendingExportedFiles.lastOrNull(),
+                        exportedFilesJson = packExportedFilesJson(pendingExportedFiles),
                     ) else msg
                 }.toImmutableList(),
                 generationStatus = (s.generationStatus + (initiator.id to BotGenerationStatus.DONE)).toImmutableMap(),
@@ -356,6 +386,8 @@ class RoundtableIdleManager(
                                 turnIndex    = turnIdx,
                                 thinkingText = parsedThinking,
                                 psychText    = parsedPsych,
+                                exportedFileJson = pendingExportedFiles.lastOrNull(),
+                                exportedFilesJson = packExportedFilesJson(pendingExportedFiles),
                             ).toEntity(rtId)
                         )
                     } catch (e: Exception) {

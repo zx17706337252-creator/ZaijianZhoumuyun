@@ -186,9 +186,21 @@ object AgentToolRegistry {
      *   ...
      *
      * 当注册表为空时返回空字符串（不注入）。
+     *
+     * @param excludeNames 需要从描述块中排除的工具名集合（默认空，即全量返回，
+     *   私聊等原有调用点行为不变）。用于场景化过滤——例如圆桌场景需要排除
+     *   `agent_message`/`roundtable_trigger`/`task_delegate` 这类跨角色协作工具。
+     *   注意：这里的排除只影响"模型看到什么"（prompt 层），不代表执行层一定会
+     *   拒绝该工具——执行层的强制拦截见 [ToolCallInterceptor.streamWithTools] 的
+     *   `disabledToolNames` 参数，两者需配合使用才构成完整防御。
      */
-    fun buildToolDescriptionBlock(): String {
-        if (tools.isEmpty()) return ""
+    fun buildToolDescriptionBlock(excludeNames: Set<String> = emptySet()): String {
+        val visibleTools = if (excludeNames.isEmpty()) {
+            tools.values
+        } else {
+            tools.values.filter { it.name !in excludeNames }
+        }
+        if (visibleTools.isEmpty()) return ""
         return buildString {
             appendLine("[可用工具]")
             appendLine("当需要获取外部信息、执行计算、或执行用户明确要求的具体操作")
@@ -197,7 +209,7 @@ object AgentToolRegistry {
             appendLine("<tool:工具名 参数名=\"参数值\"/>")
             appendLine()
             appendLine("可用工具：")
-            tools.values.sortedBy { it.name }.forEach { tool ->
+            visibleTools.sortedBy { it.name }.forEach { tool ->
                 val paramDesc = tool.paramKeys.joinToString(" ") { key -> "$key=\"...\"" }
                 val desc = tool.description.ifBlank { "（无描述）" }
                 appendLine("- ${tool.name}（$desc）: $paramDesc")

@@ -51,8 +51,18 @@ data class MessageEntity(
     /**
      * Phase 18：file_export 工具生成的文件元数据（JSON 字符串）。
      * null = 普通消息，非 null = 该消息携带可下载文件卡片。
+     * 单文件字段，本轮多个文件类工具调用时只保留最后一个——保留是为了
+     * 兼容尚未切换到 exportedFilesJson 的旧读取路径，新代码应优先读下面
+     * 的 exportedFilesJson。
      */
     val exportedFileJson: String? = null,
+    /**
+     * v66（Agent附件下发方案 v2.0 · 1.7 P3）：多文件版本，JSON 数组字符串，
+     * 数组元素结构与 exportedFileJson 单对象一致。null = 该消息没有文件附件
+     * （历史消息永远为 null，即使 exportedFileJson 有值——见 Migration65to66）。
+     * 一轮回复内连续调用多个文件类工具时，这里保存全部文件，不再丢失。
+     */
+    val exportedFilesJson: String? = null,
     /**
      * Fix-ThinkingLeak：从回复正文剥离出的内心推理/工具调用意图原文。
      * null = 没有思考内容，非 null = 气泡下方展示可折叠的"想法"卡片。

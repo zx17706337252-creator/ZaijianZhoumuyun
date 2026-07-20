@@ -64,7 +64,34 @@ data class RoundtableMessage(
      * null = 无心理描写内容。
      */
     val psychText: String? = null,
-)
+    /**
+     * 工具调用产出的文件元数据（JSON 序列化），与 ChatMessage.exportedFileJson 同语义。
+     * 补齐圆桌场景与私聊场景的工具产出展示能力对等。null = 本条消息未产出文件。
+     * 单文件字段，本轮多个文件类工具调用时只保留最后一个——保留是为了兼容
+     * 尚未切换到 exportedFilesJson 的旧读取路径，新代码应优先读 exportedFiles。
+     */
+    val exportedFileJson: String? = null,
+    /**
+     * v66（Agent附件下发方案 v2.0 · 1.7 P3）：多文件版本，与
+     * ChatMessage.exportedFilesJson 同语义（JSON 数组字符串）。null = 本条
+     * 消息没有文件附件；历史消息永远为 null，即使 exportedFileJson 有值。
+     */
+    val exportedFilesJson: String? = null,
+) {
+    @Deprecated("单文件读取路径，历史兼容用；新代码请用 exportedFiles", ReplaceWith("exportedFiles.firstOrNull()"))
+    val exportedFile: ExportedFile? get() = exportedFiles.firstOrNull()
+
+    /**
+     * v66（1.7 P3）：优先解析 exportedFilesJson（多文件数组）；为空时退化为把
+     * exportedFileJson 包成单元素 list——历史消息（只有旧字段有值）不会因为
+     * 这次改造丢失已有的文件卡片。两个字段都为 null 时返回空 list。
+     */
+    val exportedFiles: List<ExportedFile> get() {
+        return parseExportedFilesWithFallback(exportedFilesJson, exportedFileJson)
+    }
+}
+
+
 
 /**
  * 各 Bot 的生成状态，用于序贯进度指示器。
@@ -436,6 +463,13 @@ class RoundtableViewModel(app: Application) : AndroidViewModel(app) {
                 turnIndex       = e.turnIndex,
                 thinkingText    = e.thinkingText,
                 psychText       = e.psychText,
+                // v1.39 圆桌工具调用接入：DB→内存的反向映射，此前遗漏会导致
+                // 新生成的消息能看到文件卡片，但重新打开圆桌页面重新加载历史
+                // 消息后卡片消失（只有 toEntity 单向映射，没有这一侧 fromEntity）。
+                exportedFileJson = e.exportedFileJson,
+                // v66（1.7 P3）：同理，多文件字段也要在这一侧补上，否则同样的
+                // "新消息能看到、重新加载后消失"问题会在多文件卡片上重演一遍。
+                exportedFilesJson = e.exportedFilesJson,
             )
         }
         val maxTurn = messages.maxOf { it.turnIndex }

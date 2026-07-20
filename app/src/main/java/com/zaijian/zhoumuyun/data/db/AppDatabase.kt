@@ -224,7 +224,13 @@ import com.zaijian.zhoumuyun.data.db.entity.JudgeAccuracyLogEntity           // 
         PromotedSkillTagEntity::class,          // 擅长领域标签墙
         NotificationReadStateEntity::class,     // 通知中心已读状态
     ],
-    version = 64,  // 63 → 64：日程系统第七节——scheduled_jobs 新增 projectId 列（关联项目，可选增强），详见Migration63to64.kt。
+    version = 66,  // 65 → 66：Agent附件下发方案 v2.0 · 1.7 P3——messages /
+    // roundtable_messages / practice_records 三表新增 exportedFilesJson 列，
+    // 支持单条消息挂载多个文件附件（此前 exportedFileJson 是单文件字段，
+    // 一轮回复连续产出多个文件时后一次会覆盖前一次）。详见 Migration65to66.kt。
+    // 64 → 65：修复 DailyPracticeWorker 补发路径丢失文件卡片——
+    // practice_records 新增 exportedFileJson 列，详见 Migration64to65.kt。
+    // 63 → 64：日程系统第七节——scheduled_jobs 新增 projectId 列（关联项目，可选增强），详见Migration63to64.kt。
     // 62 → 63：日程系统批次1——scheduled_jobs 新增 description 列（工单型任务专用），详见Migration62to63.kt。
     // 61 → 62：批次0修复——补建12张表31个历史遗留缺失索引，详见Migration61to62.kt。
     // 60 → 61：圆桌场景补齐三层分离（thinking/psych 标签解析），
@@ -360,6 +366,8 @@ abstract class AppDatabase : RoomDatabase() {
                         com.zaijian.zhoumuyun.data.db.migration.MIGRATION_61_62,
                         com.zaijian.zhoumuyun.data.db.migration.MIGRATION_62_63,
                         com.zaijian.zhoumuyun.data.db.migration.MIGRATION_63_64,
+                        com.zaijian.zhoumuyun.data.db.migration.MIGRATION_64_65,
+                        com.zaijian.zhoumuyun.data.db.migration.MIGRATION_65_66,
                     )
                     .fallbackToDestructiveMigrationOnDowngrade()
                     // P1-11 修复：原先仅有 fallbackToDestructiveMigrationOnDowngrade()

@@ -566,5 +566,9 @@ $digest
         replyTargetId   = replyTargetId,
         replyTargetName = replyTargetName,
         turnIndex       = turnIndex,
+        // v66（1.7 P3）：此路径当前不采集工具产出（用户消息落库，无 ToolDone
+        // 事件），透传只是保持三处 toEntity 结构对称，实际恒为 null。
+        exportedFileJson = exportedFileJson,
+        exportedFilesJson = exportedFilesJson,
     )
 }

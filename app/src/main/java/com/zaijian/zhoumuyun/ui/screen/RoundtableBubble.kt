@@ -6,6 +6,7 @@ import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
@@ -13,9 +14,13 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.rememberScrollState
@@ -84,7 +89,9 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
@@ -117,7 +124,9 @@ import com.zaijian.zhoumuyun.ui.theme.Palette
 import com.zaijian.zhoumuyun.ui.theme.Radius
 import com.zaijian.zhoumuyun.ui.theme.Spacing
 import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
+import com.zaijian.zhoumuyun.ui.theme.appSpring
 import com.zaijian.zhoumuyun.ui.theme.presenceGlow
+import com.zaijian.zhoumuyun.ui.theme.snapSpring
 import com.zaijian.zhoumuyun.ui.viewmodel.BotGenerationStatus
 import com.zaijian.zhoumuyun.ui.viewmodel.RoundtableMessage
 import com.zaijian.zhoumuyun.ui.viewmodel.RoundtableViewModel
@@ -131,12 +140,26 @@ import androidx.compose.runtime.snapshotFlow
 //  UserBubble — 用户消息气泡
 // ─────────────────────────────────────────────────────────────
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-internal fun UserBubble(msg: RoundtableMessage) {
+internal fun UserBubble(
+    msg: RoundtableMessage,
+    // 2.1 补齐：与私聊 MessageBubble 同一套长按复制交互。
+    onCopyMessage: (String) -> Unit = {},
+) {
     val colors = ZaijianTheme.colors
     val type   = ZaijianTheme.typography
     val config = LocalConfiguration.current
     val maxW   = (config.screenWidthDp * 0.72f).dp
+    val haptic = LocalHapticFeedback.current
+
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue   = if (pressed) 0.97f else 1f,
+        animationSpec = if (pressed) snapSpring else appSpring,
+        label         = "roundtableUserBubblePressScale",
+    )
 
     Row(
         modifier              = Modifier.fillMaxWidth(),
@@ -148,6 +171,7 @@ internal fun UserBubble(msg: RoundtableMessage) {
             color    = Color.White,
             modifier = Modifier
                 .widthIn(max = maxW)
+                .graphicsLayer { scaleX = scale; scaleY = scale }
                 .clip(
                     RoundedCornerShape(
                         topStart    = Radius.md,
@@ -157,6 +181,16 @@ internal fun UserBubble(msg: RoundtableMessage) {
                     ),
                 )
                 .background(if (colors.isDark) Palette.UserBubbleDark else Palette.Ink900)   // W12问题5修复：原硬编码 Color(0xFF3A2E20)
+                .combinedClickable(
+                    interactionSource = interaction,
+                    indication        = null,
+                    onClick           = {},
+                    onLongClick       = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        onCopyMessage(msg.content)
+                    },
+                    onLongClickLabel  = "复制这条消息",
+                )
                 .padding(horizontal = Spacing.md, vertical = Spacing.sm),
         )
     }
@@ -167,17 +201,24 @@ internal fun UserBubble(msg: RoundtableMessage) {
 //  BotBubble — Bot 回复气泡（左侧 4dp 主题色条）
 // ─────────────────────────────────────────────────────────────
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 internal fun BotBubble(
     msg: RoundtableMessage,
     bot: CharacterConfig?,
     isLast: Boolean,
+    // v1.39 圆桌工具调用接入：文件卡片"打开"回调，默认空实现——
+    // 未传参的既有调用点行为不变（文件卡片仍会渲染，只是点击不响应）。
+    onOpenFile: (com.zaijian.zhoumuyun.ui.viewmodel.ExportedFile) -> Unit = {},
+    // 2.1 补齐：与私聊 MessageBubble 同一套长按复制交互。
+    onCopyMessage: (String) -> Unit = {},
 ) {
     val colors      = ZaijianTheme.colors
     val type        = ZaijianTheme.typography
     val config      = LocalConfiguration.current
     val maxW        = (config.screenWidthDp * 0.82f).dp
     val accentColor = bot?.accentColor ?: colors.accent
+    val haptic      = LocalHapticFeedback.current
 
     Row(
         modifier              = Modifier.fillMaxWidth(),
@@ -269,8 +310,32 @@ internal fun BotBubble(
             // 显式传入 Gold 系而非 WorldBubble 默认的 accent，保持与此前视觉一致）。
             // 左侧 4dp 主题色条不是 WorldBubble 的能力，在 content 内部用内层 Box
             // 的 drawBehind 补回。）
+            // 2.1 补齐：长按复制。流式打字中（isStreaming）内容会持续变化，
+            // 此时长按拿到的是当次重组时的 msg.content 快照，不去特殊拦截——
+            // 用户此刻长按大概率也不是为了复制半截还没说完的话，交给
+            // onCopyMessage 内部按 isNotBlank 判断即可，不在这里加复杂状态判断。
+            val botInteraction = remember { MutableInteractionSource() }
+            val botPressed by botInteraction.collectIsPressedAsState()
+            val botScale by animateFloatAsState(
+                targetValue   = if (botPressed) 0.97f else 1f,
+                animationSpec = if (botPressed) snapSpring else appSpring,
+                label         = "roundtableBotBubblePressScale",
+            )
             WorldBubble(
-                modifier    = Modifier,
+                modifier    = Modifier
+                    .graphicsLayer { scaleX = botScale; scaleY = botScale }
+                    .combinedClickable(
+                        interactionSource = botInteraction,
+                        indication        = null,
+                        onClick           = {},
+                        onLongClick       = {
+                            if (msg.content.isNotBlank()) {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                onCopyMessage(msg.content)
+                            }
+                        },
+                        onLongClickLabel  = "复制这条消息",
+                    ),
                 topStart    = Radius.xs,
                 topEnd      = Radius.md,
                 bottomStart = Radius.md,
@@ -313,6 +378,20 @@ internal fun BotBubble(
                         )
                     }
                 }
+            }
+
+            // v1.39 圆桌工具调用接入：文件导出卡片，与私聊 ChatMessageBubble
+            // 同一份 FileExportCard 组件、同样的"气泡下方展示"布局。
+            // v66（Agent附件下发方案 v2.0 · 1.7 P3）：exportedFiles 现在能拿到
+            // 本轮全部文件（不再只有最后一个），循环渲染多张卡片——外层 Column
+            // 已经用 Arrangement.spacedBy(3.dp) 统一管理垂直间距。
+            msg.exportedFiles.forEach { ef ->
+                com.zaijian.zhoumuyun.ui.screen.chat.FileExportCard(
+                    file        = ef,
+                    accentColor = accentColor,
+                    maxWidth    = maxW,
+                    onOpen      = { onOpenFile(ef) },
+                )
             }
         }
     }

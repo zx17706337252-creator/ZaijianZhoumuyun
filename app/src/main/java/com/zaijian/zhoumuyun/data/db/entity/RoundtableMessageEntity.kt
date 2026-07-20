@@ -44,6 +44,13 @@ data class RoundtableMessageEntity(
      */
     val exportedFileJson: String? = null,
     /**
+     * v66（Agent附件下发方案 v2.0 · 1.7 P3）：多文件版本，与
+     * MessageEntity.exportedFilesJson 同语义/同格式（JSON 数组字符串）。
+     * null = 该消息没有文件附件；历史消息永远为 null，即使 exportedFileJson
+     * 有值。圆桌一轮回复内连续调用多个文件类工具时，这里保存全部文件。
+     */
+    val exportedFilesJson: String? = null,
+    /**
      * 内心独白：从回复正文中 [thinking:...] 标签抽取，与 MessageEntity.thinkingText
      * 同语义（角色的决策/推理过程，戏外内容，默认折叠不展示）。
      *

@@ -7,9 +7,13 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -44,8 +48,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalHapticFeedback
+import com.zaijian.zhoumuyun.ui.theme.appSpring
+import com.zaijian.zhoumuyun.ui.theme.snapSpring
 
 
 import com.zaijian.zhoumuyun.ui.component.BreathingAvatar
@@ -64,7 +73,8 @@ import com.zaijian.zhoumuyun.ui.viewmodel.ChatViewModel
 //  消息气泡簇：MessageBubble / FileExportCard / StreamingMessageItem / ToolHintRow
 //  拆分自 ChatScreen.kt（v87 Phase 2）。
 //  StreamingMessageItem 内部复用 MessageBubble；FileExportCard 被
-//  MessageBubble 在展示 exportedFile 时调用——四者是同一簇，物理上放同一文件。
+//  MessageBubble 在展示 exportedFiles（v66 起为多文件列表）时循环调用——
+//  四者是同一簇，物理上放同一文件。
 // ─────────────────────────────────────────────────────────────
 
 // ─────────────────────────────────────────────────────────────
@@ -75,6 +85,7 @@ import com.zaijian.zhoumuyun.ui.viewmodel.ChatViewModel
 //    最大宽度 屏幕宽 × 0.72
 // ─────────────────────────────────────────────────────────────
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 internal fun MessageBubble(
     message: com.zaijian.zhoumuyun.ui.viewmodel.ChatMessage,
@@ -82,12 +93,17 @@ internal fun MessageBubble(
     avatarUrl: String,
     characterName: String,
     onOpenFile: (com.zaijian.zhoumuyun.ui.viewmodel.ExportedFile) -> Unit = {},
+    // 2.1 对话内容复制：长按气泡触发，回调把消息文字交给调用方（ChatScreen）
+    // 写入剪贴板并弹 Snackbar。只挂在有文字内容的气泡上（见下方 content.isNotBlank 判断），
+    // 纯文件卡消息不触发。
+    onCopyMessage: (String) -> Unit = {},
     // [聊天圆形头像取景修复] 详情页圆形裁剪参数（CharacterConfig.avatarCropCircle*）。
     // 默认 0f/0f/1f 与此前行为一致（居中、ContentScale.Crop 覆盖）。
     avatarCropOffsetX: Float = 0f,
     avatarCropOffsetY: Float = 0f,
     avatarCropScale: Float = 1f,
 ) {
+    val haptic = LocalHapticFeedback.current
     val colors         = ZaijianTheme.colors
     val type           = ZaijianTheme.typography
     val screenWidth    = LocalConfiguration.current.screenWidthDp.dp
@@ -100,9 +116,20 @@ internal fun MessageBubble(
             horizontalArrangement = Arrangement.End,
             verticalAlignment = Alignment.Bottom,
         ) {
+            // 2.1：长按复制。interactionSource 驱动按压缩放（抄 BookCard.kt 的
+            // combinedClickable + collectIsPressedAsState 手感），indication 关掉
+            // 默认 ripple——缩放本身已经是按压反馈，两层叠加会显得脏。
+            val userInteraction = remember { MutableInteractionSource() }
+            val userPressed by userInteraction.collectIsPressedAsState()
+            val userScale by animateFloatAsState(
+                targetValue   = if (userPressed) 0.97f else 1f,
+                animationSpec = if (userPressed) snapSpring else appSpring,
+                label         = "userBubblePressScale",
+            )
             Box(
                 modifier = Modifier
                     .widthIn(max = maxBubbleWidth)
+                    .graphicsLayer { scaleX = userScale; scaleY = userScale }
                     .clip(
                         RoundedCornerShape(
                             topStart    = Radius.md,
@@ -112,6 +139,16 @@ internal fun MessageBubble(
                         )
                     )
                     .background(accentColor)
+                    .combinedClickable(
+                        interactionSource = userInteraction,
+                        indication        = null,
+                        onClick           = {},
+                        onLongClick       = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onCopyMessage(message.content)
+                        },
+                        onLongClickLabel  = "复制这条消息",
+                    )
                     // 用户反馈：聊天气泡文字上下贴边过紧，纵向 padding 从
                     // Spacing.sm(8dp) 加大到 12dp，横向维持 Spacing.md(16dp) 不变。
                     .padding(horizontal = Spacing.md, vertical = 12.dp),
@@ -196,8 +233,28 @@ internal fun MessageBubble(
                 // 沿用原值不变（borderColor 显式传 Gold 系，非 WorldBubble 默认
                 // accent，保持与此前视觉一致）。
                 if (message.content.isNotBlank()) {
+                    // 2.1：同用户气泡，长按复制 + 按压缩放反馈。
+                    val charInteraction = remember { MutableInteractionSource() }
+                    val charPressed by charInteraction.collectIsPressedAsState()
+                    val charScale by animateFloatAsState(
+                        targetValue   = if (charPressed) 0.97f else 1f,
+                        animationSpec = if (charPressed) snapSpring else appSpring,
+                        label         = "charBubblePressScale",
+                    )
                     WorldBubble(
-                        modifier    = Modifier.widthIn(max = maxBubbleWidth),
+                        modifier    = Modifier
+                            .widthIn(max = maxBubbleWidth)
+                            .graphicsLayer { scaleX = charScale; scaleY = charScale }
+                            .combinedClickable(
+                                interactionSource = charInteraction,
+                                indication        = null,
+                                onClick           = {},
+                                onLongClick       = {
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    onCopyMessage(message.content)
+                                },
+                                onLongClickLabel  = "复制这条消息",
+                            ),
                         topStart    = Radius.md,
                         topEnd      = Radius.md,
                         bottomStart = Radius.xs,
@@ -218,7 +275,11 @@ internal fun MessageBubble(
                 }
 
                 // 4. 文件导出卡片（原有逻辑不变，Phase 18）
-                message.exportedFile?.let { ef ->
+                // v66（Agent附件下发方案 v2.0 · 1.7 P3）：一轮回复若连续调用多个
+                // 文件类工具，exportedFiles 现在能拿到全部文件（不再只有最后一个），
+                // 循环渲染多张卡片——外层 Column 已经用 Arrangement.spacedBy(Spacing.xs)
+                // 统一管理垂直间距，这里不需要再手动加 Spacer。
+                message.exportedFiles.forEach { ef ->
                     FileExportCard(
                         file        = ef,
                         accentColor = accentColor,
@@ -243,7 +304,7 @@ internal fun MessageBubble(
 // ─────────────────────────────────────────────────────────────
 
 @Composable
-private fun FileExportCard(
+internal fun FileExportCard(
     file: com.zaijian.zhoumuyun.ui.viewmodel.ExportedFile,
     accentColor: Color,
     maxWidth: androidx.compose.ui.unit.Dp,
@@ -297,6 +358,16 @@ private fun FileExportCard(
                     style = type.caption,
                     color = colors.textSecondary,
                 )
+                // 1.3：委托生成的伪二进制文件（docx_gen/pdf_export）第三行提示，
+                // 复用 caption + textSecondary，不额外造新样式，openHint 为 null
+                // 时（真文本/真二进制文件）不渲染，卡片高度不变。
+                file.openHint?.let { hint ->
+                    Text(
+                        text  = hint,
+                        style = type.caption,
+                        color = colors.textSecondary,
+                    )
+                }
             }
 
             // 打开按钮

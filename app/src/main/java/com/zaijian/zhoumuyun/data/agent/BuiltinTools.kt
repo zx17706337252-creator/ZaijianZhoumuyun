@@ -19,7 +19,7 @@ import java.util.Locale
  * Phase 13 · Tool Call Engine（Prompt-based Dispatch）
  *
  * ═══════════════════════════════════════════════════════════════
- * BuiltinTools.kt — 网络/IO 基础工具（7个）
+ * BuiltinTools.kt — 网络/IO 基础工具（8个）
  * ═══════════════════════════════════════════════════════════════
  *
  * Fix-17 拆分后保留：
@@ -30,6 +30,11 @@ import java.util.Locale
  *   ⑤ WeatherTool     — 天气查询（weather）
  *   ⑥ UrlFetchTool    — 网页抓取（url_fetch）
  *   ⑦ FileExportTool  — 文件导出（file_export）
+ *
+ * 1.4（Agent附件下发方案 v2.0 P2）新增：
+ *   ⑧ ArchiveExportTool — 压缩包打包（zip_export），把已导出的多个文件打包成
+ *      zip 供用户一次性下载。走 1.1 打通的同一条 exportedFileJson 回填链路，
+ *      不需要改 orchestrator。
  *
  * 已拆出到独立文件：
  *   CreativeTools.kt  → CodeGenTool, CodeReviewTool
@@ -46,6 +51,7 @@ import java.util.Locale
  *     WeatherTool(),
  *     UrlFetchTool(),
  *     FileExportTool.getInstance(context),
+ *     ArchiveExportTool(context),
  * )
  * ```
  * ═══════════════════════════════════════════════════════════════
@@ -879,7 +885,7 @@ class FileExportTool(private val context: Context) : AgentTool {
     }
 
     override val name      = "file_export"
-    override val description = "将生成的内容写入文件并落盘导出，供用户下载查看（format 仅支持 md/txt，默认 md，其他值会回退为 md 并在结果中提示）"
+    override val description = "将生成的内容写入文件并落盘导出，供用户下载查看（用户直接调用时 format 仅支持 md/txt，默认 md；html 是内部委托格式，供 docx_gen/pdf_export/html_gen/markdown_to_doc 等工具生成 HTML 内容时使用，不建议直接传入）"
     override val paramKeys = listOf("name", "content", "format")
 
     override suspend fun execute(params: Map<String, String>): ToolResult = withContext(Dispatchers.IO) {
@@ -899,14 +905,61 @@ class FileExportTool(private val context: Context) : AgentTool {
         // LLM 可能填的合理猜测）都静默落到 .md，无任何提示。改为显式白名单校验，
         // 非法值仍回退为 md（不阻断导出，容错优先），但在返回结果里明确告知发生了偏离，
         // 而不是让调用方以为 format 生效了。
-        val formatWasUnsupported = format != "md" && format != "txt"
+        //
+        // v66（1.7 P3）：把 "html" 补进合法值集合。docx_gen/pdf_export/html_gen/
+        // markdown_to_doc 四个工具委托 file_export 落盘时固定传 format="html"，
+        // 这是这几个工具与 file_export 之间早就存在的正常约定（内容确实是 HTML），
+        // 不是 LLM 误填的非法值——此前 formatWasUnsupported 判断没跟上这个约定，
+        // 导致这四个工具每次调用都会在结果里被硬塞一句"format="html"不受支持，
+        // 仅支持 md/txt，已按 md 生成"的提示，而实际上文件名和内容都没有真的按
+        // md 生成，这句提示本身就是错的，还可能被 LLM 转述给用户造成困惑。
+        val formatWasUnsupported = format != "md" && format != "txt" && format != "html"
         val ext = when {
+            // 委托调用：文件名（含后缀）理应由上层工具在 name 参数里完整给出
+            // （docx_gen/pdf_export/html_gen/markdown_to_doc 目前都这么做）。
+            // safeName.contains(".") 兜底正常生效；万一未来某个委托调用忘了
+            // 带后缀，退化补一个 .html 兜底，好过产出完全没有扩展名的文件。
+            format == "html" && safeName.contains(".") -> ""
+            format == "html"        -> ".html"
             safeName.contains(".") -> ""
             format == "txt"        -> ".txt"
             else                   -> ".md"
         }
         val fileName  = "${safeName}${ext}"
-        val mimeType  = if (fileName.endsWith(".md")) "text/markdown" else "text/plain"
+        // v66（Agent附件下发方案 v2.0 · 1.7 P3）：mimeType bug 修复。
+        //
+        // 背景：此前只认 fileName.endsWith(".md")，其余一律落到 else 变成
+        // "text/plain"。file_export 本身只产出 .md/.txt 两种，这个判断在它
+        // 自己的调用范围内没问题；但 docx_gen/pdf_export/html_gen/
+        // markdown_to_doc 这些"委托 file_export 落盘"的上层工具会传入
+        // 非 md/txt 的文件名（如 "标题.docx"、"标题.pdf.html"、"标题.html"），
+        // 这些调用点传的 format 参数固定是 "html"（内容确实是 HTML），
+        // 但 mimeType 判断完全不看 format，只看文件名末尾是不是 ".md"——
+        // 于是这些文件全部被错误标成 text/plain。
+        //
+        // docx_gen 这一路受害最深：文件名以 ".docx" 结尾（因为 safeName
+        // 含"."，file_export 不会再追加 .md/.txt 后缀），内容其实是 HTML，
+        // mimeType 却是 text/plain——三者互相矛盾，用真正的 Word/WPS
+        // 打开这个"假.docx"大概率报错或乱码；FileExportCard 卡片上虽然
+        // 靠 1.3 的 openHint 提示了"需用浏览器/WPS打开另存"，但那只是
+        // 产品层面的规避说明，没有解决 mimeType 本身撒谎的问题——如果
+        // 分享出去的 Intent 依赖 mimeType 做类型匹配（比如系统分享面板
+        // 筛选"可以打开这个类型的App"），错误的 text/plain 会让能正确
+        // 处理 HTML 的 App（浏览器）被排除在候选之外。
+        //
+        // 修复：按文件名真实后缀分派 mimeType，不再只认 .md。这里用
+        // format 参数辅助判断——file_export 目前只有两种调用来源：
+        //   1. 直接调用（format=md/txt，文件名以.md/.txt结尾）——行为不变
+        //   2. 上层工具委托调用（format 固定传 "html"，文件名可能是
+        //      .docx/.pdf.html/.html 等各种"表演性"后缀，但内容确实是 HTML）
+        // 用 format 而不是纯后缀嗅探是因为后缀本身就不可靠（.docx 后缀
+        // 但内容是 HTML 正是这个 bug 的起因），format 参数是调用方对
+        // "这份 content 到底是什么" 的显式声明，比后缀猜测更可信。
+        val mimeType = when {
+            format == "html"        -> "text/html"
+            fileName.endsWith(".md") -> "text/markdown"
+            else                     -> "text/plain"
+        }
 
         try {
             val exportDir = java.io.File(context.filesDir, EXPORT_DIR).also { it.mkdirs() }
@@ -947,11 +1000,86 @@ class FileExportTool(private val context: Context) : AgentTool {
 }
 
 // ─────────────────────────────────────────────────────────────
+//  ⑧ ArchiveExportTool — 压缩包打包（1.4，Agent附件下发方案 v2.0 P2）
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * 压缩包打包工具。
+ *
+ * 标签格式：<tool:zip_export names="{逗号分隔的已导出文件名}"/>
+ *
+ * 把已经导出到 filesDir/exports/ 下的多个文件打包成一个 zip，供用户一次性
+ * 下载/分享——不重复实现"导出"，只做"打包"，前置文件必须已经由 file_export /
+ * excel_gen / pptx_gen / docx_gen / pdf_export 等工具生成过。
+ *
+ * names 匹配用 endsWith 而非精确匹配：exports 目录下的真实文件名带前缀
+ * （file_export 是 "{timestamp}_{name}"，excel_gen/pptx_gen 是
+ * "{timestamp}_{uuid8}_{name}"，两种命名风格都在项目里并存），LLM/用户只会
+ * 提供原始文件名，用 endsWith 兼容两种前缀模式。
+ *
+ * 产物同样落在 filesDir/exports/ 下，metaJson 走 1.1 打通的
+ * extractExportedFileJson 同一条通用识别链路，不需要改 orchestrator。
+ */
+class ArchiveExportTool(private val context: Context) : AgentTool {
+
+    override val name = "zip_export"
+    override val description = "把已导出的多个文件打包成zip供用户一次性下载"
+    override val paramKeys = listOf("names")
+
+    override suspend fun execute(params: Map<String, String>): ToolResult = withContext(Dispatchers.IO) {
+        val names = params["names"]?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() }
+        if (names.isNullOrEmpty()) {
+            return@withContext ToolResult(name, false, "", "需要 names 参数（逗号分隔的文件名）")
+        }
+
+        val exportDir = File(context.filesDir, "exports")
+        val matched = exportDir.listFiles { f -> names.any { f.name.endsWith(it) } }?.toList().orEmpty()
+        if (matched.isEmpty()) {
+            return@withContext ToolResult(name, false, "", "未找到匹配的已导出文件")
+        }
+
+        try {
+            // 与 DataVisTools.kt saveViaStream 同款命名风格：时间戳 + 短随机
+            // 后缀，避免同一毫秒内并发打包时文件名冲突。
+            val uniqueSuffix = java.util.UUID.randomUUID().toString().take(8)
+            val zipFile = File(exportDir, "${System.currentTimeMillis()}_${uniqueSuffix}_导出合集.zip")
+            java.util.zip.ZipOutputStream(zipFile.outputStream()).use { zos ->
+                matched.forEach { f ->
+                    zos.putNextEntry(java.util.zip.ZipEntry(f.name))
+                    f.inputStream().use { it.copyTo(zos) }
+                    zos.closeEntry()
+                }
+            }
+            val metaJson = JSONObject().apply {
+                put("fileName", zipFile.name)
+                put("mimeType", "application/zip")
+                put("sizeBytes", zipFile.length())
+                put("absolutePath", zipFile.absolutePath)
+            }.toString()
+            ToolResult(
+                toolName = name,
+                success  = true,
+                content  = "压缩包已生成：${zipFile.name}（${formatZipSize(zipFile.length())}）\n$metaJson",
+                userHint = "正在打包…",
+            )
+        } catch (e: Exception) {
+            ToolResult(name, false, "打包失败：${e.message?.take(80)}", e.message)
+        }
+    }
+
+    private fun formatZipSize(bytes: Long): String = when {
+        bytes < 1024        -> "${bytes} B"
+        bytes < 1024 * 1024 -> "${"%.1f".format(bytes / 1024.0)} KB"
+        else                -> "${"%.1f".format(bytes / 1024.0 / 1024.0)} MB"
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
 //  模块注册入口
 // ─────────────────────────────────────────────────────────────
 
 /**
- * 注册所有内置网络/IO工具（7个）。
+ * 注册所有内置网络/IO工具（8个）。
  * 在 ZaijianApp.onCreate() 中调用，ProviderManager.init() 之后。
  */
 fun AgentToolRegistry.registerBuiltinTools(context: Context) {
@@ -963,5 +1091,6 @@ fun AgentToolRegistry.registerBuiltinTools(context: Context) {
         WeatherTool(),
         UrlFetchTool(),
         FileExportTool.getInstance(context),
+        ArchiveExportTool(context),
     )
 }

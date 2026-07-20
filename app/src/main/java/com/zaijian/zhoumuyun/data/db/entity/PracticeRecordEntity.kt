@@ -83,4 +83,30 @@ data class PracticeRecordEntity(
      * "未播报"而在升级后重新刷一遍圆桌消息。
      */
     val roundtablePosted: Boolean = true,
+
+    /**
+     * v65 修复：本次修炼产出文件的元数据 JSON（fileName/mimeType/sizeBytes/absolutePath），
+     * 与 RoundtableMessageEntity.exportedFileJson 同语义/同格式。
+     *
+     * 背景：writePracticeFile() 在 runSinglePractice() 里生成 ExportMeta 后，此前
+     * 只临时传给 postToRoundtable() 用于首次播报，PracticeRecordEntity 本身从未
+     * 保存这份元数据。若进程在"本记录已落库（roundtablePosted=false）"之后、
+     * "postToRoundtable() 首次播报成功"之前被杀，repostPendingRecords() 补发时
+     * 拿到的 record 里没有文件信息可用，只能发一条不带文件卡片的纯文字播报——
+     * 文件本身已经写在磁盘上，但用户永久失去了这次播报里的下载入口。
+     *
+     * 补上这个字段后，runSinglePractice() 落库时随 record 一并保存，
+     * repostPendingRecords() 补发时直接从 record.exportedFileJson 读取，
+     * 不再硬编码 null。
+     */
+    val exportedFileJson: String? = null,
+
+    /**
+     * v66（Agent附件下发方案 v2.0 · 1.7 P3）：多文件版本，与
+     * RoundtableMessageEntity.exportedFilesJson 同语义/同格式（JSON 数组）。
+     * practice 目前每次只产出一个文件，这里随手一起写（单元素数组），
+     * 保持三表列结构对称，便于未来单次修炼产出多文件时直接复用。
+     * null = 该记录没有文件附件；历史记录永远为 null。
+     */
+    val exportedFilesJson: String? = null,
 )

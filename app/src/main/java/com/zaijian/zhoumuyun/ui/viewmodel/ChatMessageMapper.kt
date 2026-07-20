@@ -19,6 +19,8 @@ fun ChatTagParser.toChatMessage(entity: MessageEntity) = ChatMessage(
     content = entity.content,
     createdAt = entity.createdAt,
     exportedFileJson = entity.exportedFileJson,
+    exportedFilesJson = entity.exportedFilesJson,   // v66（1.7 P3）：不透传的话，
+    // DB 里存的多文件数据永远读不到 UI 层，等于白写。
     thinkingText = entity.thinkingText,
     psychText = entity.psychText,
 )

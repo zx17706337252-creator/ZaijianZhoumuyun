@@ -2,6 +2,7 @@ package com.zaijian.zhoumuyun.ui.viewmodel
 
 import android.app.Application
 import com.zaijian.zhoumuyun.util.ZLog
+import com.zaijian.zhoumuyun.data.agent.AgentToolRegistry
 import com.zaijian.zhoumuyun.data.model.PregnancyTriggerResult
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -69,6 +70,9 @@ data class ExportedFile(
     val mimeType: String,
     val sizeBytes: Long,
     val absolutePath: String,
+    // 1.3 附件卡片类型区分：非 null 时卡片上多渲染一行提示（如"需用浏览器打开另存"），
+    // 用于 docx_gen/pdf_export 这类"委托生成的伪二进制"文件，向后兼容（默认 null 不影响现有文件）。
+    val openHint: String? = null,
 ) {
     val extLabel: String get() = fileName.substringAfterLast(".", "?").take(4).uppercase()
     val sizeLabel: String get() = when {
@@ -83,24 +87,65 @@ data class ChatMessage(
     val role: String,
     val content: String,
     val createdAt: Long,
+    /**
+     * 单文件字段，本轮多个文件类工具调用时只保留最后一个——保留是为了兼容
+     * 尚未切换到 exportedFilesJson 的旧读取路径，新代码应优先读 exportedFiles。
+     */
     val exportedFileJson: String? = null,
+    /**
+     * v66（Agent附件下发方案 v2.0 · 1.7 P3）：多文件版本，JSON 数组字符串。
+     * null = 该消息没有文件附件；历史消息永远为 null，即使 exportedFileJson 有值。
+     */
+    val exportedFilesJson: String? = null,
     // Fix-ThinkingLeak：从回复正文剥离出的内心推理/工具调用意图原文，null = 无想法内容。
     val thinkingText: String? = null,
     // v1.36 问题2：从回复正文中圆括号包裹的内容抽取出的心理感受/神态描写，null = 无心理描写。
     val psychText: String? = null,
 ) {
-    val exportedFile: ExportedFile? get() {
-        if (exportedFileJson == null) return null
+    @Deprecated("单文件读取路径，历史兼容用；新代码请用 exportedFiles", ReplaceWith("exportedFiles.firstOrNull()"))
+    val exportedFile: ExportedFile? get() = exportedFiles.firstOrNull()
+
+    /**
+     * v66（1.7 P3）：优先解析 exportedFilesJson（多文件数组）；为空时退化为把
+     * exportedFileJson 包成单元素 list——历史消息（只有旧字段有值）不会因为
+     * 这次改造丢失已有的文件卡片。两个字段都为 null 时返回空 list。
+     */
+    val exportedFiles: List<ExportedFile> get() = parseExportedFilesWithFallback(exportedFilesJson, exportedFileJson)
+}
+
+/**
+ * v66（1.7 P3）：解析文件元数据的共享逻辑，供 ChatMessage.exportedFiles /
+ * RoundtableMessage.exportedFiles 共用，避免私聊+圆桌两处各写一份、日后漏改其中一处。
+ *
+ * 优先用 filesJson（数组，v66 新字段）；为空/解析失败时退化用 legacyJson
+ * （单对象，v65 及更早字段）包成单元素 list。
+ */
+internal fun parseExportedFilesWithFallback(filesJson: String?, legacyJson: String?): List<ExportedFile> {
+    filesJson?.let { json ->
         return try {
-            val obj = org.json.JSONObject(exportedFileJson)
-            ExportedFile(
-                fileName = obj.optString("fileName", ""),
-                mimeType = obj.optString("mimeType", "text/plain"),
-                sizeBytes = obj.optLong("sizeBytes", 0),
-                absolutePath = obj.optString("absolutePath", ""),
-            )
-        } catch (_: Exception) { null }
+            val arr = org.json.JSONArray(json)
+            (0 until arr.length()).mapNotNull { i -> parseExportedFile(arr.optJSONObject(i)) }
+        } catch (_: Exception) {
+            emptyList()
+        }
     }
+    val legacy = legacyJson ?: return emptyList()
+    return try {
+        listOfNotNull(parseExportedFile(org.json.JSONObject(legacy)))
+    } catch (_: Exception) {
+        emptyList()
+    }
+}
+
+private fun parseExportedFile(obj: org.json.JSONObject?): ExportedFile? {
+    obj ?: return null
+    return ExportedFile(
+        fileName = obj.optString("fileName", ""),
+        mimeType = obj.optString("mimeType", "text/plain"),
+        sizeBytes = obj.optLong("sizeBytes", 0),
+        absolutePath = obj.optString("absolutePath", ""),
+        openHint = obj.optString("openHint", "").ifBlank { null },
+    )
 }
 
 @androidx.compose.runtime.Immutable
@@ -812,6 +857,82 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             } catch (e: Exception) {
                 ZLog.e("ChatViewModel", "文件导入失败 fileName=$fileName", e)
                 _uiState.update { it.copy(error = "文件导入失败，请重试") }
+            }
+        }
+    }
+
+    /**
+     * 2.4：导出本次对话（Agent附件下发方案 v2.0 P2）。
+     *
+     * 把当前角色的消息列表按时间顺序拼成一份文本（角色/用户各自加前缀区分），
+     * 走 AgentToolRegistry 里已注册的 file_export 工具落地——复用 1.1 打通的
+     * extractExportedFileJson 识别链路，产出的 metaJson 包进一条 role="system"
+     * 消息插入数据库，FileExportCard 会像其他工具产出的文件一样自动出现在
+     * 消息流里，不需要额外的成功 Snackbar（卡片本身就是最直观的反馈）；
+     * 失败走 error 字段驱动 UI 层已有的 Snackbar 展示逻辑，与本文件其余方法
+     * 的错误处理范式一致。
+     *
+     * 只导出台词正文（ChatMessage.content），不含内心独白/心理描写/文件卡——
+     * 这些是气泡簇的展示层信息，不是"对话内容"本身；用户要的是"聊了什么"。
+     */
+    fun exportConversation() {
+        if (currentCharacterId < 0) return
+        val characterId = currentCharacterId
+        val characterName = _uiState.value.character?.name ?: "对方"
+        val messages = _uiState.value.messages
+        if (messages.isEmpty()) {
+            _uiState.update { it.copy(error = "当前没有可导出的对话内容") }
+            return
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val transcript = buildString {
+                    messages.forEach { msg ->
+                        if (msg.content.isBlank()) return@forEach
+                        val speaker = if (msg.role == "user") "我" else characterName
+                        appendLine("[$speaker] ${msg.content}")
+                        appendLine()
+                    }
+                }.trimEnd()
+
+                val exportTool = AgentToolRegistry.get("file_export")
+                if (exportTool == null) {
+                    ZLog.e("ChatViewModel", "导出对话失败：file_export 工具未注册")
+                    _uiState.update { it.copy(error = "导出失败，请重试") }
+                    return@launch
+                }
+
+                val fileName = "与${characterName}的对话记录"
+                val result = exportTool.execute(
+                    mapOf(
+                        "name"    to fileName,
+                        "content" to transcript,
+                        "format"  to "md",
+                    )
+                )
+
+                val exportedFileJson = extractExportedFileJson(result)
+                if (!result.success || exportedFileJson == null) {
+                    ZLog.e("ChatViewModel", "导出对话失败 characterId=$characterId error=${result.error}")
+                    _uiState.update { it.copy(error = "导出失败，请重试") }
+                    return@launch
+                }
+
+                messageRepo.insert(
+                    MessageEntity(
+                        id = UUID.randomUUID().toString(),
+                        characterId = characterId,
+                        role = "system",
+                        content = "已导出本次对话",
+                        createdAt = System.currentTimeMillis(),
+                        exportedFileJson = exportedFileJson,
+                    )
+                )
+                loadMessages(characterId)
+            } catch (e: Exception) {
+                ZLog.e("ChatViewModel", "导出对话失败 characterId=$characterId", e)
+                _uiState.update { it.copy(error = "导出失败，请重试") }
             }
         }
     }

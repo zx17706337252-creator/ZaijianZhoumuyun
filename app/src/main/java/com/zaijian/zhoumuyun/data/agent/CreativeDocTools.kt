@@ -36,6 +36,28 @@ private suspend fun callLlm(
     temperature:  Float = 0.5f,
 ): String = AgentTool.callLlm(providerFn, systemPrompt, userPrompt, maxTokens, temperature)
 
+/**
+ * 1.3：往 FileExportTool 产出的 content（"文件已生成：xxx（大小）\n{metaJson}" 格式）
+ * 里的 metaJson 追加 openHint 字段，用于标记"委托生成的伪二进制"文件
+ * （docx_gen/pdf_export，实际内容是 HTML，需要浏览器打开另存）。
+ *
+ * 不改 FileExportTool 本身（它是 file_export 工具，被 LLM 直接调用，改签名/输出
+ * 格式影响面更大），只在这两个工具拿到 exportResult 之后原地改写 JSON 段——
+ * ChatMessageOrchestrator.extractExportedFileJson 用的是 \{.*\} 正则抓取，
+ * 不关心 JSON 前后文字，重新拼装后依然能被同一条链路正确识别。
+ * 解析失败时原样返回，不让 openHint 注入失败影响主流程。
+ */
+private fun withOpenHint(content: String, openHint: String): String {
+    val match = Regex("\\{.*\\}", RegexOption.DOT_MATCHES_ALL).find(content) ?: return content
+    return try {
+        val obj = org.json.JSONObject(match.value)
+        obj.put("openHint", openHint)
+        content.replaceRange(match.range, obj.toString())
+    } catch (_: Exception) {
+        content
+    }
+}
+
 // ─────────────────────────────────────────────────────────────
 //  ① WritingCritiqueTool — 写作批评
 // ─────────────────────────────────────────────────────────────
@@ -540,10 +562,16 @@ class DocxGenTool(
                 if (!exportResult.success) {
                     ToolResult(name, false, "文档生成失败：文件写入错误。", exportResult.error)
                 } else {
+                    // 1.3：docx_gen 产出的是 HTML（伪 .docx），卡片需要提示用户
+                    // 走浏览器/WPS 打开另存，不能像真 .docx 那样被 Word 直接识别。
+                    val contentWithHint = withOpenHint(
+                        content  = exportResult.content,
+                        openHint = "提示：需用浏览器或 WPS 打开后另存",
+                    )
                     ToolResult(
                         toolName = name,
                         success  = true,
-                        content  = "[文档已生成：$title.docx]\n${exportResult.content}",
+                        content  = "[文档已生成：$title.docx]\n$contentWithHint",
                         userHint = "正在生成文档…",
                     )
                 }
@@ -619,10 +647,16 @@ class PdfExportTool(
                 if (!exportResult.success) {
                     ToolResult(name, false, "PDF 生成失败：文件写入错误。", exportResult.error)
                 } else {
+                    // 1.3：pdf_export 同 docx_gen，产出的是 HTML，不是真 .pdf，
+                    // 卡片需要提示走浏览器打印另存为 PDF。
+                    val contentWithHint = withOpenHint(
+                        content  = exportResult.content,
+                        openHint = "提示：需用浏览器打开另存",
+                    )
                     ToolResult(
                         toolName = name,
                         success  = true,
-                        content  = "[PDF 文档已准备：$title]\n提示：通过浏览器打开后使用「打印 → 另存为 PDF」导出正式 PDF。\n${exportResult.content}",
+                        content  = "[PDF 文档已准备：$title]\n提示：通过浏览器打开后使用「打印 → 另存为 PDF」导出正式 PDF。\n$contentWithHint",
                         userHint = "正在生成 PDF…",
                     )
                 }

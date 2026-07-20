@@ -1,5 +1,8 @@
 package com.zaijian.zhoumuyun.ui.viewmodel
 
+import com.zaijian.zhoumuyun.data.agent.AgentToolRegistry
+import com.zaijian.zhoumuyun.data.agent.StreamEvent
+import com.zaijian.zhoumuyun.data.agent.ToolCallInterceptor
 import com.zaijian.zhoumuyun.data.db.entity.RoundtableMessageEntity
 import com.zaijian.zhoumuyun.data.manager.PregnancyTriggerManager
 import com.zaijian.zhoumuyun.data.memory.MemoryEngine
@@ -37,6 +40,31 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.UUID
 
+/**
+ * 圆桌场景排除的工具名单（v1.39 圆桌工具调用接入）。
+ *
+ * `agent_message`（异步给其他角色发消息）、`roundtable_trigger`（发起圆桌讨论）、
+ * `task_delegate`（委托任务）三个工具是为"跨角色协作"设计的，语义假设是私聊
+ * 场景（一个角色单独面对用户，需要"叫" 其他角色介入）。圆桌场景里角色之间本来
+ * 就能直接对话，这三个工具要么语义重复（agent_message 的"异步、下次对话才看到"
+ * 在圆桌里不自然），要么可能引发混乱（roundtable_trigger 在已经身处圆桌讨论中
+ * 再次触发，语义不清）。
+ *
+ * 双层防御：此常量同时用于①prompt 层过滤（不让模型看到这些工具描述，见
+ * [RoundtableBotReplyGenerator] 和 [RoundtableIdleManager] 里 buildSystemPrompt
+ * 调用附近的 buildToolDescriptionBlock）；②执行层拦截（[ToolCallInterceptor.streamWithTools]
+ * 的 disabledToolNames 参数）——即使模型意外生成了这些工具的标签，也不会真正执行。
+ *
+ * 放在类外顶层（文件级，包内可见）是为了让 RoundtableBotReplyGenerator.kt 与
+ * RoundtableIdleManager.kt 两条圆桌生成路径共用同一份定义，避免两处硬编码
+ * 各写一份、后续增删工具名时忘记同步。
+ */
+internal val ROUNDTABLE_DISABLED_TOOL_NAMES = setOf(
+    "agent_message",
+    "roundtable_trigger",
+    "task_delegate",
+)
+
 class RoundtableBotReplyGenerator(
     private val _uiState: MutableStateFlow<RoundtableUiState>,
     private val memoryRepo: MemoryRepository,
@@ -72,6 +100,8 @@ class RoundtableBotReplyGenerator(
         turnIndex       = turnIndex,
         thinkingText    = thinkingText,
         psychText       = psychText,
+        exportedFileJson = exportedFileJson,
+        exportedFilesJson = exportedFilesJson,   // v66（1.7 P3）
     )
 
     suspend fun generateBotReply(
@@ -183,6 +213,12 @@ class RoundtableBotReplyGenerator(
         }
         val ruleLayerBlock = PromptOrchestrator.buildRuleLayerBlock(rulesByGoal)
 
+        // v1.39 圆桌工具调用接入：此前圆桌角色的 systemPrompt 从未传入
+        // toolDescriptionBlock（用默认值 ""），角色不知道自己能调用任何工具。
+        // 排除 ROUNDTABLE_DISABLED_TOOL_NAMES 里的跨角色协作工具（语义上只
+        // 适合私聊场景），保留 file_export/excel_gen/weather 等文件生成/查询类工具。
+        val toolDesc = AgentToolRegistry.buildToolDescriptionBlock(excludeNames = ROUNDTABLE_DISABLED_TOOL_NAMES)
+
         val systemPrompt = PromptOrchestrator.buildSystemPrompt(
             character               = bot,
             identityEntity          = identityEntity,
@@ -208,6 +244,7 @@ class RoundtableBotReplyGenerator(
             // v1.36 问题3：显式声明圆桌场景，用户身份注入据此选用"公开称谓"。
             isRoundtableContext     = true,
             daughterPresentInScene  = daughterPresentInScene,
+            toolDescriptionBlock    = toolDesc,
         )
 
         // 历史：按轮次取最近 20 轮
@@ -268,33 +305,59 @@ class RoundtableBotReplyGenerator(
         var fullReply = ""
         val config = LLMConfig(model = "", maxTokens = 800, temperature = 0.85f, stream = true)
         var interrupted = false
+        // v1.39 圆桌工具调用接入：暂存本轮工具产出的文件元数据 JSON，与私聊
+        // ChatMessageOrchestrator 同语义。
+        // v66（1.7 P3）：改用 list 收集本轮全部文件，与私聊路径同步升级——
+        // 不再是"后一次覆盖前一次"。
+        val pendingExportedFiles = mutableListOf<String>()
 
         try {
             withTimeoutOrNull(REPLY_TIMEOUT_MS) {
-                provider.chat(history, systemPrompt, config).collect { delta ->
-                    if (isInterruptedRef() && fullReply.isNotEmpty()) {
-                        if (fullReply.lastOrNull() in SENTENCE_BREAK_CHARS) interrupted = true
-                    }
-                    if (!interrupted) {
-                        fullReply += delta
-                        // v1.38 圆桌场景补齐：display-only 剥离，与私聊 ChatMessageOrchestrator
-                        // 的 stripTagsForDisplay 用法一致——fullReply 变量本身保持原样供
-                        // 流式结束后的最终解析使用，这里只是让流式打字机过程中不要把
-                        // 尚未闭合/已闭合的 [thinking:...]、[mood:...] 标签原文露给用户看。
-                        // 圆括号心理描写不在 stripTagsForDisplay 的处理范围内（与私聊行为
-                        // 对齐——圆括号在流式过程中正常显示，直到整条回复生成完毕才会被
-                        // stripPsychText 摘出到心理感受小卡，见下方 psychText 解析）。
-                        // Fix-StreamingPsychLeak：流式阶段同步剥离圆括号心理描写，不再等到
-                        // 整条回复生成完毕才处理——避免用户在角色打字过程中持续看到裸露的
-                        // 圆括号原文，说完瞬间又"跳变"成卡片的违和体验。psychText 跟着
-                        // 每个 token 增量更新，PsychCard 在流式阶段就能显示（内容会随新
-                        // token 到达继续增长，直至本轮回复结束）。
-                        val (displayText, streamingPsych) = ChatTagParser.stripTagsForDisplayWithPsych(fullReply)
-                        _uiState.update { s ->
-                            s.copy(messages = s.messages.map { msg ->
-                                if (msg.id == msgId) msg.copy(content = displayText, psychText = streamingPsych) else msg
-                            }.toImmutableList())
+                ToolCallInterceptor.streamWithTools(
+                    provider          = provider,
+                    messages          = history,
+                    systemPrompt      = systemPrompt,
+                    config            = config,
+                    disabledToolNames = ROUNDTABLE_DISABLED_TOOL_NAMES,
+                ).collect { event ->
+                    when (event) {
+                        is StreamEvent.TextDelta -> {
+                            if (isInterruptedRef() && fullReply.isNotEmpty()) {
+                                if (fullReply.lastOrNull() in SENTENCE_BREAK_CHARS) interrupted = true
+                            }
+                            if (!interrupted) {
+                                // event.text 是 streamWithTools 已经过 ToolParser 清洗、
+                                // 剥掉 <tool:xxx> 标签之后的纯净文本（与私聊侧原始 delta
+                                // 的语义不同——原始 delta 是裸文本，可能含未处理的工具标签）。
+                                fullReply += event.text
+                                // v1.38 圆桌场景补齐：display-only 剥离，与私聊 ChatMessageOrchestrator
+                                // 的 stripTagsForDisplay 用法一致——fullReply 变量本身保持原样供
+                                // 流式结束后的最终解析使用，这里只是让流式打字机过程中不要把
+                                // 尚未闭合/已闭合的 [thinking:...]、[mood:...] 标签原文露给用户看。
+                                // 圆括号心理描写不在 stripTagsForDisplay 的处理范围内（与私聊行为
+                                // 对齐——圆括号在流式过程中正常显示，直到整条回复生成完毕才会被
+                                // stripPsychText 摘出到心理感受小卡，见下方 psychText 解析）。
+                                // Fix-StreamingPsychLeak：流式阶段同步剥离圆括号心理描写，不再等到
+                                // 整条回复生成完毕才处理——避免用户在角色打字过程中持续看到裸露的
+                                // 圆括号原文，说完瞬间又"跳变"成卡片的违和体验。psychText 跟着
+                                // 每个 token 增量更新，PsychCard 在流式阶段就能显示（内容会随新
+                                // token 到达继续增长，直至本轮回复结束）。
+                                val (displayText, streamingPsych) = ChatTagParser.stripTagsForDisplayWithPsych(fullReply)
+                                _uiState.update { s ->
+                                    s.copy(messages = s.messages.map { msg ->
+                                        if (msg.id == msgId) msg.copy(content = displayText, psychText = streamingPsych) else msg
+                                    }.toImmutableList())
+                                }
+                            }
                         }
+                        is StreamEvent.ToolStarted -> Unit
+                        is StreamEvent.ToolDone -> {
+                            // 识别文件类工具产物，暂存 JSON，落库时接回 RoundtableMessage。
+                            // 复用私聊 ChatMessageOrchestrator.extractExportedFileJson，两边同一套识别逻辑。
+                            // v66（1.7 P3）：add 而不是覆盖赋值。
+                            extractExportedFileJson(event.result)?.let { pendingExportedFiles.add(it) }
+                        }
+                        is StreamEvent.RoundDone -> Unit
                     }
                 }
             }
@@ -329,6 +392,12 @@ class RoundtableBotReplyGenerator(
                     thinkingText = parsedThinking,
                     psychText    = parsedPsych,
                     isStreaming  = false,
+                    // v1.39 圆桌工具调用接入：把本轮工具产出的文件元数据接回 UI 消息，
+                    // RoundtableBubble 依赖 RoundtableMessage.exportedFiles（由
+                    // exportedFilesJson 解析而来）才能渲染 FileExportCard 下载卡片。
+                    // v66（1.7 P3）：两个字段都写，exportedFileJson 保留兼容旧路径。
+                    exportedFileJson = pendingExportedFiles.lastOrNull(),
+                    exportedFilesJson = packExportedFilesJson(pendingExportedFiles),
                 ) else msg
             }.toImmutableList())
         }
@@ -354,6 +423,8 @@ class RoundtableBotReplyGenerator(
                                 replyTargetName = replyTargetName,
                                 thinkingText    = parsedThinking,
                                 psychText       = parsedPsych,
+                                exportedFileJson = pendingExportedFiles.lastOrNull(),
+                                exportedFilesJson = packExportedFilesJson(pendingExportedFiles),
                             ).toEntity(rtIdForDb)
                         )
                     } catch (e: Exception) {

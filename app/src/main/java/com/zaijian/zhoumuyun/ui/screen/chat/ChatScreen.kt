@@ -58,7 +58,9 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -141,6 +143,9 @@ fun ChatScreen(
     val colors   = ZaijianTheme.colors
     val type     = ZaijianTheme.typography
     val scope    = rememberCoroutineScope()
+    // 2.1 对话内容复制：长按气泡 → 写入系统剪贴板 → 复用现有 snackbarHostState
+    // 反馈"已复制"，走 app 自己的羊皮纸风格 Snackbar，不用系统默认 Toast。
+    val clipboardManager = LocalClipboardManager.current
     // Fix-ChatHeader-StatusBar：ChatHeader 外层 Box 自带 .statusBarsPadding()，
     // 顶栏真实占用高度 = 状态栏高度 + Row 的 Spacing.topBarHeight，
     // 而不是单独的 Spacing.topBarHeight。下方 LazyColumn 的 contentPadding.top
@@ -671,6 +676,12 @@ fun ChatScreen(
                         avatarUrl     = character.avatarUrl,
                         characterName = character.name,
                         onOpenFile    = openFile,
+                        onCopyMessage = { text ->
+                            clipboardManager.setText(AnnotatedString(text))
+                            scope.launch {
+                                snackbarHostState.showSnackbar("已复制", duration = SnackbarDuration.Short)
+                            }
+                        },
                         avatarCropOffsetX = character.avatarCropCircleOffsetX,
                         avatarCropOffsetY = character.avatarCropCircleOffsetY,
                         avatarCropScale   = character.avatarCropCircleScale,
@@ -837,6 +848,10 @@ fun ChatScreen(
                     chatViewModel.clearChatBackground()
                     showChatSettings = false
                 },
+                // 2.4：导出本次对话，走 ChatViewModel.exportConversation()——
+                // 成功后文件卡片会随 loadMessages() 刷新自动出现在消息流里，
+                // 不需要在这里额外弹 Snackbar；失败走 uiState.error 已有通道。
+                onExportConversation = { chatViewModel.exportConversation() },
                 // 批次4：透传日程入口回调，与 onNavigateToDetail 同款范式——
                 // ChatSettingsSheet 内部已负责 onDismiss()，这里只传导航动作。
                 onNavigateToSchedule = { onNavigateToSchedule(characterId) },

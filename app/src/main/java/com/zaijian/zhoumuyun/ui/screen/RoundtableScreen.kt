@@ -63,6 +63,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Snackbar
+import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Switch
@@ -85,7 +86,9 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
@@ -160,6 +163,9 @@ fun RoundtableScreen(
     val colors   = ZaijianTheme.colors
     val type     = ZaijianTheme.typography
     val scope    = rememberCoroutineScope()
+    // 2.1 对话内容复制（圆桌场景补齐，与私聊 ChatScreen 同一套交互）：
+    // 长按气泡 → 写入系统剪贴板 → 复用现有 snackbar 反馈"已复制"。
+    val clipboardManager = LocalClipboardManager.current
     // W9问题2+4修复：launchSingleTop=true 导致同一 NavBackStackEntry 复用时，
     // characterIds 变化但 Composable 实例不重建。用排序后拼接的稳定字符串作为
     // key（而非直接用 characterIds 这个 List 实例——每次传入的新 List 即使内容
@@ -283,6 +289,26 @@ fun RoundtableScreen(
     //    哨兵 characterId 见 RoundtableViewModel.ROUNDTABLE_BG_SENTINEL_ID）──
     val backgroundImageUri = uiState.backgroundImageUri
     val ctxBg = LocalContext.current
+
+    // v1.39 圆桌工具调用接入：文件卡片"打开"回调，与 ChatScreen.openFile
+    // 完全同构——FileProvider 授权 + ACTION_VIEW 隐式 Intent 唤起系统应用。
+    val openFile: (com.zaijian.zhoumuyun.ui.viewmodel.ExportedFile) -> Unit = { ef ->
+        try {
+            val file = java.io.File(ef.absolutePath)
+            if (file.exists()) {
+                val uri = androidx.core.content.FileProvider.getUriForFile(
+                    ctxBg,
+                    "${ctxBg.packageName}.fileprovider",
+                    file,
+                )
+                val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
+                    setDataAndType(uri, ef.mimeType)
+                    addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                ctxBg.startActivity(android.content.Intent.createChooser(intent, "打开 ${ef.fileName}"))
+            }
+        } catch (_: Exception) { /* 无默认应用时静默忽略，与 ChatScreen.openFile 行为一致 */ }
+    }
 
     // 圆桌背景图选择器：持久化 URI 权限 + 触发裁剪弹窗，与
     // ChatScreen.bgImageLauncher 完全同构的流程，只是落到
@@ -449,13 +475,28 @@ fun RoundtableScreen(
                 }
 
                 if (msg.speakerId == "user") {
-                    UserBubble(msg)
+                    UserBubble(
+                        msg = msg,
+                        onCopyMessage = { text ->
+                            clipboardManager.setText(AnnotatedString(text))
+                            scope.launch {
+                                snackbar.showSnackbar("已复制", duration = SnackbarDuration.Short)
+                            }
+                        },
+                    )
                 } else {
                     val bot = memberMap[msg.speakerId.toIntOrNull()]
                     BotBubble(
                         msg    = msg,
                         bot    = bot,
                         isLast = index == uiState.messages.lastIndex,
+                        onOpenFile = openFile,
+                        onCopyMessage = { text ->
+                            clipboardManager.setText(AnnotatedString(text))
+                            scope.launch {
+                                snackbar.showSnackbar("已复制", duration = SnackbarDuration.Short)
+                            }
+                        },
                     )
                 }
             }

@@ -27,6 +27,7 @@ import com.zaijian.zhoumuyun.data.repository.WorkflowRepository
 import com.zaijian.zhoumuyun.data.agent.AgentToolRegistry
 import com.zaijian.zhoumuyun.data.agent.StreamEvent
 import com.zaijian.zhoumuyun.data.agent.ToolCallInterceptor
+import com.zaijian.zhoumuyun.data.agent.ToolResult
 import com.zaijian.zhoumuyun.domain.AgentRelationEngine
 import com.zaijian.zhoumuyun.domain.ChatTagParser
 import com.zaijian.zhoumuyun.domain.EvaluationEngine
@@ -379,6 +380,11 @@ class ChatMessageOrchestrator(
                 _streamingContent.value = null
                 _streamingPsych.value = null
                 val fullReply = StringBuilder()
+                // P0-1（Agent附件下发方案 v2.0）：暂存本轮工具产出的文件元数据 JSON。
+                // v66（1.7 P3）：改用 list 收集本轮全部文件，不再是"后一次覆盖前一次"——
+                // 落库时 exportedFileJson（旧，单文件）取 lastOrNull，
+                // exportedFilesJson（新，数组）取全部，两个字段都写。
+                val pendingExportedFiles = mutableListOf<String>()
 
                 try {
                     ToolCallInterceptor.streamWithTools(
@@ -430,6 +436,13 @@ class ChatMessageOrchestrator(
                             }
                             is StreamEvent.ToolDone -> {
                                 _uiState.update { it.copy(streamingHint = null) }
+                                // P0-1（Agent附件下发方案 v2.0）：识别文件类工具产物。
+                                // 不按 toolName 逐个分支判断——通用识别 content 里是否带
+                                // fileName+absolutePath 的 JSON，未来新增导出工具（如 zip_export）
+                                // 不需要再回来改这里。
+                                // v66（1.7 P3）：add 而不是覆盖赋值，本轮连续多个文件类工具
+                                // 调用不再互相顶替。
+                                extractExportedFileJson(event.result)?.let { pendingExportedFiles.add(it) }
                             }
                             is StreamEvent.RoundDone -> Unit
                         }
@@ -474,8 +487,19 @@ class ChatMessageOrchestrator(
                         createdAt = System.currentTimeMillis(),
                         thinkingText = parsedThinking,
                         psychText = parsedPsych,
+                        // P0-1（Agent附件下发方案 v2.0）：把本轮工具产出的文件元数据接回消息实体，
+                        // FileExportCard 依赖 ChatMessage.exportedFiles（由
+                        // exportedFilesJson/exportedFileJson 解析而来，v66 起支持多文件）
+                        // 才能在气泡下方渲染下载卡片，此前该字段从未被赋值，卡片链路始终未接通。
+                        // v66（1.7 P3）：exportedFileJson 保留写最后一个文件（兼容旧读取路径），
+                        // exportedFilesJson 新增写全部文件——UI 应优先读后者。
+                        exportedFileJson = pendingExportedFiles.lastOrNull(),
+                        exportedFilesJson = packExportedFilesJson(pendingExportedFiles),
                     )
                     messageRepo.insert(assistantMsg)
+                    // 用完立即清空，避免串到下一轮回复（下一轮没有新的文件类工具调用时，
+                    // 若不清空会把这一轮的文件卡片错误地挂到下一条不相关的消息上）。
+                    pendingExportedFiles.clear()
                     // H2 修复（race消除）：insert是挂起函数，到这里落库已完成。
                     // 做乐观更新——把刚落库的消息同步追加到内存list，
                     // 后续读 _uiState.value.messages 保证能看到这条新消息。
@@ -690,4 +714,45 @@ class ChatMessageOrchestrator(
             }
         })
     }
+}
+
+/**
+ * 从工具执行结果里识别"文件已落盘"的元数据 JSON。
+ * P0-1（Agent附件下发方案 v2.0）：file_export / excel_gen / pptx_gen / docx_gen /
+ * pdf_export / html_gen 的 content 都遵循 "xxx已生成：文件名（大小）\n{JSON}" 这个
+ * 约定格式（JSON 里固定带 fileName + absolutePath），用一次正则+JSON校验通吃，
+ * 不需要按 toolName 逐个 if 分支——未来新增导出工具（如 zip_export）不需要再改这里。
+ *
+ * 圆桌接入工具调用（v1.39）时去掉 private：RoundtableBotReplyGenerator 与
+ * RoundtableIdleManager 复用同一份识别逻辑，避免三处（私聊 + 圆桌两条路径）
+ * 各写一份同样的正则+JSON校验代码。
+ */
+internal fun extractExportedFileJson(result: ToolResult): String? {
+    if (!result.success) return null
+    val match = Regex("\\{.*\\}", RegexOption.DOT_MATCHES_ALL).find(result.content) ?: return null
+    return try {
+        val obj = org.json.JSONObject(match.value)
+        if (obj.has("fileName") && obj.has("absolutePath")) match.value else null
+    } catch (_: Exception) {
+        null
+    }
+}
+
+/**
+ * v66（Agent附件下发方案 v2.0 · 1.7 P3）：把本轮收集到的多个文件元数据 JSON
+ * 打包成一个 JSON 数组字符串，写入 exportedFilesJson。
+ *
+ * 与 extractExportedFileJson 配套使用：采集端不再用
+ * `var pendingExportedFileJson: String?`（后一次覆盖前一次），而是用
+ * `val pendingExportedFiles = mutableListOf<String>()`（每次 add），
+ * 落库时旧字段 exportedFileJson 取 `pendingExportedFiles.lastOrNull()`
+ * （兼容尚未升级的读取路径），新字段 exportedFilesJson 取本函数的结果。
+ *
+ * 空列表返回 null（与"该消息没有文件附件"的语义一致，不存空数组字符串）。
+ */
+internal fun packExportedFilesJson(fileJsonList: List<String>): String? {
+    if (fileJsonList.isEmpty()) return null
+    val arr = org.json.JSONArray()
+    fileJsonList.forEach { arr.put(org.json.JSONObject(it)) }
+    return arr.toString()
 }
