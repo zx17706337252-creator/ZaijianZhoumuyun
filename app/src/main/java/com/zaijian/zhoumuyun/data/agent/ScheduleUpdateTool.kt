@@ -63,18 +63,12 @@ class ScheduleUpdateTool(
 ) : AgentTool {
 
     override val name = "schedule_update"
-    override val description = "修改已创建的定时任务（标题/间隔/执行内容），需要提供任务ID。支持两种模式互转：mode=\"agent_task\" 切换为工单型（由 description 描述任务，到点让角色自己推理回应）；mode=\"tool\" 切换为工具型（到点直接调指定工具）。也可不传 mode 只单独改 description（工单型）或 tool/params（工具型）。可选参数 project_id 关联到某个项目（需是已存在的项目 ID）；传空串可解除关联，不传则保留原关联。"
+    override val description = "修改已创建的定时任务（标题/间隔/执行内容），需要提供任务ID。支持两种模式互转：mode=\"agent_task\" 切换为工单型（由 description 描述任务，到点让角色自己推理回应）；mode=\"tool\" 切换为工具型（到点直接调指定工具）。也可不传 mode 只单独改 description（工单型）或 tool/params（工具型）。params 必须用 key=\"val1\",key2=\"val2\" 格式（值中允许逗号），不要传 JSON 对象。可选参数 project_id 关联到某个项目（需是已存在的项目 ID）；传空串可解除关联，不传则保留原关联。"
     override val paramKeys = listOf("id", "mode", "title", "tool", "params", "description", "project_id", "interval_hours", "delay_hours")
 
-    private companion object {
-        // P1-12-1 修复：与 ScheduleCreateTool 对齐，使用带引号正则解析 params 字段，
-        // 旧实现用 split(",") + indexOf('=') 切割，值中含逗号时会被截断。
-        // 新正则与 ToolParser.ATTR_PATTERN 格式一致：key="value"，允许值内含逗号和转义引号。
-        // 验收修复：原写法 """...*)"""" 结尾连续4个引号，与 ScheduleCreateTool.kt 里
-        // 逐字符相同的既有编译错误（三重引号字符串被提前截断，见该文件同位置注释）。
-        // 同样改为把收尾引号拆到 + "\"" 里拼接，最终正则字符串不变。
-        val PARAM_REGEX = Regex("""(\w+)="((?:[^"\\]|\\.)*)""" + "\"")
-    }
+    // params 的 key="val" 解析（含逗号安全、JSON fallback）与 interval/delay 的
+    // 数字校验已收口到 ScheduleToolParamUtil（批次1 审计问题1/问题2 修复），
+    // 与 ScheduleCreateTool 共用同一份实现，不再各自维护正则。
 
     override suspend fun execute(params: Map<String, String>): ToolResult {
         val id = params["id"]?.trim()
@@ -136,19 +130,20 @@ class ScheduleUpdateTool(
             }
 
             // 解析新工具参数（未传则保持原值）
-            // P1-12-1 修复：改用带引号正则 findAll，与 ScheduleCreateTool 一致，
-            // 值中含逗号时不再被截断（如 message="早上好，今天天气不错" 能正确解析）。
-            // 批次2补充：目标为工单型时强制 toolParamsJson = "{}"——工单型没有
+            // 批次2：目标为工单型时强制 toolParamsJson = "{}"——工单型没有
             // toolParams 概念（方案2.2/6.5），即便 existing 是工具型带了一堆参数，
             // 切换为工单型后这些参数也无意义，落 "{}" 干净。
+            //
+            // 审计报告问题1（P1，静默失败）修复：ScheduleToolParamUtil.parseToolParams
+            // 先尝试把 params 当 JSON 解析（含转义 JSON 的 \" 还原），失败再 fallback 到
+            // key="val1",key2="val2" 格式。此前只认后者，裸 JSON / 转义 JSON 传入时
+            // parsed 为空，会静默回退到 existing.toolParamsJson——看起来更新成功，
+            // 实际 toolParams 完全没变，是本报告 U3/U4 用例点名的同一根因。
             val newToolParamsJson: String = when {
                 newToolName == AgentTaskJobExecutor.SENTINEL -> "{}"
                 params["params"] == null -> existing.toolParamsJson
                 else -> {
-                    val parsed = PARAM_REGEX.findAll(params["params"]!!)
-                        .associate { match ->
-                            match.groupValues[1].trim() to match.groupValues[2].trim()
-                        }
+                    val parsed = ScheduleToolParamUtil.parseToolParams(params["params"])
                     if (parsed.isEmpty()) {
                         existing.toolParamsJson
                     } else {
@@ -180,11 +175,13 @@ class ScheduleUpdateTool(
             }
 
             // 解析新间隔
+            // 审计报告问题2（P1，静默降级）修复：containsKey 为 true 但值非数字时，
+            // 此前 toDoubleOrNull() ?: 0.0 会静默把"改间隔但填错数字"变成"改成一次性
+            // 任务"，没有任何错误提示。现改为非数字时直接返回明确错误。
             val newRepeatIntervalMs: Long? = when {
                 params.containsKey("interval_hours") -> {
-                    // 批次4-2-8 修复：containsKey 检查和实际取值之间的 !! 是脆弱的隐式契约，
-                    // 即使 key 存在，Map value 理论上也可为 null。改用 ?. 安全调用。
-                    val h = params["interval_hours"]?.toDoubleOrNull() ?: 0.0
+                    val h = ScheduleToolParamUtil.parseHoursOrError(params["interval_hours"], "interval_hours")
+                        .getOrElse { return ToolResult(name, false, "", error = it.message) }
                     if (h > 0) (h * TimeUnit.HOURS.toMillis(1)).toLong() else null
                 }
                 else -> existing.repeatIntervalMs
@@ -194,10 +191,11 @@ class ScheduleUpdateTool(
             // = 当前时间 + delayHours（未传时 delayHours 默认 0.0），导致仅想改个
             // 标题/参数的调用也会把 nextRunAt 重置为"立即执行"，造成任务提前触发。
             // 改为：只有显式传入 delay_hours 时才按其重算；否则保留原 nextRunAt 不变。
+            // 审计报告问题2（P1，静默降级）修复：同 interval_hours，非数字时报错而非
+            // 静默按 0.0（立即执行）处理。
             val newNextRunAt = if (params.containsKey("delay_hours")) {
-                // 批次4-审查修复：delay_hours 的 !! 与 interval_hours 修复前同类问题，
-                // 统一改为 ?. 安全调用。
-                val delayHours = params["delay_hours"]?.toDoubleOrNull() ?: 0.0
+                val delayHours = ScheduleToolParamUtil.parseHoursOrError(params["delay_hours"], "delay_hours")
+                    .getOrElse { return ToolResult(name, false, "", error = it.message) }
                 System.currentTimeMillis() + (delayHours * TimeUnit.HOURS.toMillis(1)).toLong()
             } else {
                 existing.nextRunAt

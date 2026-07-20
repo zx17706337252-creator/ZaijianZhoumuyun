@@ -66,7 +66,7 @@ import kotlin.math.tan
 class CalculatorTool : AgentTool {
 
     override val name = "calculator"
-    override val description = "本地四则运算/函数计算器，用于数学表达式求值，不联网"
+    override val description = "本地四则运算/函数计算器，用于数学表达式求值，不联网（支持 +-*/^%、sqrt/sin/cos/ln/log/ceil/floor/abs 等函数、pi/e 常量、单位换算如 100 km to miles）"
     override val paramKeys = listOf("expr")
 
     override suspend fun execute(params: Map<String, String>): ToolResult = withContext(Dispatchers.IO) {
@@ -243,15 +243,21 @@ internal object ExpressionEvaluator {
             return result
         }
 
+        // P2 修复（P2批次1审查报告问题C）：原实现用 if 而非递归，只处理一次 ^，
+        // 且指数端调用 parseUnary() 而非 parsePower()，导致 2^3^2 这类连续幂运算
+        // 解析出 2^3=8 后直接返回，残留的 ^2 交还给顶层 evaluate()，因 isEnd() 检查
+        // 失败而抛"意外字符：'^'"异常。数学约定里 ^ 是右结合，2^3^2 应等于 2^(3^2)=512。
+        // 改为指数端递归调用 parsePower() 自身（而非 parseUnary()），实现右结合。
         private fun parsePower(): Double {
-            var base = parseUnary()
+            val base = parseUnary()
             skipWs()
-            if (peek() == '^') {
+            return if (peek() == '^') {
                 consume(); skipWs()
-                val exp = parseUnary()
-                base = base.pow(exp)
+                val exp = parsePower()  // 递归调用自身（不是 parseUnary），右结合
+                base.pow(exp)
+            } else {
+                base
             }
-            return base
         }
 
         private fun parseUnary(): Double {
@@ -350,7 +356,7 @@ internal object ExpressionEvaluator {
 class UnitConvertTool : AgentTool {
 
     override val name      = "unit_convert"
-    override val description = "长度/重量/温度/面积/体积/速度/数据/时间等单位换算，固定汇率不联网"
+    override val description = "单位换算(value/from/to)。长度:m/km/cm/mm/inch/foot/yard/mile; 重量:kg/g/mg/lb/oz; 温度:celsius/fahrenheit/kelvin; 速度:m/s,km/h,mph; 数据:bit/byte/KB/MB/GB; 时间:s/min/hour/day/week/month/year; 汇率:CNY/USD/EUR/JPY 固定汇率不联网"
     override val paramKeys = listOf("value", "from", "to")
 
     override suspend fun execute(params: Map<String, String>): ToolResult = withContext(Dispatchers.IO) {
@@ -498,7 +504,7 @@ class UnitConvertTool : AgentTool {
 class CountdownTool : AgentTool {
 
     override val name      = "countdown"
-    override val description = "计算两个日期之间相差的天数/周数/月数，用于倒计时或已过去多久"
+    override val description = "计算日期差(to 必填/from 可选默认今天，格式均为 yyyy-MM-dd)，返回相差天数/周数/月数，用于倒计时或已过去多久"
     override val paramKeys = listOf("to", "from")
 
     override suspend fun execute(params: Map<String, String>): ToolResult = withContext(Dispatchers.IO) {
@@ -512,8 +518,11 @@ class CountdownTool : AgentTool {
         try {
             val fmt  = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault())
             val toDate   = fmt.parse(toStr)   ?: return@withContext ToolResult(name, false, "日期格式错误，请用 yyyy-MM-dd 格式。")
-            val fromDate = if (fromStr != null) fmt.parse(fromStr) else java.util.Date()
-                           ?: java.util.Date()
+            // P3审查批次1修复：原写法 `if (fromStr != null) fmt.parse(fromStr) else Date()` 的 if 分支
+            // 本身可能返回 null（fromStr 格式错误时），但外层 `?:` 只在整个 if 表达式为 null 时才兜底，
+            // 而此处的 else 分支永远非 null，导致 `?:` 实际上从未生效，fromStr 格式错误时会直接 NPE。
+            // 改为 `?.let` 写法后，fromStr 为 null 或解析失败（let 内返回 null）时均能正确落到 `?:` 兜底。
+            val fromDate = fromStr?.let { fmt.parse(it) } ?: java.util.Date()
 
             val diffMs    = toDate.time - fromDate.time
             val diffDays  = diffMs / (1000L * 60 * 60 * 24)

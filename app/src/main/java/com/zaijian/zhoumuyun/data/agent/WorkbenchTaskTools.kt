@@ -62,7 +62,10 @@ class TaskStartTool(
     override val paramKeys = listOf("title", "description")
 
     override suspend fun execute(params: Map<String, String>): ToolResult {
-        val title = params["title"]?.trim()?.take(60)
+        // P3 修复（Batch5审查报告问题10）：原 `?.trim()?.take(60) ?: return error`
+        // 对 null 有效，但 title="" 经 trim()/take(60) 后仍是 ""，不为 null，
+        // 会绕过 `?:` 检查，把空标题落库。改用 takeIf { isNotBlank() } 显式拒绝空值。
+        val title = params["title"]?.trim()?.take(60)?.takeIf { it.isNotBlank() }
             ?: return ToolResult(name, false, "", "缺少 title 参数（任务标题）")
         val description = params["description"]?.trim() ?: ""
         // 问题40修复：与 self_reflect/rule_review 同一套读取优先级——工作流引擎
@@ -114,7 +117,24 @@ class TaskUpdateTool(
     override suspend fun execute(params: Map<String, String>): ToolResult {
         val titleHint = params["title"]?.trim()?.takeIf { it.isNotBlank() }
         val note      = params["note"]?.trim() ?: ""
-        val progress  = params["progress"]?.trim()?.toFloatOrNull()?.coerceIn(0f, 1f)
+        // P2 修复（Batch5审查报告问题11）：原 `toFloatOrNull()?.coerceIn(0f, 1f)` 链式
+        // 调用会静默吞错——LLM 传 progress="abc" 时 toFloatOrNull() 返回 null，
+        // 整个表达式变 null，静默回退到 task.progress（相当于没更新）；传
+        // progress="1.5" 时 coerceIn 静默 clamp 到 1.0。两种情况 ToolResult 都
+        // 返回 success=true，LLM 以为进度已按其意图更新，实际并未生效或被裁剪。
+        // 现在显式区分：缺省/空白 → 保留原进度（合法用法，不报错）；
+        // 非法数字/超出 0~1 范围 → 直接返回错误，不静默降级。
+        val progressRaw = params["progress"]?.trim()
+        val progress: Float? = if (progressRaw.isNullOrBlank()) {
+            null
+        } else {
+            val parsed = progressRaw.toFloatOrNull()
+                ?: return ToolResult(name, false, "", "progress 不是合法数字：$progressRaw")
+            if (parsed < 0f || parsed > 1f) {
+                return ToolResult(name, false, "", "progress 必须在 0~1 之间：$parsed")
+            }
+            parsed
+        }
         // 问题40修复：同 TaskStartTool，优先读工作流注入的 __character_id
         val charId = params["__character_id"]?.toIntOrNull() ?: characterId()
         if (charId < 0) {
@@ -169,7 +189,10 @@ class TaskCompleteTool(
 
     override suspend fun execute(params: Map<String, String>): ToolResult {
         val titleHint = params["title"]?.trim()?.takeIf { it.isNotBlank() }
-        val result    = params["result"]?.trim()
+        // P3 修复（Batch5审查报告问题12）：同 task_start 的 title，result="" 经
+        // trim() 后仍是 ""，不为 null，会绕过 `?:` 检查落库空结果。改用
+        // takeIf { isNotBlank() } 显式拒绝。
+        val result    = params["result"]?.trim()?.takeIf { it.isNotBlank() }
             ?: return ToolResult(name, false, "", "缺少 result 参数（任务结果总结）")
         // 问题40修复：同 TaskStartTool，优先读工作流注入的 __character_id
         val charId = params["__character_id"]?.toIntOrNull() ?: characterId()

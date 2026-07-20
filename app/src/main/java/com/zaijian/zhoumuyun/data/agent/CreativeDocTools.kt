@@ -819,7 +819,7 @@ internal fun markdownToStyledHtml(
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>$title</title>
+<title>${escape(title)}</title>
 <style>
   $printStyle
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -860,6 +860,18 @@ $body
 }
 
 /**
+ * HTML 转义（& / < / >）。
+ * P3审查批次1修复：原为 convertMarkdownToHtml 内部局部函数，
+ * markdownToStyledHtml 中的 `<title>$title</title>` 访问不到，导致 title
+ * 未转义直接拼入 HTML（self-XSS 风险，虽低但文件本地打开仍可能触发）。
+ * 提升为文件级私有函数，供两处复用。
+ */
+private fun escape(text: String) = text
+    .replace("&", "&amp;")
+    .replace("<", "&lt;")
+    .replace(">", "&gt;")
+
+/**
  * 轻量 Markdown → HTML 转换（纯 Kotlin，无 Android 依赖，可用于文件导出）。
  */
 private fun convertMarkdownToHtml(markdown: String): String {
@@ -873,11 +885,6 @@ private fun convertMarkdownToHtml(markdown: String): String {
         if (inOrderedList)   { sb.appendLine("</ol>"); inOrderedList   = false }
         if (inUnorderedList) { sb.appendLine("</ul>"); inUnorderedList = false }
     }
-
-    fun escape(text: String) = text
-        .replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
 
     fun inlineFormat(raw: String): String {
         var t = escape(raw)

@@ -56,22 +56,12 @@ class ScheduleCreateTool(
 ) : AgentTool {
 
     override val name = "schedule_create"
-    override val description = "创建自动化定时任务。两种模式：(A) 工具型，到点执行指定已注册工具（如每天定时web_search）；(B) 工单型 mode=\"agent_task\"，到点把 description 作为触发消息让角色自己推理回应，适合「提醒我喝水」这类没有现成工具可精确映射、需要角色语言表达的模糊任务。工具型需要明确的可重复执行动作，工单型只需写清楚要做什么。可选参数 project_id 关联到某个项目（需是已存在的项目 ID），用于把日程挂载到项目上。"
+    override val description = "创建自动化定时任务。两种模式：(A) 工具型，到点执行指定已注册工具（如每天定时web_search）；(B) 工单型 mode=\"agent_task\"，到点把 description 作为触发消息让角色自己推理回应，适合「提醒我喝水」这类没有现成工具可精确映射、需要角色语言表达的模糊任务。工具型需要明确的可重复执行动作，工单型只需写清楚要做什么。params 必须用 key=\"val1\",key2=\"val2\" 格式（值中允许逗号），不要传 JSON 对象。可选参数 project_id 关联到某个项目（需是已存在的项目 ID），用于把日程挂载到项目上。"
     override val paramKeys = listOf("title", "mode", "tool", "params", "description", "project_id", "interval_hours", "delay_hours")
 
-    private companion object {
-        // P2 修复（二次）：改为带引号格式 key="value"，与 ToolParser.ATTR_PATTERN 保持一致。
-        // 旧正则 (\w+)=([^,]+) 的值部分仍以逗号为终止符，无法处理值中含逗号的场景。
-        // 新正则 group(1)=key, group(2)=value（引号内内容，允许 \" 转义，允许逗号）。
-        // 验收修复：原写法 """...*)"""" 结尾连续4个引号，三重引号字符串在第3个
-        // 引号处就被提前截断（Kotlin 词法规则：遇到最早出现的连续3个引号即结束），
-        // 导致正则内容丢失了本该属于它的最后一个引号、多出的第4个引号变成未闭合
-        // 的新字符串，整个文件编译不过。改为把收尾这一个引号单独拆到 + "\"" 里
-        // 拼接，三重引号内容到 *) 为止不再含收尾引号，避免连续三引号提前截断；
-        // 两段拼接后的最终正则字符串是 (\w+)="((?:[^"\\]|\\.)*)"，
-        // 与本来就该匹配的正则完全一致，只是书写方式变了。
-        val PARAM_REGEX = Regex("""(\w+)="((?:[^"\\]|\\.)*)""" + "\"")
-    }
+    // params 的 key="val" 解析（含逗号安全、JSON fallback）与 interval/delay 的
+    // 数字校验已收口到 ScheduleToolParamUtil（批次1 审计问题1/问题2 修复），
+    // ScheduleCreateTool/ScheduleUpdateTool 共用同一份实现，不再各自维护正则。
 
     override suspend fun execute(params: Map<String, String>): ToolResult {
         val title = params["title"]?.trim()
@@ -113,17 +103,20 @@ class ScheduleCreateTool(
             description = null
         }
 
-        // 解析工具参数（格式：key="val1",key2="val2 含逗号也安全"）
-        // 用带引号正则 findAll 扫描，值中的逗号不再被截断。
+        // 解析工具参数（格式：key="val1",key2="val2 含逗号也安全"，也兼容 JSON）
         // 工单型任务无 toolParams 概念，这里仍按原逻辑解析（即便 LLM 误传也不会报错），
         // 实际落库时 Repository 会把它写进 toolParamsJson——不影响工单执行路径，
         // 工单执行（批次3 AgentTaskJobExecutor）只读 description，不读 toolParamsJson。
-        val toolParams: Map<String, String> = params["params"]
-            ?.let { PARAM_REGEX.findAll(it) }
-            ?.associate { match ->
-                match.groupValues[1].trim() to match.groupValues[2].trim()
-            }
-            ?: emptyMap()
+        //
+        // 审计报告问题1（P1，静默失败）修复：
+        // ToolParser 的 findBalancedJsonEnd 会把 params="{...}" 这种"值是未转义 JSON"
+        // 的写法整段原文摘出来交给这里，但 description 没告诉 LLM 该用 key="val" 格式，
+        // LLM 偏向直接塞 JSON 对象的概率不低。此前只用 PARAM_REGEX 解析 key="val" 逗号
+        // 分隔格式，完全不认 JSON，裸 JSON / 转义 JSON 都解出空 Map，execute 却仍返回
+        // success——数据真实落库但内容是空的，比崩溃更难发现。
+        // 现改为：先尝试把 params 当 JSON 解析（转义 JSON 先做 \" → " 还原），成功则
+        // 按 JSON 键值取 toolParams；失败再 fallback 到现有 PARAM_REGEX，两种格式都兜住。
+        val toolParams: Map<String, String> = ScheduleToolParamUtil.parseToolParams(params["params"])
 
         // 日程系统第七节：解析并校验可选的 project_id（关联项目）。
         // - 未传 / 空串 → projectId = null（独立日程，不关联任何项目）
@@ -145,8 +138,13 @@ class ScheduleCreateTool(
         }
 
         // 解析时间
-        val intervalHours = params["interval_hours"]?.toDoubleOrNull() ?: 0.0
-        val delayHours = params["delay_hours"]?.toDoubleOrNull() ?: 0.0
+        // 审计报告问题2（P1，静默降级）修复：非数字时不再 ?: 0.0 静默降级，
+        // 而是返回明确错误——此前 LLM 想要重复任务但 interval_hours 填错时，
+        // 会被悄悄创建成一次性任务，且没有任何错误提示。
+        val intervalHours = ScheduleToolParamUtil.parseHoursOrError(params["interval_hours"], "interval_hours")
+            .getOrElse { return ToolResult(name, false, "", error = it.message) }
+        val delayHours = ScheduleToolParamUtil.parseHoursOrError(params["delay_hours"], "delay_hours")
+            .getOrElse { return ToolResult(name, false, "", error = it.message) }
 
         val repeatIntervalMs = if (intervalHours > 0) {
             (intervalHours * TimeUnit.HOURS.toMillis(1)).toLong()

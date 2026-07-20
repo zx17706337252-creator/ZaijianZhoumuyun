@@ -158,12 +158,22 @@ class BuildApkDownloadTool(
     private fun extractApkFromZip(zipFile: File): File? {
         val zipInputStream = ZipInputStream(zipFile.inputStream())
         var apkFile: File? = null
+        // P2 修复（Batch5审查报告问题13）：原实现直接用 entry.name 拼路径落盘，
+        // 只用 entry.name.endsWith(".apk") 过滤文件类型，未校验 entry.name 是否
+        // 含 "../" 路径穿越——恶意/被篡改的 GitHub Actions 产物 ZIP 可构造
+        // entry.name="../../../data/data/xxx/shared_prefs/xxx.apk" 之类的条目
+        // 写到 builds 目录之外。与 FileSystemTools.zip_extract 的 Zip Slip 防护
+        // 用同一套 canonicalPath.startsWith() 校验对齐。
+        val buildsDir = File(context.filesDir, "builds")
 
         try {
             var entry = zipInputStream.nextEntry
             while (entry != null) {
                 if (!entry.isDirectory && entry.name.endsWith(".apk")) {
-                    val outFile = File(context.filesDir, "builds/${entry.name}")
+                    val outFile = File(buildsDir, entry.name)
+                    if (!outFile.canonicalPath.startsWith(buildsDir.canonicalPath + File.separator)) {
+                        throw SecurityException("Zip Slip 检测：非法路径 ${entry.name}")
+                    }
                     outFile.parentFile?.mkdirs()
                     FileOutputStream(outFile).use { output ->
                         zipInputStream.copyTo(output)

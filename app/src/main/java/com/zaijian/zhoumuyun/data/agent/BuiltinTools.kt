@@ -69,7 +69,7 @@ import java.util.Locale
 class WebSearchTool : AgentTool {
 
     override val name = "web_search"
-    override val description = "联网搜索关键词，返回摘要和相关话题，用于获取外部实时信息"
+    override val description = "联网搜索关键词，返回摘要和相关话题，用于获取外部实时信息（limit 可选，结果数量 1-10，默认 5）"
     override val paramKeys = listOf("query", "limit")
 
     private companion object {
@@ -121,10 +121,17 @@ class WebSearchTool : AgentTool {
                         .use { it.readText() }
 
                     val result = parseDuckDuckGoResponse(json, query, limit)
+                    // P1 修复（P2批次3审查报告问题B）：原实现空结果时 success=false 但
+                    // error 未填充，ToolCallInterceptor 回注 LLM 时读不到 error，只能显示
+                    // "[web_search 执行失败: 未知错误]"，丢失了 content 里"未找到关于...的
+                    // 相关信息"这句友好文案，LLM 无法区分"没搜到"和"API挂了"。
+                    // 补上 error，值与友好文案对齐，便于 LLM 判断该换关键词还是稍后重试。
+                    val notFoundMsg = "未找到关于「$query」的相关信息。"
                     ToolResult(
                         toolName = name,
                         success  = result.isNotEmpty(),
-                        content  = result.ifEmpty { "未找到关于「$query」的相关信息。" },
+                        content  = result.ifEmpty { notFoundMsg },
+                        error    = if (result.isEmpty()) notFoundMsg else null,
                         userHint = "正在搜索「$query」…",
                     )
                 } finally {
@@ -198,7 +205,7 @@ class WebSearchTool : AgentTool {
 class DateTimeTool : AgentTool {
 
     override val name = "datetime"
-    override val description = "获取本地当前日期/时间/星期/时区等信息"
+    override val description = "获取本地当前日期/时间/星期/时区等信息（format 可选值：full/date/time/week/year/timestamp，默认 full）"
     override val paramKeys = listOf("format")
 
     // 修复（第3窗口审查报告问题4）：统一包裹 withContext(Dispatchers.IO)，
@@ -265,7 +272,7 @@ class DateTimeTool : AgentTool {
 class TranslateTool : AgentTool {
 
     override val name = "translate"
-    override val description = "将文本在不同语言之间翻译"
+    override val description = "将文本在不同语言之间翻译（text 最长 500 字，超长部分会被截断并在结果中提示；target/source 用语言代码如 zh/en/ja/ko，source 可选默认自动检测）"
     override val paramKeys = listOf("text", "target", "source")
 
     private companion object {
@@ -286,12 +293,22 @@ class TranslateTool : AgentTool {
         if (text.isNullOrEmpty()) {
             return ToolResult(name, false, "", "缺少 text 参数")
         }
-        val target = params["target"]?.trim()?.lowercase() ?: "zh"
+        // P3 修复（P2批次2审查报告问题E）：原 `?: "zh"` 只在 target 为 null 时生效，
+        // target="" 经 trim()/lowercase() 后仍是 ""，不为 null，会绕过默认值，
+        // 带着空 target 构造 langPair 发给 MyMemory API 导致请求出错。
+        // 改用 takeIf { isNotEmpty() } 让空字符串也走默认值。
+        val target = params["target"]?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: "zh"
         val source = params["source"]?.trim()?.lowercase()?.let {
             if (it == "auto") null else it
         }
 
-        val truncated = if (text.length > MAX_TEXT_LENGTH) text.take(MAX_TEXT_LENGTH) else text
+        // P1 修复（批次3审查报告问题2）：原实现 text.take(MAX_TEXT_LENGTH) 裸截断，
+        // 无句子边界感知、且 ToolResult 不带任何提示就返回 success，用户以为整段
+        // 都翻了，实际只翻了前 500 字。改为按句子边界截断（与 memory 三工具的
+        // truncateAtSentenceBoundary 同一策略），并在截断发生时把提示写入
+        // ToolResult.content，而不是静默吞掉后半段。
+        val wasTruncated = text.length > MAX_TEXT_LENGTH
+        val truncated = if (wasTruncated) truncateAtSentenceBoundaryForTranslate(text, MAX_TEXT_LENGTH) else text
 
         return withContext(Dispatchers.IO) {
             // 批次4-1-3 修复：用 try-finally 包裹 HttpURLConnection，
@@ -328,18 +345,25 @@ class TranslateTool : AgentTool {
                 val translated = responseData?.optString("translatedText", "")?.trim()
 
                 if (translated.isNullOrEmpty()) {
+                    // P1 修复（P2批次2审查报告问题B）：原先未传 error，回注 LLM 会显示
+                    // "[translate 执行失败: 未知错误]"，丢失"未能获取翻译结果"这句友好文案。
                     return@withContext ToolResult(
                         name, false, "未能获取翻译结果，请稍后再试。",
+                        error = "empty_translation_response",
                     )
                 }
 
                 val sourceName = source?.let { LANG_NAMES[it] } ?: "自动检测"
                 val targetName = LANG_NAMES[target] ?: target.uppercase()
+                // P1 修复（批次3审查报告问题2）：截断发生时显式提示，而非静默 success。
+                val truncateNotice = if (wasTruncated) {
+                    "\n[提示：原文超过 $MAX_TEXT_LENGTH 字，仅翻译了前 ${truncated.length} 字，后 ${text.length - truncated.length} 字未翻译]"
+                } else ""
 
                 ToolResult(
                     toolName = name,
                     success  = true,
-                    content  = "[翻译结果: $sourceName → $targetName]\n$translated",
+                    content  = "[翻译结果: $sourceName → $targetName]\n$translated$truncateNotice",
                     userHint = "正在翻译…",
                 )
 
@@ -354,6 +378,19 @@ class TranslateTool : AgentTool {
                 conn?.disconnect()
             }
         }
+    }
+
+    /**
+     * 按句子边界截断，避免 text.take(n) 在词/句中间硬切。
+     * 与 SoulMemoryUserTools.kt 的 truncateAtSentenceBoundary 同一策略：
+     * 在 maxChars 范围内找最后一个句子边界符（。！？\n），若找到的边界
+     * 位置太靠前（不到 maxChars 一半）则说明文本本身没有合适的断点，
+     * 退化为直接截断，避免截出一个只有几个字的结果。
+     */
+    private fun truncateAtSentenceBoundaryForTranslate(text: String, maxChars: Int): String {
+        val cut = text.take(maxChars)
+        val lastBoundary = cut.lastIndexOfAny(charArrayOf('。', '！', '？', '\n', '.', '!', '?'))
+        return if (lastBoundary > maxChars / 2) cut.take(lastBoundary + 1) else cut
     }
 }
 
@@ -573,19 +610,29 @@ class FileReadTool(private val context: Context) : AgentTool {
 class WeatherTool : AgentTool {
 
     override val name     = "weather"
-    override val description = "查询指定城市的天气情况"
+    override val description = "查询指定城市的天气情况（unit 可选 celsius/fahrenheit，默认 celsius）"
     override val paramKeys = listOf("city", "unit")
 
     override suspend fun execute(params: Map<String, String>): ToolResult = withContext(Dispatchers.IO) {
-        val city = params["city"]?.trim() ?: return@withContext ToolResult(name, false, "请告诉我要查询哪个城市的天气。")
+        // P3 修复（P2批次2审查报告问题E）：原 `params["city"]?.trim() ?: return error`
+        // 对 null 有效，但 city="   " 经 trim() 后是 ""，不为 null，会通过校验进入网络
+        // 请求，白白浪费一次 geocoding 调用。改用 takeIf { isNotEmpty() } 提前拦截。
+        val city = params["city"]?.trim()?.takeIf { it.isNotEmpty() }
+            ?: return@withContext ToolResult(name, false, "请告诉我要查询哪个城市的天气。", error = "缺少 city 参数")
         val useFahrenheit = params["unit"]?.lowercase() == "fahrenheit"
 
         try {
             val geoUrl = "https://geocoding-api.open-meteo.com/v1/search?name=${URLEncoder.encode(city, "UTF-8")}&count=1&language=zh&format=json"
-            val geoJson = fetchUrl(geoUrl) ?: return@withContext ToolResult(name, false, "无法获取「$city」的位置信息，稍后再试？")
+            // P1 修复（P2批次2审查报告问题B）：以下 4 处错误分支原先只传 content 友好文案，
+            // error 留空。ToolCallInterceptor 失败时只回注 error，导致 LLM 看到的是
+            // "[weather 执行失败: 未知错误]"，丢失了"无法获取位置信息"这类具体原因，
+            // 无法判断该重试还是该让用户换个城市名。这里给每处补上对应 error。
+            val geoJson = fetchUrl(geoUrl)
+                ?: return@withContext ToolResult(name, false, "无法获取「$city」的位置信息，稍后再试？", error = "geocoding_fetch_failed")
             val geoObj   = JSONObject(geoJson)
-            val results  = geoObj.optJSONArray("results") ?: return@withContext ToolResult(name, false, "没有找到「$city」，试试输入更精确的城市名？")
-            if (results.length() == 0) return@withContext ToolResult(name, false, "搜索城市未返回结果")
+            val results  = geoObj.optJSONArray("results")
+                ?: return@withContext ToolResult(name, false, "没有找到「$city」，试试输入更精确的城市名？", error = "city_not_found")
+            if (results.length() == 0) return@withContext ToolResult(name, false, "搜索城市未返回结果", error = "city_not_found")
             val loc      = results.getJSONObject(0)
             val lat      = loc.getDouble("latitude")
             val lon      = loc.getDouble("longitude")
@@ -595,7 +642,8 @@ class WeatherTool : AgentTool {
             val wxUrl    = "https://api.open-meteo.com/v1/forecast?latitude=$lat&longitude=$lon" +
                 "&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m,relative_humidity_2m" +
                 "&temperature_unit=$tempUnit&wind_speed_unit=kmh&timezone=auto"
-            val wxJson   = fetchUrl(wxUrl) ?: return@withContext ToolResult(name, false, "获取天气数据时遇到问题，稍后再试？")
+            val wxJson   = fetchUrl(wxUrl)
+                ?: return@withContext ToolResult(name, false, "获取天气数据时遇到问题，稍后再试？", error = "weather_fetch_failed")
             val wxObj    = JSONObject(wxJson)
             val current  = wxObj.getJSONObject("current")
 
@@ -647,10 +695,14 @@ class WeatherTool : AgentTool {
     }
 
     private fun fetchUrl(urlStr: String): String? = try {
+        // P3 修复（P2批次2审查报告问题F）：weather 内部是两次串行请求（geocoding→forecast），
+        // 原 8s connect + 8s read 意味着单次最坏 16s，两次最坏 32s，超过
+        // ToolCallInterceptor 的 30s 总超时阈值，极端情况下第二次请求会被外层中断。
+        // 降到 6s+6s（单次最坏 12s，两次最坏 24s），留出安全余量。
         // 同 UrlFetchTool 的 P1-8-2 修复：conn 声明在内层 try 外，finally 保证 disconnect
         val conn = URL(urlStr).openConnection() as HttpURLConnection
-        conn.connectTimeout = 8000
-        conn.readTimeout    = 8000
+        conn.connectTimeout = 6000
+        conn.readTimeout    = 6000
         conn.requestMethod  = "GET"
         try {
             if (conn.responseCode == 200) {
@@ -675,7 +727,7 @@ class WeatherTool : AgentTool {
 class UrlFetchTool : AgentTool {
 
     override val name      = "url_fetch"
-    override val description = "抓取网页正文内容，用于「帮我看看这个链接讲了什么」"
+    override val description = "抓取网页正文内容，用于「帮我看看这个链接讲了什么」（max_chars 可选，100-8000，默认 3000；不支持抓取内网地址）"
     override val paramKeys = listOf("url", "max_chars")
 
     private companion object {
@@ -693,6 +745,24 @@ class UrlFetchTool : AgentTool {
         val maxChars = params["max_chars"]?.toIntOrNull()
             ?.coerceIn(100, MAX_CHARS_LIMIT) ?: DEFAULT_MAX_CHARS
 
+        // P3 修复（P2批次2审查报告问题G）：原实现未校验 url 指向的 host 是否为内网/回环
+        // 地址，LLM 若被诱导抓取 http://192.168.1.1/admin 或 http://localhost:xxx 这类
+        // 内网资源，工具会照常发起请求（SSRF）。这里在真正发起连接前，先解析 host 对应的
+        // IP，命中私有/回环/链路本地地址段就拒绝。放在 DNS 解析之后而不是纯字符串匹配
+        // host，是为了同时挡住"域名解析到内网 IP"这种绕过字符串黑名单的场景。
+        try {
+            val host = java.net.URL(url).host
+            val addr = java.net.InetAddress.getByName(host)
+            if (addr.isLoopbackAddress || addr.isLinkLocalAddress || addr.isSiteLocalAddress || addr.isAnyLocalAddress) {
+                return@withContext ToolResult(
+                    name, false, "该链接指向内网地址，出于安全考虑不予抓取。",
+                    error = "ssrf_blocked_private_address",
+                )
+            }
+        } catch (e: Exception) {
+            return@withContext ToolResult(name, false, "网址格式不正确或无法解析。", error = "invalid_url")
+        }
+
         try {
             // P1-8-2 修复：conn 声明在内层 try 外，使 finally 保证 disconnect
             val conn = java.net.URL(url).openConnection() as java.net.HttpURLConnection
@@ -704,9 +774,12 @@ class UrlFetchTool : AgentTool {
             try {
                 val responseCode = conn.responseCode
                 if (responseCode !in 200..299) {
+                    // P1 修复（P2批次2审查报告问题B）：原先只传 content 未传 error，
+                    // 回注 LLM 会丢失"HTTP $responseCode"这一具体原因，变成"未知错误"。
                     return@withContext ToolResult(
                         name, false,
                         "无法访问该网页（HTTP $responseCode）。",
+                        error = "HTTP $responseCode",
                     )
                 }
 
@@ -716,7 +789,7 @@ class UrlFetchTool : AgentTool {
                 val text = extractReadableText(html).take(maxChars)
 
                 if (text.isBlank()) {
-                    return@withContext ToolResult(name, false, "网页内容为空或无法提取正文。")
+                    return@withContext ToolResult(name, false, "网页内容为空或无法提取正文。", error = "empty_content")
                 }
 
                 ToolResult(
@@ -729,9 +802,10 @@ class UrlFetchTool : AgentTool {
                 conn.disconnect()
             }
         } catch (e: java.net.UnknownHostException) {
-            ToolResult(name, false, "无法连接网络，请检查网络设置后重试。")
+            // P1 修复（P2批次2审查报告问题B）：同上，补 error 让 LLM 知道具体是网络问题
+            ToolResult(name, false, "无法连接网络，请检查网络设置后重试。", error = "unknown_host")
         } catch (e: java.net.SocketTimeoutException) {
-            ToolResult(name, false, "网页响应超时，稍后再试。")
+            ToolResult(name, false, "网页响应超时，稍后再试。", error = "timeout")
         } catch (e: Exception) {
             ToolResult(name, false, "抓取网页时遇到问题：${e.message?.take(80)}", e.message)
         }
@@ -805,7 +879,7 @@ class FileExportTool(private val context: Context) : AgentTool {
     }
 
     override val name      = "file_export"
-    override val description = "将生成的内容写入文件并落盘导出，供用户下载查看"
+    override val description = "将生成的内容写入文件并落盘导出，供用户下载查看（format 仅支持 md/txt，默认 md，其他值会回退为 md 并在结果中提示）"
     override val paramKeys = listOf("name", "content", "format")
 
     override suspend fun execute(params: Map<String, String>): ToolResult = withContext(Dispatchers.IO) {
@@ -821,6 +895,11 @@ class FileExportTool(private val context: Context) : AgentTool {
         }
 
         val safeName = UNSAFE_CHARS.replace(rawName, "_").take(60)
+        // P2 修复（批次3审查报告问题2）：原实现只认 "txt"，其他任何值（包括 "pdf" 这种
+        // LLM 可能填的合理猜测）都静默落到 .md，无任何提示。改为显式白名单校验，
+        // 非法值仍回退为 md（不阻断导出，容错优先），但在返回结果里明确告知发生了偏离，
+        // 而不是让调用方以为 format 生效了。
+        val formatWasUnsupported = format != "md" && format != "txt"
         val ext = when {
             safeName.contains(".") -> ""
             format == "txt"        -> ".txt"
@@ -845,10 +924,14 @@ class FileExportTool(private val context: Context) : AgentTool {
                 put("absolutePath", file.absolutePath)
             }.toString()
 
+            val formatNotice = if (formatWasUnsupported) {
+                "\n[提示：format=\"$format\" 不受支持，仅支持 md/txt，已按 md 生成]"
+            } else ""
+
             ToolResult(
                 toolName = name,
                 success  = true,
-                content  = "文件已生成：$fileName（${formatSize(sizeBytes)}）\n$metaJson",
+                content  = "文件已生成：$fileName（${formatSize(sizeBytes)}）\n$metaJson$formatNotice",
                 userHint = "正在生成文件…",
             )
         } catch (e: Exception) {

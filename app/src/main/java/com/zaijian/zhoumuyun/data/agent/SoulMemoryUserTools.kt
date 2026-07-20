@@ -20,17 +20,23 @@ class SoulUpdateTool(
     private val characterId: () -> Int,
 ) : AgentTool {
     override val name = "soul_update"
-    override val description = "更新角色自己的人设备忘录（自我认知），用于角色自我成长演化"
+    override val description = "更新角色自己的人设备忘录（自我认知），用于角色自我成长演化（content 最长 1000 字，超长按句子边界截断并提示）"
     override val paramKeys = listOf("content")
     override suspend fun execute(params: Map<String, String>): ToolResult = withContext(Dispatchers.IO) {
         val charId = characterId()
         if (charId < 0) return@withContext ToolResult(name, false, "", "角色未初始化")
         val content = params["content"]?.trim() ?: return@withContext ToolResult(name, false, "", "需要 content 参数")
         val truncated = truncateAtSentenceBoundary(content, MAX_SOUL_CHARS)
+        // P2 修复（批次3审查报告问题2）：句子边界截断比 translate 的裸 take 优雅，
+        // 但 ToolResult 此前仍只说"已更新"，不提示内容被截断——角色的人设/记忆
+        // 静默存了截断版。现在截断发生时显式附加提示。
+        val truncateNotice = if (truncated.length < content.length) {
+            "（提示：内容超过 $MAX_SOUL_CHARS 字，已截断至最近句子边界，丢弃了 ${content.length - truncated.length} 字）"
+        } else ""
         try {
             // P0-2 修复：改用事务化单列 upsert，消除并发 REPLACE 整行覆盖竞态
             identityDao.upsertSoulNote(charId, truncated)
-            ToolResult(name, true, "✅ 已更新人设备忘录", userHint = "正在更新自我认知…")
+            ToolResult(name, true, "✅ 已更新人设备忘录$truncateNotice", userHint = "正在更新自我认知…")
         } catch (e: Exception) {
             ToolResult(name, false, "更新失败：${e.message?.take(80)}", e.message)
         }
@@ -61,17 +67,21 @@ class NarrativeMemoryUpdateTool(
     private val characterId: () -> Int,
 ) : AgentTool {
     override val name = "narrative_memory_update"
-    override val description = "更新角色与用户之间的关系记忆摘要（长期叙事记忆）"
+    override val description = "更新角色与用户之间的关系记忆摘要（长期叙事记忆）（content 最长 1500 字，超长按句子边界截断并提示）"
     override val paramKeys = listOf("content")
     override suspend fun execute(params: Map<String, String>): ToolResult = withContext(Dispatchers.IO) {
         val charId = characterId()
         if (charId < 0) return@withContext ToolResult(name, false, "", "角色未初始化")
         val content = params["content"]?.trim() ?: return@withContext ToolResult(name, false, "", "需要 content 参数")
         val truncated = truncateAtSentenceBoundary(content, MAX_MEMORY_CHARS)
+        // P2 修复（批次3审查报告问题2）：同 soul_update，截断发生时显式提示。
+        val truncateNotice = if (truncated.length < content.length) {
+            "（提示：内容超过 $MAX_MEMORY_CHARS 字，已截断至最近句子边界，丢弃了 ${content.length - truncated.length} 字）"
+        } else ""
         try {
             // P0-2 修复：改用事务化单列 upsert，消除并发 REPLACE 整行覆盖竞态
             identityDao.upsertNarrativeMemory(charId, truncated)
-            ToolResult(name, true, "✅ 已更新关系记忆摘要", userHint = "正在更新长期记忆…")
+            ToolResult(name, true, "✅ 已更新关系记忆摘要$truncateNotice", userHint = "正在更新长期记忆…")
         } catch (e: Exception) {
             ToolResult(name, false, "更新失败：${e.message?.take(80)}", e.message)
         }
@@ -102,17 +112,21 @@ class UserImpressionUpdateTool(
     private val characterId: () -> Int,
 ) : AgentTool {
     override val name = "user_impression_update"
-    override val description = "更新角色对用户的印象描述"
+    override val description = "更新角色对用户的印象描述（content 最长 1000 字，超长按句子边界截断并提示）"
     override val paramKeys = listOf("content")
     override suspend fun execute(params: Map<String, String>): ToolResult = withContext(Dispatchers.IO) {
         val charId = characterId()
         if (charId < 0) return@withContext ToolResult(name, false, "", "角色未初始化")
         val content = params["content"]?.trim() ?: return@withContext ToolResult(name, false, "", "需要 content 参数")
         val truncated = truncateAtSentenceBoundary(content, MAX_USER_CHARS)
+        // P2 修复（批次3审查报告问题2）：同 soul_update，截断发生时显式提示。
+        val truncateNotice = if (truncated.length < content.length) {
+            "（提示：内容超过 $MAX_USER_CHARS 字，已截断至最近句子边界，丢弃了 ${content.length - truncated.length} 字）"
+        } else ""
         try {
             // P0-2 修复：改用事务化单列 upsert，消除并发 REPLACE 整行覆盖竞态
             identityDao.upsertUserImpression(charId, truncated)
-            ToolResult(name, true, "✅ 已更新对用户的印象", userHint = "正在更新对你的理解…")
+            ToolResult(name, true, "✅ 已更新对用户的印象$truncateNotice", userHint = "正在更新对你的理解…")
         } catch (e: Exception) {
             ToolResult(name, false, "更新失败：${e.message?.take(80)}", e.message)
         }

@@ -151,23 +151,44 @@ class ToolParser {
          * 改用手写扫描做真正的花括号配平（支持任意深度嵌套），对每个 `key="{` 起点，
          * 逐字符前进并维护 depth 计数器，直到 depth 归零才认为 JSON 值结束。
          *
-         * @return 从 [searchFrom] 开始，值内容以 '{' 结尾配平后的结束下标（即闭合 '}'
-         *         的下一个位置）；如果 [searchFrom] 处不是 '{' 或配平失败（数据不完整/
-         *         格式错误），返回 -1。
+         * P1 修复（批次4审查报告问题1）：原实现只认 `{` 开头的 JSON **对象**，
+         * `files_json` 这类 JSON **数组**参数（`[{"path":...},{"path":...}]`）
+         * 第一个字符是 `[` 而非 `{`，直接被 `searchFrom` 处 `!= '{'` 判定为「非 JSON」，
+         * 交还给 ATTR_PATTERN 处理，然后在数组内部第一个内引号处被截断
+         * （`[{"path":"a.txt",...}]` 截成 `[{`）。现同时支持 `{`/`}` 和 `[`/`]` 配平：
+         * 用同一个 depth 计数器对两种括号一起加减（合法 JSON 中二者天然配对，不会有
+         * `{` 用 `]` 收尾这种情况，所以合并计数不会误判），只要求起始字符是 `{` 或 `[`。
+         * 字符串字面量内部的 `{`/`}`/`[`/`]` 不参与计数——通过 inString 状态跟踪，
+         * 避免把 `{"text":"a{b}c"}` 中字符串里的花括号误算进深度。
+         *
+         * @return 从 [searchFrom] 开始，值内容以 '{' 或 '[' 结尾配平后的结束下标（即闭合
+         *         '}' 或 ']' 的下一个位置）；如果 [searchFrom] 处不是 '{'/'[' 或配平失败
+         *         （数据不完整/格式错误），返回 -1。
          */
         private fun findBalancedJsonEnd(text: String, searchFrom: Int): Int {
-            if (searchFrom >= text.length || text[searchFrom] != '{') return -1
+            if (searchFrom >= text.length) return -1
+            val opener = text[searchFrom]
+            if (opener != '{' && opener != '[') return -1
+
             var depth = 0
             var i = searchFrom
             val n = text.length
+            var inString = false
             while (i < n) {
-                when (text[i]) {
-                    '\\' -> {
-                        i += 2
-                        continue
+                val c = text[i]
+                if (inString) {
+                    when (c) {
+                        '\\' -> { i += 2; continue }
+                        '"' -> inString = false
                     }
-                    '{' -> depth++
-                    '}' -> {
+                    i++
+                    continue
+                }
+                when (c) {
+                    '\\' -> { i += 2; continue }
+                    '"' -> inString = true
+                    '{', '[' -> depth++
+                    '}', ']' -> {
                         depth--
                         if (depth == 0) return i + 1
                     }
@@ -376,6 +397,56 @@ class ToolParser {
      * `key="{...}"` 形态的 JSON 属性（支持任意深度嵌套），摘出对应 key 的原始 JSON
      * 文本，再用 [ATTR_PATTERN] 处理剩余的普通属性，避免重复解析同一段字符串。
      */
+    /**
+     * P1 修复（批次4审查报告问题1，根因②）：
+     *
+     * 原实现用四次链式 `.replace("\\\"", "\"")` / `.replace("\\'", "'")` /
+     * `.replace("\\n", "\n")` / `.replace("\\t", "\t")` 依次全局替换，每一次
+     * `.replace()` 都是独立的、对整个字符串重新扫描的全局替换，**不是**按顺序
+     * 从左到右逐字符消费转义序列。这在多层转义场景下会产生错误还原：
+     *
+     * 例如 LLM 为了把带引号的代码塞进 JSON 数组值里，按规范做了双重转义——
+     * 先转义 JSON 内部的 `"` 为 `\"`，再把整个 JSON 字符串转义一层给标签属性用，
+     * 得到 `\\\"`（转义反斜杠 + 转义引号）。用链式 replace 处理：
+     * 第一步 `.replace("\\\"", "\"")` 会把 `\\\"` 中的 `\"` 部分吃掉，错误地
+     * 变成 `\\"`（多余的反斜杠 + 裸引号），而不是期望的 `\"`（还原出的转义引号，
+     * 留给内层 JSON 解析器处理）。同理 `\\n`（转义反斜杠 + 字母n）会被
+     * `.replace("\\n", "\n")` 误当成"转义换行符"直接换行，而不是保留成
+     * `\n` 两个字符交给内层 JSON 解析。
+     *
+     * 根本原因：链式 replace 没有处理 `\\`（转义反斜杠本身），且执行顺序
+     * 是"全局做完一种替换，再全局做下一种"，而不是"从左到右一次扫描、
+     * 每遇到一个 `\` 就只消费紧跟着的一个字符"。正确的转义还原必须是
+     * 单遍扫描：遇到 `\` 就查看下一个字符决定输出什么，然后跳过这两个
+     * 字符，绝不能对已经从转义序列中还原出的字符再次进行替换。
+     *
+     * 现改为单遍从左到右扫描，`\\`→`\`、`\"`→`"`、`\'`→`'`、`\n`→换行、
+     * `\t`→tab；不在上述已知转义表中的 `\x` 保留原样（`\` 和 `x` 都原样输出），
+     * 避免吞掉未来可能出现的其他转义写法。
+     */
+    private fun unescapeAttrValue(raw: String): String {
+        val sb = StringBuilder(raw.length)
+        var i = 0
+        val n = raw.length
+        while (i < n) {
+            val c = raw[i]
+            if (c == '\\' && i + 1 < n) {
+                when (raw[i + 1]) {
+                    '\\' -> { sb.append('\\'); i += 2 }
+                    '"'  -> { sb.append('"');  i += 2 }
+                    '\'' -> { sb.append('\''); i += 2 }
+                    'n'  -> { sb.append('\n'); i += 2 }
+                    't'  -> { sb.append('\t'); i += 2 }
+                    else -> { sb.append(c); i += 1 }  // 未知转义：保留反斜杠本身，不消费下一字符
+                }
+            } else {
+                sb.append(c)
+                i += 1
+            }
+        }
+        return sb.toString()
+    }
+
     private fun parseAttributes(attrString: String): Map<String, String> {
         if (attrString.isBlank()) return emptyMap()
         val result = mutableMapOf<String, String>()
@@ -391,7 +462,18 @@ class ToolParser {
             if (jsonEnd >= attrString.length || attrString[jsonEnd] != '"') return@forEach
 
             val key = keyMatch.groupValues[1].trim()
-            val jsonValue = attrString.substring(valueStart, jsonEnd)  // 含首尾花括号的完整 JSON 原文
+            val rawJsonValue = attrString.substring(valueStart, jsonEnd)  // 含首尾括号的原文（可能仍带标签层转义）
+            // P1 修复（批次4审查报告问题1，根因②的延伸）：
+            // rawJsonValue 是从 attrString 直接切出的原始子串，如果 LLM 输出的是「裸」JSON
+            // （标签属性值内部直接写未转义的 JSON，如 params="{"a":"b"}"），rawJsonValue 本身
+            // 就是合法 JSON 原文，不需要再处理；但如果 LLM 按规范做了「双重转义」（先转义 JSON
+            // 内部的引号，再对整个字符串转义一层给标签属性用，如 files_json 里
+            // content 含引号+换行时），rawJsonValue 里会残留 \\\" / \\n 这类标签层转义序列，
+            // 必须先用 unescapeAttrValue 还原一层，才能得到真正的 JSON 原文。
+            // 用 unescapeAttrValue 处理不会破坏「裸 JSON」场景：裸 JSON 内部没有 `\` 开头的
+            // 双字符序列（除非 JSON 值本身就含 \" 转义，这种情况下还原成 " 后仍是合法 JSON），
+            // 所以同一处理对两种输出习惯都能正确工作。
+            val jsonValue = unescapeAttrValue(rawJsonValue)
             if (key in result) {
                 com.zaijian.zhoumuyun.util.ZLog.w("ToolParser", "属性重复键 '$key'，已用后值覆盖前值（工具标签: ${attrString.take(80)}）")
             }
@@ -408,18 +490,164 @@ class ToolParser {
             // group(2) = 双引号内容，group(3) = 单引号内容，取非空那个
             val rawValue = if (match.groupValues[2].isNotEmpty() || match.groupValues[3].isEmpty())
                 match.groupValues[2] else match.groupValues[3]
-            val value = rawValue
-                .replace("\\\"", "\"")   // 还原转义双引号
-                .replace("\\'", "'")     // 还原转义单引号
-                .replace("\\n", "\n")    // 还原换行
-                .replace("\\t", "\t")    // 还原 tab
+            val value = unescapeAttrValue(rawValue)
             if (key in result) {
                 // 重复键：后出现的值覆盖前面的，记日志便于排查 LLM 输出问题
                 com.zaijian.zhoumuyun.util.ZLog.w("ToolParser", "属性重复键 '$key'，已用后值覆盖前值（工具标签: ${attrString.take(80)}）")
             }
             result[key] = value
         }
+
+        // P1 修复（批次3审查报告问题1，结构性修复）：
+        // 原方案（批次2引入）只在检测到疑似截断时打 warning 日志，截断本身仍会发生——
+        // translate/file_export/agent_message/soul_update/narrative_memory_update/
+        // user_impression_update 六个长文本工具因此无一幸免（批次3审查报告核心结论）。
+        //
+        // 现改为真正修正：对每个被 ATTR_PATTERN 误截断的自由文本属性（判定逻辑复用
+        // detectUnescapedQuoteTruncation 的"截断点之后是否像合法边界"），重新贪婪扫描——
+        // 从同一个 key=" 起点出发，把值一直扩展到"最后一个看起来像真实收尾"的裸引号，
+        // 而不是第一个裸引号就停。"看起来像真实收尾"定义为：该引号后紧跟（去空白后）
+        // 下一个 `key="`/`key='` 起点，或直接是 attrString 末尾（标签的 /> 之前）。
+        //
+        // 为什么这样安全：TAG_PATTERN 已经保证 attrString 是"一个完整标签内、/> 之前"的
+        // 内容，所以"某个裸引号 + 紧邻末尾或下一个属性"这个边界必然存在且可判定，
+        // 不会像单纯"贪婪到最后一个引号"那样吞掉本该属于下一个属性的内容——因为判定
+        // 条件同时要求引号之后紧跟属性名=的合法形状。对正常场景（值内本身没有裸引号）
+        // 完全不生效：该 key 根本不会进入 correctedKeys 集合。
+        // 已被 JSON 分支消费的 key 天然被排除（JSON 值内部裸引号是合法结构，不属于本修复范畴，
+        // 理由同批次2注释）。
+        val correctedKeys = mutableSetOf<String>()
+        KEY_EQUALS_QUOTE_PATTERN.findAll(attrString).forEach { keyMatch ->
+            val key = keyMatch.groupValues[1].trim()
+            if (jsonConsumedRanges.any { it.first <= keyMatch.range.first && keyMatch.range.last <= it.last }) {
+                return@forEach  // JSON 分支已处理，不参与修正
+            }
+            if (key !in result) return@forEach  // 未被 ATTR_PATTERN 捕获（如单引号变体），不在本修复范畴
+
+            val valueStart = keyMatch.range.last + 1
+            val fixedEnd = findGreedyQuoteEnd(attrString, valueStart)
+            if (fixedEnd < 0) return@forEach  // 找不到合法收尾边界，保留 ATTR_PATTERN 原结果
+
+            // fixedEnd 是收尾引号的下标；只有当它比 ATTR_PATTERN 原本认定的截断点更靠后时，
+            // 才说明原结果确实被误截断，需要用扩展后的值覆盖。
+            val originalTruncatedAt = findFirstUnescapedQuote(attrString, valueStart)
+            if (originalTruncatedAt < 0 || fixedEnd <= originalTruncatedAt) return@forEach
+
+            val rawValue = attrString.substring(valueStart, fixedEnd)
+            result[key] = unescapeAttrValue(rawValue)
+            correctedKeys.add(key)
+        }
+
+        // 保留原有 warning 检测：针对修正后仍判定为"疑似截断"的残余情况（如修正算法本身
+        // 找不到合法边界时）记录日志，方便定位。已修正的 key 显式跳过，避免对已经修好的
+        // 值重复告警——detectUnescapedQuoteTruncation 是基于 attrString 原文重新扫描，
+        // 与 result 是否已被修正无关，所以需要用 skipKeys 参数主动排除。
+        detectUnescapedQuoteTruncation(attrString, result, jsonConsumedRanges, skipKeys = correctedKeys)
+
         return result
+    }
+
+    /**
+     * 从 [searchFrom]（紧跟 key=" 之后）找到 ATTR_PATTERN 语义下的第一个未转义裸引号位置。
+     * 与 [ATTR_PATTERN] 的匹配语义保持一致，用于判断"原结果是否被截断"。
+     * @return 第一个未转义 " 的下标；未找到返回 -1（标签不完整）
+     */
+    private fun findFirstUnescapedQuote(text: String, searchFrom: Int): Int {
+        var i = searchFrom
+        val n = text.length
+        while (i < n) {
+            when (text[i]) {
+                '\\' -> i += 2
+                '"' -> return i
+                else -> i++
+            }
+        }
+        return -1
+    }
+
+    /**
+     * 从 [searchFrom] 开始贪婪查找"看起来像真实收尾"的裸引号：该引号（跳过转义序列后）
+     * 之后紧跟（去除空白后）一个合法的下一属性起点 `[a-z_][a-z0-9_]*=["']`，或该引号
+     * 就是 attrString 的最后一个字符（值一路到标签末尾）。
+     *
+     * 逐个候选裸引号从前往后检查，命中即返回——不是"最后一个引号"，而是"第一个满足
+     * 边界条件的引号"，因为一旦满足条件说明后面确实是下一个属性或标签结尾，再往后
+     * 找没有意义（且可能误吞下一个属性）。
+     *
+     * @return 收尾引号下标；找不到满足条件的候选时返回 -1
+     */
+    private fun findGreedyQuoteEnd(text: String, searchFrom: Int): Int {
+        var i = searchFrom
+        val n = text.length
+        val nextAttrRegex = Regex("""^[a-z_][a-z0-9_]*=["']""")
+        while (i < n) {
+            when (text[i]) {
+                '\\' -> i += 2
+                '"' -> {
+                    val after = text.substring(i + 1).trimStart()
+                    if (after.isEmpty() || nextAttrRegex.containsMatchIn(after)) {
+                        return i
+                    }
+                    i++  // 这个裸引号不是合法收尾，继续往后找下一个候选
+                }
+                else -> i++
+            }
+        }
+        return -1
+    }
+
+    /**
+     * 检测 attrString 中是否存在"值被未转义引号提前截断"的疑似情况，命中则记录 warning。
+     *
+     * 判定思路：对每个 `key="`，找到 ATTR_PATTERN 实际截断到的位置（第一个未转义 `"`）。
+     * 如果从该截断点开始往后看，剩余内容既不是空白/字符串结尾，也不是紧跟着下一个
+     * `key="` 或 `key='` 的合法属性起点，说明这段"剩余内容"很可能是被截断丢弃的原始
+     * 文本残留，而不是下一个属性——即触发了报告中描述的静默截断。
+     *
+     * JSON 分支（jsonConsumedRanges）已被排除：JSON 值内部的裸引号是合法结构，不属于本检测范畴。
+     */
+    private fun detectUnescapedQuoteTruncation(
+        attrString: String,
+        parsed: Map<String, String>,
+        jsonConsumedRanges: List<IntRange>,
+        skipKeys: Set<String> = emptySet(),
+    ) {
+        KEY_EQUALS_QUOTE_PATTERN.findAll(attrString).forEach { keyMatch ->
+            val key = keyMatch.groupValues[1].trim()
+            if (key !in parsed) return@forEach  // 该 key 未被 JSON 分支或 ATTR_PATTERN 捕获，跳过
+            if (key in skipKeys) return@forEach  // P1 结构性修复（批次3）：已被贪婪扫描修正，值已完整，跳过告警
+            if (jsonConsumedRanges.any { it.first <= keyMatch.range.first && keyMatch.range.last <= it.last }) {
+                return@forEach  // 该 key 是 JSON 分支处理的，值内部裸引号合法，跳过
+            }
+
+            val valueStart = keyMatch.range.last + 1
+            // 找到 ATTR_PATTERN 语义下这个值实际截断的位置：从 valueStart 开始，
+            // 跳过转义序列（\\ 后跟任意字符），遇到第一个裸 " 即为截断点。
+            var i = valueStart
+            val n = attrString.length
+            var truncatedAt = -1
+            while (i < n) {
+                when (attrString[i]) {
+                    '\\' -> i += 2
+                    '"' -> { truncatedAt = i; i = n }
+                    else -> i++
+                }
+            }
+            if (truncatedAt < 0) return@forEach  // 未找到闭合引号，属于标签不完整，非本检测范畴
+
+            val after = attrString.substring(truncatedAt + 1).trimStart()
+            val looksLikeNextAttrOrEnd = after.isEmpty() ||
+                Regex("""^[a-z_][a-z0-9_]*=["']""").containsMatchIn(after)
+
+            if (!looksLikeNextAttrOrEnd) {
+                com.zaijian.zhoumuyun.util.ZLog.w(
+                    "ToolParser",
+                    "疑似未转义引号导致属性值被截断：key='$key'，" +
+                        "截断后残留内容 '${after.take(40)}' 既非属性结尾也非下一个属性，" +
+                        "原始标签片段: ${attrString.take(120)}",
+                )
+            }
+        }
     }
 }
 

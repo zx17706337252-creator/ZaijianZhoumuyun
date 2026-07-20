@@ -62,9 +62,25 @@ class WorkflowStartTool(
             )
         }
 
+        // P2 修复（Batch5/Batch6审查报告问题9）：原实现直接把 characterId() 的返回值
+        // 传给 createJob，没有像 WorkbenchTaskTools 等角色绑定工具那样先校验
+        // charId < 0。App 启动阶段静态占位注册时 characterId() 可能仍是 -1
+        // （尚未被 ChatViewModel.init() 动态覆盖），此时调用会把 characterId=-1
+        // 静默写进 WorkflowJobEntity，后台 Worker 处理时角色上下文错误但不会报错。
+        // 现在提前拒绝，与 TaskStartTool 等工具的校验方式保持一致。
+        val charId = characterId()
+        if (charId < 0) {
+            return ToolResult(
+                toolName = name,
+                success = false,
+                content = "",
+                error = "角色未初始化",
+            )
+        }
+
         return try {
             val jobId = workflowRepository.createJob(
-                characterId = characterId(),
+                characterId = charId,
                 goal = goal,
             )
             WorkManagerScheduler.enqueueWorkflow(context, jobId)

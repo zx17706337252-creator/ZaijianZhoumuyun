@@ -19,7 +19,15 @@ class GitCommitPushTool(
 ) : AgentTool {
 
     override val name = "git_commit_push"
-    override val description = "把文件内容提交并推送到GitHub仓库指定分支"
+    // P0/P1 修复（批次4审查报告问题1，根因③）：原 description 完全没说 files_json
+    // 该怎么写，LLM 自然会输出「裸」JSON 数组（files_json="[{"path":...}]"），过去在
+    // ToolParser 里会被第一个内引号截断。现 ToolParser 的 findBalancedJsonEnd 已支持
+    // `[` 数组配平，裸 JSON 数组可以直接开箱使用，这里补充说明让 LLM 知道两种写法都
+    // 支持、优先推荐裸写法（不需要手动转义，最不容易出错）。
+    override val description = "把文件内容提交并推送到GitHub仓库指定分支。" +
+        "files_json 是文件列表的 JSON 数组，每个元素含 path 和 content 两个字段，" +
+        "例如 files_json=\"[{\"path\":\"a.txt\",\"content\":\"文件内容\"}]\"；" +
+        "直接这样写裸 JSON 即可，不需要额外转义，工具会自动识别并解析"
     override val paramKeys = listOf("message", "files_json", "branch")
 
     private companion object {
@@ -52,6 +60,11 @@ class GitCommitPushTool(
             val files: List<FileToCommit>
             try {
                 files = parseFilesJson(filesJson)
+            } catch (e: FilesJsonParseException) {
+                // P1 修复（批次4审查报告问题1，根因③）：原来统一报「files_json 格式错误」，
+                // 对 LLM/用户毫无诊断价值，看不出是哪个文件、哪个字段出的问题。
+                // 现在区分「整体不是合法 JSON 数组」和「第 N 个元素缺字段」两类，给出具体定位。
+                return@withContext ToolResult(name, false, "", e.message)
             } catch (e: Exception) {
                 return@withContext ToolResult(name, false, "", "files_json 格式错误：${e.message?.take(80)}")
             }
@@ -79,14 +92,33 @@ class GitCommitPushTool(
             }
         }
 
-    private fun parseFilesJson(json: String): List<FileToCommit> {
-        val arr = org.json.JSONArray(json)
+    private class FilesJsonParseException(message: String) : Exception(message)
+
+    /**
+     * P1 修复（批次4审查报告问题1）：暴露为非 private，便于 cicd_start.execute() 复用
+     * 同一套解析逻辑做入口前置校验（见问题2修复），避免两处实现漂移。
+     */
+    internal fun parseFilesJson(json: String): List<FileToCommit> {
+        val arr = try {
+            org.json.JSONArray(json)
+        } catch (e: Exception) {
+            throw FilesJsonParseException("files_json 不是合法的 JSON 数组：${e.message?.take(80)}")
+        }
         return (0 until arr.length()).map { i ->
-            val obj = arr.getJSONObject(i)
-            FileToCommit(
-                path    = obj.getString("path"),
-                content = obj.getString("content"),
-            )
+            val obj = try {
+                arr.getJSONObject(i)
+            } catch (e: Exception) {
+                throw FilesJsonParseException("files_json 第 ${i + 1} 个元素不是合法的 JSON 对象")
+            }
+            val path = if (obj.has("path")) obj.optString("path") else null
+            val content = if (obj.has("content")) obj.optString("content") else null
+            if (path.isNullOrBlank()) {
+                throw FilesJsonParseException("files_json 第 ${i + 1} 个元素缺少 path 字段")
+            }
+            if (content == null) {
+                throw FilesJsonParseException("files_json 第 ${i + 1} 个元素（path=$path）缺少 content 字段")
+            }
+            FileToCommit(path = path, content = content)
         }
     }
 

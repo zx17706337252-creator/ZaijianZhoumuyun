@@ -13,7 +13,13 @@ class CreateGithubRepoTool(
 ) : AgentTool {
 
     override val name = "create_github_repo"
-    override val description = "在GitHub上创建一个新仓库（可设为私有/自动初始化）"
+    // P0/P1 修复（批次4审查报告问题1/2）：原 description 没说 private/auto_init
+    // 只认 "true"，LLM 自然会填 yes/1/y 等常见布尔写法，静默创建公开仓库
+    // （不可逆操作）。现补充明确取值范围。
+    override val description = "在GitHub上创建一个新仓库（可设为私有/自动初始化）。" +
+        "private 和 auto_init 只接受 true 或 false（不区分大小写）；" +
+        "private 不填时默认私有（true），因为创建仓库不可逆，宁可默认保守；" +
+        "写其它值（如 yes/1）会返回错误而不是静默当作 false，请明确使用 true/false"
     override val paramKeys = listOf("name", "description", "private", "auto_init")
 
     override suspend fun execute(params: Map<String, String>): ToolResult =
@@ -33,8 +39,36 @@ class CreateGithubRepoTool(
             }
 
             val description = params["description"]?.trim() ?: ""
-            val isPrivate   = params["private"]?.lowercase() == "true"
-            val autoInit    = params["auto_init"]?.lowercase() == "true"
+
+            // P0 修复（批次4审查报告问题1，最严重的一条）：
+            // 原逻辑 `params["private"]?.lowercase() == "true"` 对任何非精确 "true"
+            // 的取值（"yes"/"1"/"Y" 等 LLM 很自然会写的布尔表达）一律静默当 false，
+            // 即"未声明私有"→默认公开创建。仓库一旦在 GitHub 上公开创建，撤销需要
+            // 手动删除，属于不可逆副作用，静默降级为公开是不可接受的。
+            // 现在改为：① 不传 private 时默认 true（私有）——不可逆操作宁可默认保守；
+            // ② 传了但无法识别成 true/false 的值，直接返回明确错误，不再悄悄当 false。
+            val rawPrivate = params["private"]?.trim()?.lowercase()
+            val isPrivate: Boolean = when (rawPrivate) {
+                null, "" -> true  // 未提供：默认私有，而不是默认公开
+                "true" -> true
+                "false" -> false
+                else -> return@withContext ToolResult(
+                    name, false, "",
+                    "private 参数值 \"${params["private"]}\" 无法识别，请使用 true 或 false" +
+                        "（为避免误建公开仓库，此参数不接受 yes/1 等其它写法）",
+                )
+            }
+
+            val rawAutoInit = params["auto_init"]?.trim()?.lowercase()
+            val autoInit: Boolean = when (rawAutoInit) {
+                null, "" -> false
+                "true" -> true
+                "false" -> false
+                else -> return@withContext ToolResult(
+                    name, false, "",
+                    "auto_init 参数值 \"${params["auto_init"]}\" 无法识别，请使用 true 或 false",
+                )
+            }
 
             try {
                 val url = "https://api.github.com/user/repos"

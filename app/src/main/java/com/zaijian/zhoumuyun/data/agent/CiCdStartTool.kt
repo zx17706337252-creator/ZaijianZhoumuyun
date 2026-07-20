@@ -25,7 +25,14 @@ class CiCdStartTool(
 ) : AgentTool {
 
     override val name = "cicd_start"
-    override val description = "一键启动完整CI/CD流水线（提交代码→触发构建→轮询状态），可选先创建新仓库"
+    // P0/P1 修复（批次4审查报告 cicd_start 问题1/2，根因③）：原 description 没说
+    // files_json 格式、build_type 只接受 release/debug、create_repo 只认 "true"，
+    // 现补充说明，从源头减少 LLM 输出不合规值的概率。
+    override val description = "一键启动完整CI/CD流水线（提交代码→触发构建→轮询状态），可选先创建新仓库。" +
+        "files_json 是文件列表 JSON 数组（格式同 git_commit_push，例如 " +
+        "files_json=\"[{\"path\":\"a.txt\",\"content\":\"文件内容\"}]\"）；" +
+        "build_type 只接受 release 或 debug（默认 debug）；" +
+        "create_repo 只接受 true 或 false（默认 false，其它值一律视为 false 并返回警告）"
     override val paramKeys = listOf("files_json", "message", "branch", "build_type", "create_repo", "repo_name")
 
     override suspend fun execute(params: Map<String, String>): ToolResult {
@@ -39,11 +46,57 @@ class CiCdStartTool(
             return ToolResult(name, false, "", "缺少 message 参数（commit 信息）")
         }
 
-        val branch    = params["branch"]?.trim().takeIf { !it.isNullOrBlank() } ?: "main"
-        val buildType = params["build_type"]?.trim()?.lowercase().let {
-            if (it == "release") "release" else "debug"
+        // P0 修复（批次4审查报告 cicd_start 问题1，最严重的一条）：
+        // 原逻辑只检查 filesJson 非空，从不实际解析它，直接把原始字符串塞进
+        // WorkManager Data 并立即返回 success；真正的 JSON 解析被推迟到
+        // CiCdPipelineWorker 后台执行。于是 files_json 格式错误（裸数组截断、
+        // 转义错误等）会一路"绿灯"到后台，execute() 却已经告诉用户"已开始
+        // 后台流水线"——用户以为正在编译，实际上流水线在后台早已注定失败。
+        // 这是本次审查里最坏的失败模式：不可逆副作用（一旦真正提交/编译触发）
+        // + execute 返回 success + 后台静默失败。
+        // 现在入口处同步复用 GitCommitPushTool 的 parseFilesJson 做一次真实解析，
+        // 解析失败直接返回 error，不再 enqueue Worker；解析成功也不重复利用
+        // 结果（Worker 内部仍会走一遍完整流程，这里只是前置校验，避免创建一个
+        // 注定失败的后台任务）。
+        try {
+            val parsed = GitCommitPushTool(githubConfigStore).parseFilesJson(filesJson)
+            if (parsed.isEmpty()) {
+                return ToolResult(name, false, "", "files_json 中没有有效的文件条目")
+            }
+        } catch (e: Exception) {
+            return ToolResult(name, false, "", "files_json 格式错误，流水线未启动：${e.message?.take(120)}")
         }
-        val createRepo = params["create_repo"]?.trim()?.lowercase() == "true"
+
+        val branch = params["branch"]?.trim().takeIf { !it.isNullOrBlank() } ?: "main"
+
+        // P2 修复（批次4审查报告 cicd_start 问题2）：原逻辑对不认识的 build_type/
+        // create_repo 取值静默降级（"apk" 静默变 "debug"，"yes" 静默变 false 导致
+        // 跳过建仓步骤），LLM 和用户都不会发现值没有被采纳。现在记录明确警告文案，
+        // 附加到最终返回结果里，让降级"可见"，同时仍然保留一个可用的默认值兜底
+        // （不因为枚举值写错就整体失败，只是把偏差告诉调用方）。
+        val warnings = mutableListOf<String>()
+
+        val rawBuildType = params["build_type"]?.trim()?.lowercase()
+        val buildType = when (rawBuildType) {
+            null, "" -> "debug"
+            "release" -> "release"
+            "debug" -> "debug"
+            else -> {
+                warnings.add("build_type=\"${params["build_type"]}\" 不是 release/debug，已按 debug 处理")
+                "debug"
+            }
+        }
+
+        val rawCreateRepo = params["create_repo"]?.trim()?.lowercase()
+        val createRepo = when (rawCreateRepo) {
+            null, "" -> false
+            "true" -> true
+            "false" -> false
+            else -> {
+                warnings.add("create_repo=\"${params["create_repo"]}\" 不是 true/false，已按 false（不建仓）处理")
+                false
+            }
+        }
         val repoName   = params["repo_name"]?.trim() ?: ""
 
         return try {
@@ -90,10 +143,11 @@ class CiCdStartTool(
                 request,
             )
 
+            val warningSuffix = if (warnings.isNotEmpty()) "\n⚠️ " + warnings.joinToString("；") else ""
             ToolResult(
                 toolName = name,
                 success  = true,
-                content  = "已开始后台流水线：提交代码 → 触发编译 → 下载 APK，完成后会通知你。",
+                content  = "已开始后台流水线：提交代码 → 触发编译 → 下载 APK，完成后会通知你。$warningSuffix",
                 userHint = "正在启动编译流水线…",
             )
         } catch (e: Exception) {

@@ -24,8 +24,10 @@ import java.io.File
  * 参数说明：
  *   title   清单标题（必填）
  *   items   条目列表，英文逗号分隔（必填）。
- *           若某一条目本身需要包含逗号，请用双引号包裹该条目，如：
- *           items=正常条目,"含逗号,的条目",另一条目
+ *           若某一条目本身需要包含逗号，请用转义双引号包裹该条目，如（注意标签本身要求
+ *           整个 items 值外层也是双引号，内层引号必须写成 \" 转义，否则会在第一个裸 "
+ *           处被截断丢失后续条目）：
+ *           items="正常条目,\"含逗号,的条目\",另一条目"
  *
  * 注意：此工具会覆盖整个清单文件，用于初始化或重置。
  * 如需单条修改，请使用 heartbeat_update。
@@ -36,7 +38,13 @@ class HeartbeatSetTool(
 ) : AgentTool {
 
     override val name = "heartbeat_set"
-    override val description = "整体写入/覆盖角色的心跳自检清单（定期检查项列表）"
+    // P1 修复（批次2审查报告问题1/2）：原 description 只有一句话，LLM 看不到 items 的
+    // 分隔/转义约定，容易在条目内写未转义引号导致 ToolParser 静默截断（见 ToolParser.kt
+    // detectUnescapedQuoteTruncation 的说明）。补充格式与转义示例，给 LLM 可直接照抄的写法。
+    override val description = "整体写入/覆盖角色的心跳自检清单（定期检查项列表）。" +
+        "items 用英文逗号分隔多个条目；若某条目本身含逗号或引号，" +
+        "整个条目要用转义双引号包裹，例如 items=\"正常条目,\\\"含逗号,的条目\\\",另一条目\""
+
     override val paramKeys = listOf("title", "items")
 
     private companion object {

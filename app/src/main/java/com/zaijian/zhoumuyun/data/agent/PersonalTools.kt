@@ -198,8 +198,14 @@ class ReminderTool(
 
     /**
      * 解析 date+time 字符串为毫秒时间戳。
-     * 支持 "HH:mm" / "HH时mm分" 时间格式，日期支持 "MM-dd" / "MM月dd日"。
+     * 支持 "HH:mm" / "HH时mm分" 时间格式，日期支持 "yyyy-MM-dd" / "MM-dd" / "MM月dd日"。
      * 无法解析时返回 fallback（创建时间 + 1 小时）。
+     *
+     * P3审查批次2修复：原正则 (\d{1,2})[-月](\d{1,2}) 在处理 ISO 格式
+     * "yyyy-MM-dd"（如 "2026-07-20"）时会从字符串中段误匹配到 "26-07"，
+     * 导致 month=26 越界，Calendar 溢出为约 1.5 年后的错误日期，
+     * 提醒在错误时间静默触发。现优先匹配完整的 yyyy-MM-dd 格式，
+     * 匹配不到再回退到原有的 MM-dd / MM月dd日 格式。
      */
     private fun parseTriggerTime(date: String, time: String, fallback: Long): Long {
         return try {
@@ -212,11 +218,19 @@ class ReminderTool(
                 cal.set(Calendar.SECOND, 0)
                 cal.set(Calendar.MILLISECOND, 0)
             }
-            // 解析日期（MM-dd 或 MM月dd日）
-            val dateMatch = Regex("(\\d{1,2})[-月](\\d{1,2})").find(date)
-            if (dateMatch != null) {
-                cal.set(Calendar.MONTH,       dateMatch.groupValues[1].toInt() - 1)
-                cal.set(Calendar.DAY_OF_MONTH, dateMatch.groupValues[2].toInt())
+            // 解析日期：优先匹配 yyyy-MM-dd（LLM 最常生成的格式），
+            // 匹配不到再回退匹配 MM-dd 或 MM月dd日
+            val isoDateMatch = Regex("(\\d{4})-(\\d{1,2})-(\\d{1,2})").find(date)
+            if (isoDateMatch != null) {
+                cal.set(Calendar.YEAR,        isoDateMatch.groupValues[1].toInt())
+                cal.set(Calendar.MONTH,       isoDateMatch.groupValues[2].toInt() - 1)
+                cal.set(Calendar.DAY_OF_MONTH, isoDateMatch.groupValues[3].toInt())
+            } else {
+                val dateMatch = Regex("(\\d{1,2})[-月](\\d{1,2})").find(date)
+                if (dateMatch != null) {
+                    cal.set(Calendar.MONTH,       dateMatch.groupValues[1].toInt() - 1)
+                    cal.set(Calendar.DAY_OF_MONTH, dateMatch.groupValues[2].toInt())
+                }
             }
             val ts = cal.timeInMillis
             // 批次4-2-4 修复：原先条件 dateMatch == null 导致指定日期已过去时
@@ -284,8 +298,12 @@ class ClipboardWriteTool(private val context: Context) : AgentTool {
     override val paramKeys = listOf("text")
 
     override suspend fun execute(params: Map<String, String>): ToolResult {
+        // P3 修复（P2批次3审查报告问题E）：原实现用 isNullOrEmpty() 而非 isNullOrBlank()，
+        // text="   "（纯空白）能通过校验，被原样写入系统剪贴板——用户大概率不想要
+        // 剪贴板里塞几个空格。改用 isNullOrBlank() 提前拦截，同时保留原始 text（未 trim）
+        // 用于写入，避免误伤用户特意想复制的、带首尾空格的内容（只拦截"全是空白"的情况）。
         val text = params["text"]
-        if (text.isNullOrEmpty()) {
+        if (text.isNullOrBlank()) {
             return ToolResult(name, false, "", "缺少 text 参数")
         }
 
