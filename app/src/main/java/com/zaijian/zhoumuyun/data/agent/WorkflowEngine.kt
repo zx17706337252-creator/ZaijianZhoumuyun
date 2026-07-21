@@ -558,7 +558,7 @@ object WorkflowEngine {
         characterId: Int,
         jobId: String,
         toolName: String?,
-        toolParamsJson: String?,
+        toolParamsJson: String,
         success: Boolean,
         output: String?,
         errorMessage: String?,

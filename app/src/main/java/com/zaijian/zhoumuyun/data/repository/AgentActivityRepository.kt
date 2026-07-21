@@ -62,8 +62,10 @@ class AgentActivityRepository(
         const val TIMEOUT = "timeout"
     }
 
-    /** outputSummary 截断上限（方案 2.2.2：建议≤300字）。 */
-    private const val SUMMARY_MAX_CHARS = 300
+    companion object {
+        /** outputSummary 截断上限（方案 2.2.2：建议≤300字）。 */
+        private const val SUMMARY_MAX_CHARS = 300
+    }
 
     // ── 写入 ──────────────────────────────────────────────────────────────
 

@@ -92,8 +92,8 @@ android {
     // 默认跟随运行 Gradle 的 JDK 版本，与上面 compileOptions 显式指定的 Java 11
     // 不一致，导致 compileReleaseJavaWithJavac(11) 与 kspReleaseKotlin(21) 冲突。
     // 显式把 Kotlin 编译目标也钉在 11，与 Java 侧保持一致。
-    // 【2026-07-21】kotlinOptions 已弃用，迁至 compilerOptions DSL
-
+    // 迁移说明：旧版 `kotlinOptions { jvmTarget = "11" }` 已弃用，改用
+    // Kotlin Gradle Plugin 的 compilerOptions DSL（见下方顶层 kotlin {} 块）。
 
     packaging {
         resources {
@@ -115,6 +115,9 @@ android {
     }
 }
 
+// 迁移说明：替代已弃用的 `android { kotlinOptions { jvmTarget = "11" } }` 写法。
+// 与上方 compileOptions 的 Java 11 保持一致，避免 compileReleaseJavaWithJavac(11)
+// 与 kspReleaseKotlin 的 JDK 版本不一致导致的编译目标冲突。
 kotlin {
     compilerOptions {
         jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_11)

@@ -1,5 +1,6 @@
 package com.zaijian.zhoumuyun.ui.screen.filepreview
 
+import androidx.compose.material3.ExperimentalMaterial3Api
 import android.content.Intent
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -39,6 +40,7 @@ import java.net.URLEncoder
  * @param viewModel
  * @param onBack 返回回调
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FilePreviewEditorScreen(
     encodedPath: String,
