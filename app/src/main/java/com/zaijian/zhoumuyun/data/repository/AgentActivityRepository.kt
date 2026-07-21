@@ -65,6 +65,8 @@ class AgentActivityRepository(
     companion object {
         /** outputSummary 截断上限（方案 2.2.2：建议≤300字）。 */
         private const val SUMMARY_MAX_CHARS = 300
+        const val SOURCE_ACTIVITY = "activity"
+        const val SOURCE_WORKFLOW_STEP = "workflow_step"
     }
 
     // ── 写入 ──────────────────────────────────────────────────────────────
@@ -200,10 +202,6 @@ class AgentActivityRepository(
             sessionRef = jobId,
         )
 
-    private companion object {
-        const val SOURCE_ACTIVITY = "activity"
-        const val SOURCE_WORKFLOW_STEP = "workflow_step"
-    }
 }
 
 /**
