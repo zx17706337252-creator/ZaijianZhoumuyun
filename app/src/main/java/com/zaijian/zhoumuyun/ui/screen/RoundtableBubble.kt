@@ -393,6 +393,20 @@ internal fun BotBubble(
                     onOpen      = { onOpenFile(ef) },
                 )
             }
+
+            // v67（表格直传 W4）：table_export 产出的表格卡片（与私聊 MessageBubble 同款接入）。
+            // >500 行场景从 payload.exportedFileMetaJson 解析 xlsx 文件元信息走 onOpenFile。
+            msg.tablePayload?.let { payload ->
+                val excelFile = payload.exportedFileMetaJson?.let { metaJson ->
+                    com.zaijian.zhoumuyun.ui.viewmodel.parseExportedFilesWithFallback(null, metaJson).firstOrNull()
+                }
+                com.zaijian.zhoumuyun.ui.screen.chat.TableCard(
+                    payload     = payload,
+                    accentColor = accentColor,
+                    maxWidth    = maxW,
+                    onOpenExcel = excelFile?.let { ef -> { onOpenFile(ef) } },
+                )
+            }
         }
     }
 }

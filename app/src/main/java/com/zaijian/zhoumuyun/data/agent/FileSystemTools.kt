@@ -93,6 +93,153 @@ internal fun resolveFileSystemPath(context: Context, path: String): File? {
 }
 
 // ─────────────────────────────────────────────────────────────
+//  v147：保险库权限校验层
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * [resolveVaultPath] 的解析结果。
+ */
+internal sealed class VaultPathResolution {
+    /** 放行，附带解析后的 [File]。 */
+    data class Allowed(val file: File) : VaultPathResolution()
+    /** 拒绝，附带人读原因（会进 ToolResult.error 回显给 LLM/用户）。 */
+    data class Denied(val reason: String) : VaultPathResolution()
+}
+
+/**
+ * 在 [resolveFileSystemPath] 基础上叠加保险库三段权限校验。
+ *
+ * 身份来源（v147 验收返工：协程局部化）：
+ * 通过 [currentVaultContext] 读取，优先取协程上下文中的 [VaultCallContextElement]
+ * （并发安全，每条 streamWithTools 调用链路独立），回退到 [VaultCallContextHolder]。
+ * [characterIdProvider] 仅作显式覆盖（单测传入时用），生产路径走协程上下文。
+ *
+ * 校验规则（设计方案 3.3 权限矩阵）：
+ * - 路径**不在** vault/ 下（如 notes/、personal_schedule/、cacheDir 下文件）：
+ *   直接放行，沿用原 [resolveFileSystemPath] 行为——这些是非保险库路径，不受
+ *   角色权限约束，避免把已有非保险库文件操作打挂。
+ * - 路径**在** vault/ 下，按段校验：
+ *   · `personal/{X}/`：X 必须等于当前角色，否则拒绝
+ *     （角色不能越权碰别的角色私库）。
+ *   · `shared/roundtable/{X}/`：仅当当前作用域=ROUNDTABLE 且 roundtableId==X
+ *     时放行（只允许该圆桌参与者访问该圆桌共享区）。
+ *   · `shared/project/`：所有角色可读写，放行。
+ *   · 结构性根目录（vault 根、personal、shared、shared/roundtable、shared/project、
+ *     personal/{X}、shared/roundtable/{X}）：删除类操作（[isDelete]=true）拒绝，
+ *     避免角色清空共享区/拆掉结构性目录（设计方案"不能清空共享区"约束）。
+ *
+ * @param isDelete 是否为删除语义（folder_delete/file_delete，以及 file_rename 的源端）。
+ *   删除语义下，对结构性根目录一律拒绝。
+ */
+internal suspend fun resolveVaultPath(
+    context: Context,
+    path: String,
+    characterIdProvider: () -> Int = { VaultCallContextHolder.get().characterId },
+    isDelete: Boolean = false,
+): VaultPathResolution {
+    val file = resolveFileSystemPath(context, path)
+        ?: return VaultPathResolution.Denied("路径超出允许范围")
+
+    val ctx = currentVaultContext()
+    // 协程上下文优先（并发安全）；characterIdProvider 仅在协程上下文未设置时回退
+    val effectiveCharacterId = if (ctx.characterId >= 0) ctx.characterId else characterIdProvider()
+    return decideVaultPermission(
+        file          = file,
+        vault         = vaultRoot(context),
+        characterId   = effectiveCharacterId,
+        scope         = ctx.scope,
+        roundtableId  = ctx.roundtableId,
+        isDelete      = isDelete,
+    )
+}
+
+/**
+ * 纯权限判定函数（不依赖 Android [Context]，只接收 [File] 与身份参数）——
+ * 抽出来是为了可单测：用临时目录构造 vault 结构即可覆盖全部权限分支，
+ * 无需 Robolectric/Instrumented 测试环境。
+ *
+ * 语义与 [resolveVaultPath] 一致，详见其文档。
+ */
+internal fun decideVaultPermission(
+    file: File,
+    vault: File,
+    characterId: Int,
+    scope: VaultScope,
+    roundtableId: String?,
+    isDelete: Boolean,
+): VaultPathResolution {
+    val vaultCanonical = vault.canonicalPath
+    val fileCanonical = file.canonicalPath
+
+    // 不在 vault/ 下：非保险库路径，放行
+    if (fileCanonical != vaultCanonical && !fileCanonical.startsWith(vaultCanonical + File.separator)) {
+        return VaultPathResolution.Allowed(file)
+    }
+
+    // 在 vault/ 下：解析相对 vault 根的路径段
+    val rel = if (fileCanonical == vaultCanonical) ""
+              else fileCanonical.removePrefix(vaultCanonical + File.separator)
+    val segments = rel.split(File.separator).filter { it.isNotEmpty() }
+
+    // segments 为空 = vault 根本身
+    if (segments.isEmpty()) {
+        return if (isDelete) VaultPathResolution.Denied("不允许删除保险库根目录")
+               else VaultPathResolution.Allowed(file)
+    }
+
+    return when (segments[0]) {
+        "personal" -> {
+            if (segments.size < 2) {
+                if (isDelete) VaultPathResolution.Denied("不允许删除 personal 结构目录")
+                else VaultPathResolution.Allowed(file)
+            } else {
+                val owner = segments[1].toIntOrNull()
+                    ?: return VaultPathResolution.Denied("路径非法：personal 段不是数字 ID")
+                if (owner != characterId) {
+                    VaultPathResolution.Denied("无权访问角色 $owner 的私库（当前角色 $characterId）")
+                } else if (isDelete && segments.size == 2) {
+                    VaultPathResolution.Denied("不允许删除私库根目录 personal/$owner")
+                } else {
+                    VaultPathResolution.Allowed(file)
+                }
+            }
+        }
+        "shared" -> {
+            if (segments.size < 2) {
+                if (isDelete) VaultPathResolution.Denied("不允许删除 shared 结构目录")
+                else VaultPathResolution.Allowed(file)
+            } else when (segments[1]) {
+                "roundtable" -> {
+                    if (segments.size < 3) {
+                        if (isDelete) VaultPathResolution.Denied("不允许删除 roundtable 共享根目录")
+                        else VaultPathResolution.Allowed(file)
+                    } else {
+                        val rtId = segments[2]
+                        if (scope != VaultScope.ROUNDTABLE ||
+                            roundtableId == null || roundtableId != rtId) {
+                            VaultPathResolution.Denied("无权访问圆桌 $rtId 的共享区（当前非该圆桌参与者）")
+                        } else if (isDelete && segments.size == 3) {
+                            VaultPathResolution.Denied("不允许删除圆桌共享根目录 shared/roundtable/$rtId")
+                        } else {
+                            VaultPathResolution.Allowed(file)
+                        }
+                    }
+                }
+                "project" -> {
+                    if (isDelete && segments.size == 2) {
+                        VaultPathResolution.Denied("不允许删除项目共享根目录 shared/project")
+                    } else {
+                        VaultPathResolution.Allowed(file)
+                    }
+                }
+                else -> VaultPathResolution.Denied("未知的共享目录段：${segments[1]}")
+            }
+        }
+        else -> VaultPathResolution.Denied("未知的保险库目录段：${segments[0]}")
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
 //  ① FolderCreateTool
 // ─────────────────────────────────────────────────────────────
 
@@ -107,7 +254,10 @@ internal fun resolveFileSystemPath(context: Context, path: String): File? {
  * - 路径已存在且是文件夹：视为成功（幂等），不报错，提示"文件夹已存在"。
  * - 路径已存在但是文件（非文件夹）：返回失败，避免覆盖用户已有文件。
  */
-class FolderCreateTool(private val context: Context) : AgentTool {
+class FolderCreateTool(
+    private val context: Context,
+    private val characterIdProvider: () -> Int = { VaultCallContextHolder.get().characterId },
+) : AgentTool {
 
     override val name = "folder_create"
     override val description = "创建文件夹（支持多级路径一次性创建），路径已存在则视为成功"
@@ -122,8 +272,11 @@ class FolderCreateTool(private val context: Context) : AgentTool {
             return@withContext ToolResult(name, false, "无法创建该路径。", "路径包含非法字符")
         }
 
-        val folder = resolveFileSystemPath(context, path)
-            ?: return@withContext ToolResult(name, false, "无法创建该路径。", "路径超出允许范围")
+        // v147：路径解析改用 resolveVaultPath，叠加保险库三段权限校验。
+        val folder = when (val r = resolveVaultPath(context, path, characterIdProvider)) {
+            is VaultPathResolution.Allowed -> r.file
+            is VaultPathResolution.Denied -> return@withContext ToolResult(name, false, "无法创建该路径。", r.reason)
+        }
 
         try {
             if (folder.exists()) {
@@ -174,7 +327,10 @@ class FolderCreateTool(private val context: Context) : AgentTool {
  * - 路径不存在：返回失败但 success 标记需调用方判断是否当作"已经不存在=目标达成"，
  *   这里统一按"找不到就是失败"处理，避免静默吞掉用户预期之外的情况。
  */
-class FolderDeleteTool(private val context: Context) : AgentTool {
+class FolderDeleteTool(
+    private val context: Context,
+    private val characterIdProvider: () -> Int = { VaultCallContextHolder.get().characterId },
+) : AgentTool {
 
     override val name = "folder_delete"
     override val description = "删除文件夹，默认非空拒绝删除，recursive=true才递归删除且不可恢复"
@@ -190,8 +346,11 @@ class FolderDeleteTool(private val context: Context) : AgentTool {
         }
         val recursive = params["recursive"]?.trim()?.lowercase() == "true"
 
-        val folder = resolveFileSystemPath(context, path)
-            ?: return@withContext ToolResult(name, false, "无法删除该路径。", "路径超出允许范围")
+        // v147：删除语义 isDelete=true，禁止删除结构性根目录（不能清空共享区/私库根）。
+        val folder = when (val r = resolveVaultPath(context, path, characterIdProvider, isDelete = true)) {
+            is VaultPathResolution.Allowed -> r.file
+            is VaultPathResolution.Denied -> return@withContext ToolResult(name, false, "无法删除该路径。", r.reason)
+        }
 
         try {
             if (!folder.exists()) {
@@ -244,7 +403,10 @@ class FolderDeleteTool(private val context: Context) : AgentTool {
  *   重命名/移动到一个新分类文件夹，不应该因为目录不存在而失败）。
  * - "to" 路径已存在：拒绝覆盖，返回失败提示，不静默覆盖用户数据。
  */
-class FileRenameTool(private val context: Context) : AgentTool {
+class FileRenameTool(
+    private val context: Context,
+    private val characterIdProvider: () -> Int = { VaultCallContextHolder.get().characterId },
+) : AgentTool {
 
     override val name = "file_rename"
     override val description = "重命名或移动文件/文件夹，目标路径已存在时拒绝覆盖"
@@ -260,10 +422,16 @@ class FileRenameTool(private val context: Context) : AgentTool {
             return@withContext ToolResult(name, false, "无法重命名该路径。", "路径包含非法字符")
         }
 
-        val source = resolveFileSystemPath(context, from)
-            ?: return@withContext ToolResult(name, false, "无法重命名该路径。", "源路径超出允许范围")
-        val target = resolveFileSystemPath(context, to)
-            ?: return@withContext ToolResult(name, false, "无法重命名该路径。", "目标路径超出允许范围")
+        // v147：源端按删除语义校验（移动会从源位置移除），目标端按写入语义校验。
+        // 两端都必须在当前角色可见的保险库范围内——禁止把别人私库的文件搬到自己私库。
+        val source = when (val r = resolveVaultPath(context, from, characterIdProvider, isDelete = true)) {
+            is VaultPathResolution.Allowed -> r.file
+            is VaultPathResolution.Denied -> return@withContext ToolResult(name, false, "无法重命名该路径。", "源路径：${r.reason}")
+        }
+        val target = when (val r = resolveVaultPath(context, to, characterIdProvider, isDelete = false)) {
+            is VaultPathResolution.Allowed -> r.file
+            is VaultPathResolution.Denied -> return@withContext ToolResult(name, false, "无法重命名该路径。", "目标路径：${r.reason}")
+        }
 
         try {
             if (!source.exists()) {
@@ -317,7 +485,10 @@ class FileRenameTool(private val context: Context) : AgentTool {
  * - 仅支持纯文本文件（与 FileReadTool 的 ZIP_TEXT_EXTENSIONS 思路一致），
  *   不处理二进制文件，避免把图片/zip 等文件写坏。
  */
-class FileEditTool(private val context: Context) : AgentTool {
+class FileEditTool(
+    private val context: Context,
+    private val characterIdProvider: () -> Int = { VaultCallContextHolder.get().characterId },
+) : AgentTool {
 
     override val name = "file_edit"
     override val description = "编辑已存在文件的内容（整体覆盖/追加/查找替换三种模式）"
@@ -348,8 +519,11 @@ class FileEditTool(private val context: Context) : AgentTool {
             return@withContext ToolResult(name, false, "不支持的 mode「$mode」，请使用 overwrite / append / replace。")
         }
 
-        val file = resolveFileSystemPath(context, path)
-            ?: return@withContext ToolResult(name, false, "无法编辑该路径。", "路径超出允许范围")
+        // v147：编辑走 resolveVaultPath 权限校验（角色不能编辑别人私库的文件）。
+        val file = when (val r = resolveVaultPath(context, path, characterIdProvider)) {
+            is VaultPathResolution.Allowed -> r.file
+            is VaultPathResolution.Denied -> return@withContext ToolResult(name, false, "无法编辑该路径。", r.reason)
+        }
 
         try {
             when (mode) {
@@ -389,7 +563,10 @@ class FileEditTool(private val context: Context) : AgentTool {
                     if (!file.isFile) {
                         return@withContext ToolResult(name, false, "「$path」是一个目录，无法编辑。")
                     }
-                    val original = file.readText(Charsets.UTF_8)
+                    // v147+ CSV 乱码修复：读取时自动检测编码，写入时统一用 UTF-8
+                    // （避免把 GBK 文件改回去又写回 GBK 导致其他工具读不了）
+                    val readCharset = com.zaijian.zhoumuyun.data.agent.detectFileCharset(file)
+                    val original = file.readText(readCharset)
                     if (!original.contains(find)) {
                         return@withContext ToolResult(
                             name, false, "在「$path」中未找到要替换的内容，未做任何修改。",
@@ -424,7 +601,10 @@ class FileEditTool(private val context: Context) : AgentTool {
  * - 只删除文件，不删除目录（目录请用 folder_delete）。
  * - 路径不存在：返回失败。
  */
-class FileDeleteTool(private val context: Context) : AgentTool {
+class FileDeleteTool(
+    private val context: Context,
+    private val characterIdProvider: () -> Int = { VaultCallContextHolder.get().characterId },
+) : AgentTool {
 
     override val name = "file_delete"
     override val description = "删除单个文件（不含目录，删目录用folder_delete）"
@@ -435,8 +615,11 @@ class FileDeleteTool(private val context: Context) : AgentTool {
         if (path.isNullOrEmpty()) return@withContext ToolResult(name, false, "", "缺少 path 参数")
         if (hasPathTraversal(path)) return@withContext ToolResult(name, false, "无法删除该路径。", "路径包含非法字符")
 
-        val file = resolveFileSystemPath(context, path)
-            ?: return@withContext ToolResult(name, false, "无法删除该路径。", "路径超出允许范围")
+        // v147：删除语义 isDelete=true，叠加保险库权限校验（不能删别人私库的文件）。
+        val file = when (val r = resolveVaultPath(context, path, characterIdProvider, isDelete = true)) {
+            is VaultPathResolution.Allowed -> r.file
+            is VaultPathResolution.Denied -> return@withContext ToolResult(name, false, "无法删除该路径。", r.reason)
+        }
 
         try {
             if (!file.exists()) return@withContext ToolResult(name, false, "找不到文件「$path」。")
@@ -466,7 +649,10 @@ class FileDeleteTool(private val context: Context) : AgentTool {
  * - to 指定目标目录（不存在则自动创建）
  * - 仅提取文件，跳过目录条目
  */
-class ZipExtractTool(private val context: Context) : AgentTool {
+class ZipExtractTool(
+    private val context: Context,
+    private val characterIdProvider: () -> Int = { VaultCallContextHolder.get().characterId },
+) : AgentTool {
 
     override val name = "zip_extract"
     override val description = "把ZIP压缩包解压到指定目录"
@@ -482,10 +668,15 @@ class ZipExtractTool(private val context: Context) : AgentTool {
             return@withContext ToolResult(name, false, "无法解压。", "路径包含非法字符")
         }
 
-        val zipFile = resolveFileSystemPath(context, zipPath)
-            ?: return@withContext ToolResult(name, false, "无法解压。", "ZIP 路径超出允许范围")
-        val targetDir = resolveFileSystemPath(context, toPath)
-            ?: return@withContext ToolResult(name, false, "无法解压。", "目标路径超出允许范围")
+        // v147：源 zip 与目标目录都走保险库权限校验。
+        val zipFile = when (val r = resolveVaultPath(context, zipPath, characterIdProvider)) {
+            is VaultPathResolution.Allowed -> r.file
+            is VaultPathResolution.Denied -> return@withContext ToolResult(name, false, "无法解压。", "ZIP 路径：${r.reason}")
+        }
+        val targetDir = when (val r = resolveVaultPath(context, toPath, characterIdProvider)) {
+            is VaultPathResolution.Allowed -> r.file
+            is VaultPathResolution.Denied -> return@withContext ToolResult(name, false, "无法解压。", "目标路径：${r.reason}")
+        }
 
         try {
             if (!zipFile.exists()) return@withContext ToolResult(name, false, "找不到 ZIP 文件「$zipPath」。")
@@ -532,7 +723,10 @@ class ZipExtractTool(private val context: Context) : AgentTool {
  * - source 可以是文件或目录；目录会递归添加其下所有文件。
  * - zip 指定输出的 .zip 文件路径。
  */
-class ZipCreateTool(private val context: Context) : AgentTool {
+class ZipCreateTool(
+    private val context: Context,
+    private val characterIdProvider: () -> Int = { VaultCallContextHolder.get().characterId },
+) : AgentTool {
 
     override val name = "zip_create"
     override val description = "把文件或目录打包成ZIP压缩包"
@@ -548,10 +742,15 @@ class ZipCreateTool(private val context: Context) : AgentTool {
             return@withContext ToolResult(name, false, "无法创建压缩包。", "路径包含非法字符")
         }
 
-        val source = resolveFileSystemPath(context, sourcePath)
-            ?: return@withContext ToolResult(name, false, "无法创建压缩包。", "源路径超出允许范围")
-        val zipFile = resolveFileSystemPath(context, zipPath)
-            ?: return@withContext ToolResult(name, false, "无法创建压缩包。", "目标路径超出允许范围")
+        // v147：源与目标 zip 路径都走保险库权限校验。
+        val source = when (val r = resolveVaultPath(context, sourcePath, characterIdProvider)) {
+            is VaultPathResolution.Allowed -> r.file
+            is VaultPathResolution.Denied -> return@withContext ToolResult(name, false, "无法创建压缩包。", "源路径：${r.reason}")
+        }
+        val zipFile = when (val r = resolveVaultPath(context, zipPath, characterIdProvider)) {
+            is VaultPathResolution.Allowed -> r.file
+            is VaultPathResolution.Denied -> return@withContext ToolResult(name, false, "无法创建压缩包。", "目标路径：${r.reason}")
+        }
 
         try {
             if (!source.exists()) return@withContext ToolResult(name, false, "找不到源路径「$sourcePath」。")
@@ -599,7 +798,10 @@ class ZipCreateTool(private val context: Context) : AgentTool {
  * - direction 支持 asc（升序）和 desc（降序）。
  * - 已有序号前缀（如 "01_"）的文件会先去除旧前缀再添加新序号。
  */
-class FileOrganizeTool(private val context: Context) : AgentTool {
+class FileOrganizeTool(
+    private val context: Context,
+    private val characterIdProvider: () -> Int = { VaultCallContextHolder.get().characterId },
+) : AgentTool {
 
     override val name = "file_organize"
     override val description = "把目录下的文件按名称/日期/大小排序并添加序号前缀整理"
@@ -621,8 +823,11 @@ class FileOrganizeTool(private val context: Context) : AgentTool {
             return@withContext ToolResult(name, false, "不支持的排序方向「$direction」，请使用 asc/desc。")
         }
 
-        val dir = resolveFileSystemPath(context, dirPath)
-            ?: return@withContext ToolResult(name, false, "无法整理。", "路径超出允许范围")
+        // v147：整理（重命名文件）走保险库权限校验——角色不能整理别人私库里的文件。
+        val dir = when (val r = resolveVaultPath(context, dirPath, characterIdProvider)) {
+            is VaultPathResolution.Allowed -> r.file
+            is VaultPathResolution.Denied -> return@withContext ToolResult(name, false, "无法整理。", r.reason)
+        }
 
         try {
             if (!dir.exists() || !dir.isDirectory) {

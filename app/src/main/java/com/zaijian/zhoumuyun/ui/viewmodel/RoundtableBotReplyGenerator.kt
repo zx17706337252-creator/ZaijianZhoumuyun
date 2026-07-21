@@ -3,6 +3,10 @@ package com.zaijian.zhoumuyun.ui.viewmodel
 import com.zaijian.zhoumuyun.data.agent.AgentToolRegistry
 import com.zaijian.zhoumuyun.data.agent.StreamEvent
 import com.zaijian.zhoumuyun.data.agent.ToolCallInterceptor
+import com.zaijian.zhoumuyun.data.agent.VaultCallContext
+import com.zaijian.zhoumuyun.data.agent.VaultScope
+import com.zaijian.zhoumuyun.data.agent.withVaultContext
+import com.zaijian.zhoumuyun.data.AppContainer
 import com.zaijian.zhoumuyun.data.db.entity.RoundtableMessageEntity
 import com.zaijian.zhoumuyun.data.manager.PregnancyTriggerManager
 import com.zaijian.zhoumuyun.data.memory.MemoryEngine
@@ -16,6 +20,7 @@ import com.zaijian.zhoumuyun.data.provider.LLMConfig
 import com.zaijian.zhoumuyun.data.provider.LLMMessage
 import com.zaijian.zhoumuyun.data.provider.LLMProvider
 import com.zaijian.zhoumuyun.data.repository.AgentPlanRepository
+import com.zaijian.zhoumuyun.data.repository.AgentActivityRepository
 import com.zaijian.zhoumuyun.data.repository.CharacterStateRepository
 import com.zaijian.zhoumuyun.data.repository.DaughterCharacterRepository
 import com.zaijian.zhoumuyun.data.repository.EventRepository
@@ -102,6 +107,7 @@ class RoundtableBotReplyGenerator(
         psychText       = psychText,
         exportedFileJson = exportedFileJson,
         exportedFilesJson = exportedFilesJson,   // v66（1.7 P3）
+        tableDataJson   = tableDataJson,   // v67（表格直传 W4）：透传到 entity。
     )
 
     suspend fun generateBotReply(
@@ -310,15 +316,27 @@ class RoundtableBotReplyGenerator(
         // v66（1.7 P3）：改用 list 收集本轮全部文件，与私聊路径同步升级——
         // 不再是"后一次覆盖前一次"。
         val pendingExportedFiles = mutableListOf<String>()
+        // v67（表格直传 W4）：table_export 产出的 payload（单值，与
+        // ChatMessageOrchestrator.pendingTablePayloadJson 同语义）。
+        var pendingTablePayloadJson: String? = null
 
+        // v147 验收返工：身份绑定到协程（VaultCallContextElement），避免进程级
+        // AtomicReference 被并发的 streamWithTools 覆盖。rtId 在本函数上方
+        // （群记忆查询段）已取。
         try {
             withTimeoutOrNull(REPLY_TIMEOUT_MS) {
+                withVaultContext(VaultCallContext(bot.id, VaultScope.ROUNDTABLE, rtId)) {
                 ToolCallInterceptor.streamWithTools(
                     provider          = provider,
                     messages          = history,
                     systemPrompt      = systemPrompt,
                     config            = config,
                     disabledToolNames = ROUNDTABLE_DISABLED_TOOL_NAMES,
+                    activityContext   = ToolCallInterceptor.ActivityContext(
+                        characterId = bot.id,
+                        sessionRef  = msgId,
+                        sceneType   = AgentActivityRepository.SceneType.ROUNDTABLE_BOT,
+                    ),
                 ).collect { event ->
                     when (event) {
                         is StreamEvent.TextDelta -> {
@@ -350,16 +368,60 @@ class RoundtableBotReplyGenerator(
                                 }
                             }
                         }
-                        is StreamEvent.ToolStarted -> Unit
+                        is StreamEvent.ToolStarted -> {
+                            // 心迹（Window B 2.2.3）：记录工具调用"已发起"事件，sceneType=roundtable_bot。
+                            try {
+                                AppContainer.instance.agentActivityRepo.recordEvent(
+                                    characterId    = bot.id,
+                                    sessionRef     = msgId,
+                                    sceneType      = AgentActivityRepository.SceneType.ROUNDTABLE_BOT,
+                                    eventType      = AgentActivityRepository.EventType.TOOL_CALL,
+                                    toolName       = event.toolName,
+                                    outcome        = null,
+                                    toolParamsJson = org.json.JSONObject(event.params).toString(),
+                                    startedAt      = System.currentTimeMillis(),
+                                    completedAt    = null,
+                                )
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (e: Exception) {
+                                ZLog.w("RoundtableViewModel", "心迹事件落库失败（不影响主流程）", e)
+                            }
+                        }
                         is StreamEvent.ToolDone -> {
+                            // 心迹（Window B 2.2.3）：记录工具调用终态事件，sceneType=roundtable_bot。
+                            try {
+                                AppContainer.instance.agentActivityRepo.recordEvent(
+                                    characterId  = bot.id,
+                                    sessionRef   = msgId,
+                                    sceneType    = AgentActivityRepository.SceneType.ROUNDTABLE_BOT,
+                                    eventType    = AgentActivityRepository.EventType.TOOL_CALL,
+                                    toolName     = event.result.toolName,
+                                    outcome      = if (event.result.success)
+                                        AgentActivityRepository.Outcome.SUCCESS
+                                    else AgentActivityRepository.Outcome.FAIL,
+                                    outputRaw    = event.result.content,
+                                    errorMessage = event.result.error,
+                                    startedAt    = System.currentTimeMillis(),
+                                    completedAt  = System.currentTimeMillis(),
+                                )
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (e: Exception) {
+                                ZLog.w("RoundtableViewModel", "心迹事件落库失败（不影响主流程）", e)
+                            }
                             // 识别文件类工具产物，暂存 JSON，落库时接回 RoundtableMessage。
                             // 复用私聊 ChatMessageOrchestrator.extractExportedFileJson，两边同一套识别逻辑。
                             // v66（1.7 P3）：add 而不是覆盖赋值。
                             extractExportedFileJson(event.result)?.let { pendingExportedFiles.add(it) }
+                            // v67（表格直传 W4）：table_export 产出走 ToolResult.tablePayloadJson
+                            // 返回值（与私聊同款，不存工具实例字段）。
+                            event.result.tablePayloadJson?.let { pendingTablePayloadJson = it }
                         }
                         is StreamEvent.RoundDone -> Unit
                     }
                 }
+                } // withVaultContext
             }
         } catch (e: CancellationException) {
             throw e  // P1-11-4 修复：CancellationException 必须 rethrow，结构化并发需要它传播
@@ -398,6 +460,9 @@ class RoundtableBotReplyGenerator(
                     // v66（1.7 P3）：两个字段都写，exportedFileJson 保留兼容旧路径。
                     exportedFileJson = pendingExportedFiles.lastOrNull(),
                     exportedFilesJson = packExportedFilesJson(pendingExportedFiles),
+                    // v67（表格直传 W4）：table_export 产出接回 UI 消息，
+                    // RoundtableBubble 依赖 RoundtableMessage.tablePayload 才能渲染 TableCard。
+                    tableDataJson = pendingTablePayloadJson,
                 ) else msg
             }.toImmutableList())
         }
@@ -425,6 +490,8 @@ class RoundtableBotReplyGenerator(
                                 psychText       = parsedPsych,
                                 exportedFileJson = pendingExportedFiles.lastOrNull(),
                                 exportedFilesJson = packExportedFilesJson(pendingExportedFiles),
+                                // v67（表格直传 W4）：透传到 toEntity → RoundtableMessageEntity.tableDataJson。
+                                tableDataJson = pendingTablePayloadJson,
                             ).toEntity(rtIdForDb)
                         )
                     } catch (e: Exception) {
@@ -435,45 +502,14 @@ class RoundtableBotReplyGenerator(
             }
         }
 
-        // 后台记忆提取
-        val userEventId = eventRepo.appendMessageEvent(
+        // 记忆写入收窄为 Agent 主动工具调用，不再由此自动提取候选/群记忆。
+        // 只保留 MESSAGE 事件写入：Timeline 等事件流消费方仍需要这条事件
+        // （RelationshipEngine 用独立 sourceEventId，不依赖它）。
+        eventRepo.appendMessageEvent(
             actorId     = "user",
             targetId    = bot.id.toString(),
             payloadJson = """{"preview":"${userMessage.take(50)}"}""",
         )
-        // W2-4 修复：memoryEngine.onConversationTurn() 之前无 try-catch，
-        // 失败时本轮对话的记忆不写入且无任何提示，角色会表现出"失忆"，
-        // 用户完全无法感知。补上异常处理，仅记录日志（这是后台补写，
-        // 不影响已展示的对话内容，故不额外弹 uiState.error 打扰用户）。
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                memoryEngine.onConversationTurn(
-                    characterId    = bot.id,
-                    userMessage    = userMessage,
-                    assistantReply = cleanReply,
-                    userEventId    = userEventId,
-                )
-            } catch (e: Exception) {
-                ZLog.e("RoundtableViewModel", "单角色记忆提取失败 characterId=${bot.id}", e)
-            }
-        }
-        // ── 群记忆写入（圆桌专用，scope=GROUP）──
-        // W2-4 修复：同上，onRoundtableTurn() 补 try-catch，避免圆桌集体
-        // 记忆静默丢失。
-        if (rtId != null && cleanReply.isNotBlank()) {
-            viewModelScope.launch(Dispatchers.IO) {
-                try {
-                    memoryEngine.onRoundtableTurn(
-                        roundtableId   = rtId,
-                        speakerId      = bot.id,
-                        userMessage    = userMessage,
-                        assistantReply = cleanReply,
-                    )
-                } catch (e: Exception) {
-                    ZLog.e("RoundtableViewModel", "群记忆提取失败 roundtableId=$rtId", e)
-                }
-            }
-        }
 
         return cleanReply.ifBlank { null }
     }

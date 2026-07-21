@@ -34,6 +34,9 @@ import com.zaijian.zhoumuyun.data.repository.ScheduleRepository
 import com.zaijian.zhoumuyun.data.repository.SpecialtyProfileRepository
 import com.zaijian.zhoumuyun.data.repository.TaskRepository
 import com.zaijian.zhoumuyun.data.repository.WorkflowRepository
+import com.zaijian.zhoumuyun.data.repository.AgentActivityRepository
+import com.zaijian.zhoumuyun.data.repository.CapabilityPanelRepository
+import com.zaijian.zhoumuyun.data.repository.CapabilityPanelRepositoryImpl
 import com.zaijian.zhoumuyun.domain.CompetitionEngine
 import com.zaijian.zhoumuyun.domain.PresenceEngine
 import com.zaijian.zhoumuyun.domain.ProactiveMessageNotifier
@@ -411,6 +414,22 @@ class AppContainer private constructor(context: Context) {
         db                    = db,
         workflowJobDao        = db.workflowJobDao(),
         workflowStepResultDao = db.workflowStepResultDao(),
+    )
+
+    // Window B（「心迹」，方案 2.2.2）：Agent 过程可见层 Repository。
+    // 写入侧供降级策略状态机（2.1）、三处 UI 集成点（2.2.3）、WorkflowEngine
+    // 镜像埋点（2.1.4）调用；读取侧供「心迹」面板合并时间线消费。构造参数与
+    // workflowRepo 同源（同一份 db + 同两个 DAO），无差异化配置，归入容器共享。
+    val agentActivityRepo: AgentActivityRepository = AgentActivityRepository(
+        agentActivityDao        = db.agentActivityDao(),
+        workflowStepResultDao   = db.workflowStepResultDao(),
+    )
+
+    // §2.2.4 能力面板只读查询面：Window D 消费方通过此接口获取角色能力快照，
+    // 不直接查表。数据来源同 agentActivityRepo + workflowJobDao，无独立 DAO。
+    val capabilityPanelRepo: CapabilityPanelRepository = CapabilityPanelRepositoryImpl(
+        agentActivityDao = db.agentActivityDao(),
+        workflowJobDao   = db.workflowJobDao(),
     )
 
     // 阶段2 S-1 最终收尾：v160 报告点名"暂不处理、留给未来批次"的两项 DI 缺口

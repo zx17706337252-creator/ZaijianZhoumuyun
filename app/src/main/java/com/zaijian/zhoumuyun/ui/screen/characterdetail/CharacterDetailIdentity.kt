@@ -395,7 +395,7 @@ internal fun IdentityPanel(
         Spacer(Modifier.height(8.dp))
         IdentityField(
             label         = "关系记忆摘要",
-            placeholder   = "她经历了什么、关系走到哪了——整段覆盖写",
+            placeholder   = "按阶段记：\"7月上旬起，持续讨论了XX话题\"——当前阶段延续就扩写最新一条，出现新话题就追加新的一条，旧阶段自己压缩变短",
             value         = state.narrativeMemory,
             onValueChange = onNarrativeMemoryChange,
             accentColor   = accentColor,

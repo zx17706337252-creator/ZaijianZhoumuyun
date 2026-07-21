@@ -11,6 +11,7 @@ import com.zaijian.zhoumuyun.data.agent.RoundtableTriggerTool
 import com.zaijian.zhoumuyun.data.agent.RuleConflictCheckTool
 import com.zaijian.zhoumuyun.data.agent.SessionCompareTool
 import com.zaijian.zhoumuyun.data.agent.TaskDelegateTool
+import com.zaijian.zhoumuyun.data.agent.VaultCallContextHolder
 import com.zaijian.zhoumuyun.data.agent.MemoryQueryTool
 import com.zaijian.zhoumuyun.data.agent.MemoryWriteTool
 import com.zaijian.zhoumuyun.data.agent.PlanSaveTool
@@ -23,6 +24,7 @@ import com.zaijian.zhoumuyun.data.agent.TaskUpdateTool
 import com.zaijian.zhoumuyun.data.agent.TaskCompleteTool
 import com.zaijian.zhoumuyun.data.agent.TaskCancelTool
 import com.zaijian.zhoumuyun.data.agent.WorkflowStartTool
+import com.zaijian.zhoumuyun.data.agent.TableExportTool
 import com.zaijian.zhoumuyun.data.agent.ScheduleCreateTool
 import com.zaijian.zhoumuyun.data.agent.ScheduleListTool
 import com.zaijian.zhoumuyun.data.agent.HeartbeatSetTool
@@ -106,6 +108,14 @@ class ChatToolRegistrar(
      * ZaijianApp 中 characterIdProvider={-1} 的静态占位注册。
      */
     fun registerCharacterTools(currentCharacterId: Int) {
+        // v147 验收返工：setPersonal 降级为"默认值/兜底"——主身份来源已改为
+        // 协程局部的 VaultCallContextElement（ChatMessageOrchestrator 在
+        // streamWithTools 外层用 withVaultContext 注入）。此处 setPersonal
+        // 仅用于无协程上下文的兜底路径（如 WorkflowEngine 后台执行）。
+        // 放在 early-return 之前——即使工具已为该角色注册过，也要把默认身份
+        // 复位到该角色，避免圆桌残留的 ROUNDTABLE 身份影响兜底路径。
+        VaultCallContextHolder.setPersonal(currentCharacterId)
+
         if (toolsRegisteredForCharacterId == currentCharacterId) return
         toolsRegisteredForCharacterId = currentCharacterId
 
@@ -214,6 +224,19 @@ class ChatToolRegistrar(
             RuleReviewTool(
                 providerFn          = providerFn,
                 memoryDao           = memoryDao,
+                characterIdProvider = { currentCharacterId },
+            ),
+            // W2 表格直传方案：覆盖 ZaijianApp.registerDataVisTools() 里
+            // characterIdProvider={-1} 的静态占位注册——与 SelfReflectTool/RuleReviewTool
+            // 同款 Fix-#1 模式。table_export 的来源 B（日程）需要真实 characterId 做
+            // 跨角色权限校验（requestedCharId != currentCharId 则拒绝），静态注册的
+            // {-1} 会让权限校验形同虚设（currentCharId=-1 时放行所有请求）。
+            // 来源 A（CSV）的 vault 权限判断也依赖 currentVaultContext() 协程上下文里的
+            // characterId，但工具实例本身持有 characterIdProvider 作为 fallback，这里
+            // 覆盖后与协程上下文取值一致（currentVaultContext 已由 ToolCallInterceptor 注入）。
+            TableExportTool(
+                context             = getApplication(),
+                scheduleRepository  = scheduleRepo,
                 characterIdProvider = { currentCharacterId },
             ),
             // 批次2 2-1修复：覆盖 ZaijianApp.registerAgentMetaTools() 里

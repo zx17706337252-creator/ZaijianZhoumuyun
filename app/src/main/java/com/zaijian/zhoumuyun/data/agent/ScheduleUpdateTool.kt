@@ -63,7 +63,8 @@ class ScheduleUpdateTool(
 ) : AgentTool {
 
     override val name = "schedule_update"
-    override val description = "修改已创建的定时任务（标题/间隔/执行内容），需要提供任务ID。支持两种模式互转：mode=\"agent_task\" 切换为工单型（由 description 描述任务，到点让角色自己推理回应）；mode=\"tool\" 切换为工具型（到点直接调指定工具）。也可不传 mode 只单独改 description（工单型）或 tool/params（工具型）。params 必须用 key=\"val1\",key2=\"val2\" 格式（值中允许逗号），不要传 JSON 对象。可选参数 project_id 关联到某个项目（需是已存在的项目 ID）；传空串可解除关联，不传则保留原关联。"
+    override val description = "修改已创建的定时任务（标题/间隔/执行内容），需要提供任务ID"
+    override val usageNotes = "支持两种模式互转：mode=\"agent_task\" 切换为工单型（由 description 描述任务，到点让角色自己推理回应）；mode=\"tool\" 切换为工具型（到点直接调指定工具）。也可不传 mode 只单独改 description（工单型）或 tool/params（工具型）。params 必须用 key=\"val1\",key2=\"val2\" 格式（值中允许逗号），不要传 JSON 对象。可选参数 project_id 关联到某个项目（需是已存在的项目 ID）；传空串可解除关联，不传则保留原关联。"
     override val paramKeys = listOf("id", "mode", "title", "tool", "params", "description", "project_id", "interval_hours", "delay_hours")
 
     // params 的 key="val" 解析（含逗号安全、JSON fallback）与 interval/delay 的

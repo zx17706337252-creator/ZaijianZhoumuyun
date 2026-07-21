@@ -1,6 +1,7 @@
 package com.zaijian.zhoumuyun.ui.viewmodel
 
 import com.zaijian.zhoumuyun.util.ZLog
+import com.zaijian.zhoumuyun.data.AppContainer
 import com.zaijian.zhoumuyun.data.db.AppDatabase
 import com.zaijian.zhoumuyun.data.db.entity.MessageEntity
 import com.zaijian.zhoumuyun.data.manager.DaughterCharacterGenerator
@@ -24,10 +25,14 @@ import com.zaijian.zhoumuyun.data.repository.PregnancyRepository
 import com.zaijian.zhoumuyun.data.repository.ProjectRepository
 import com.zaijian.zhoumuyun.data.repository.TaskRepository
 import com.zaijian.zhoumuyun.data.repository.WorkflowRepository
+import com.zaijian.zhoumuyun.data.repository.AgentActivityRepository
 import com.zaijian.zhoumuyun.data.agent.AgentToolRegistry
 import com.zaijian.zhoumuyun.data.agent.StreamEvent
 import com.zaijian.zhoumuyun.data.agent.ToolCallInterceptor
 import com.zaijian.zhoumuyun.data.agent.ToolResult
+import com.zaijian.zhoumuyun.data.agent.VaultCallContext
+import com.zaijian.zhoumuyun.data.agent.VaultScope
+import com.zaijian.zhoumuyun.data.agent.withVaultContext
 import com.zaijian.zhoumuyun.domain.AgentRelationEngine
 import com.zaijian.zhoumuyun.domain.ChatTagParser
 import com.zaijian.zhoumuyun.domain.EvaluationEngine
@@ -385,13 +390,34 @@ class ChatMessageOrchestrator(
                 // 落库时 exportedFileJson（旧，单文件）取 lastOrNull，
                 // exportedFilesJson（新，数组）取全部，两个字段都写。
                 val pendingExportedFiles = mutableListOf<String>()
+                // v67（表格直传 W4）：table_export 产出的 payload（单值，一条消息一个表格，
+                // 与 exportedFileJson 单值语义同款）。后调用的覆盖先调用的——
+                // 一轮回复里多次 table_export 时，以最后一个为准（与 pendingExportedFiles
+                // 的"全部收集"不同，因为 tableDataJson 是单值字段不是数组）。
+                var pendingTablePayloadJson: String? = null
+
+                // 心迹（Window B 2.2.3）：提前生成本轮助手消息 id，用作「心迹」事件
+                // 的 sessionRef（私聊= messageId，方案 2.2.2），让"过程痕迹"能关联回
+                // 具体一条回复。与圆桌两条路径（msgId 在流式前预生成）对齐。原先此处
+                // 在流式结束后才 UUID.randomUUID() 生成 assistantMsg.id，现在提前到流式
+                // 前、流式结束落库时复用同一个 id——行为等价（仍是随机 UUID），仅生成
+                // 时机前移，不改变消息内容/落库语义。
+                val replyMsgId = UUID.randomUUID().toString()
 
                 try {
+                    // v147 验收返工：身份绑定到协程（VaultCallContextElement），
+                    // 避免进程级 AtomicReference 被并发的 streamWithTools 覆盖。
+                    withVaultContext(VaultCallContext(getCurrentCharacterId(), VaultScope.PERSONAL)) {
                     ToolCallInterceptor.streamWithTools(
-                        provider     = provider,
-                        messages     = messages,
-                        systemPrompt = systemPrompt,
-                        config       = config,
+                        provider        = provider,
+                        messages        = messages,
+                        systemPrompt    = systemPrompt,
+                        config          = config,
+                        activityContext = ToolCallInterceptor.ActivityContext(
+                            characterId = getCurrentCharacterId(),
+                            sessionRef  = replyMsgId,
+                            sceneType   = AgentActivityRepository.SceneType.CHAT,
+                        ),
                     ).collect { event ->
                         when (event) {
                             is StreamEvent.TextDelta -> {
@@ -430,12 +456,55 @@ class ChatMessageOrchestrator(
                                 _streamingPsych.value = streamingPsych
                             }
                             is StreamEvent.ToolStarted -> {
+                                // 心迹（Window B 2.2.3）：记录工具调用"已发起"事件，sceneType=chat。
+                                // outcome=null 表示尚无终态（与下方 ToolDone 的终态行配对呈现"开始→完成"）。
+                                // attemptIndex=0：正常单次调用；降级链路的多次尝试由 ToolCallInterceptor
+                                // 状态机（2.1，模块④）另行写 DEGRADE_* 事件，不在此处累加。
+                                try {
+                                    AppContainer.instance.agentActivityRepo.recordEvent(
+                                        characterId    = getCurrentCharacterId(),
+                                        sessionRef     = replyMsgId,
+                                        sceneType      = AgentActivityRepository.SceneType.CHAT,
+                                        eventType      = AgentActivityRepository.EventType.TOOL_CALL,
+                                        toolName       = event.toolName,
+                                        outcome        = null,
+                                        toolParamsJson = org.json.JSONObject(event.params).toString(),
+                                        startedAt      = System.currentTimeMillis(),
+                                        completedAt    = null,
+                                    )
+                                } catch (e: CancellationException) {
+                                    throw e
+                                } catch (e: Exception) {
+                                    ZLog.w("ChatViewModel", "心迹事件落库失败（不影响主流程）", e)
+                                }
                                 if (event.hint != null) {
                                     _uiState.update { it.copy(streamingHint = event.hint) }
                                 }
                             }
                             is StreamEvent.ToolDone -> {
                                 _uiState.update { it.copy(streamingHint = null) }
+                                // 心迹（Window B 2.2.3）：记录工具调用终态事件，sceneType=chat。
+                                // outcome 取 success/fail；outputRaw 落 content 摘要（Repository 内截断≤300字）。
+                                try {
+                                    AppContainer.instance.agentActivityRepo.recordEvent(
+                                        characterId  = getCurrentCharacterId(),
+                                        sessionRef   = replyMsgId,
+                                        sceneType    = AgentActivityRepository.SceneType.CHAT,
+                                        eventType    = AgentActivityRepository.EventType.TOOL_CALL,
+                                        toolName     = event.result.toolName,
+                                        outcome      = if (event.result.success)
+                                            AgentActivityRepository.Outcome.SUCCESS
+                                        else AgentActivityRepository.Outcome.FAIL,
+                                        outputRaw    = event.result.content,
+                                        errorMessage = event.result.error,
+                                        startedAt    = System.currentTimeMillis(),
+                                        completedAt  = System.currentTimeMillis(),
+                                    )
+                                } catch (e: CancellationException) {
+                                    throw e
+                                } catch (e: Exception) {
+                                    ZLog.w("ChatViewModel", "心迹事件落库失败（不影响主流程）", e)
+                                }
                                 // P0-1（Agent附件下发方案 v2.0）：识别文件类工具产物。
                                 // 不按 toolName 逐个分支判断——通用识别 content 里是否带
                                 // fileName+absolutePath 的 JSON，未来新增导出工具（如 zip_export）
@@ -443,10 +512,16 @@ class ChatMessageOrchestrator(
                                 // v66（1.7 P3）：add 而不是覆盖赋值，本轮连续多个文件类工具
                                 // 调用不再互相顶替。
                                 extractExportedFileJson(event.result)?.let { pendingExportedFiles.add(it) }
+                                // v67（表格直传 W4）：table_export 产出的 payload 走
+                                // ToolResult.tablePayloadJson 返回值（W2 验收修复：不存工具
+                                // 实例字段，避免并发越权——见 ToolResult.tablePayloadJson KDoc）。
+                                // 单值覆盖：一轮多次 table_export 以最后一个为准。
+                                event.result.tablePayloadJson?.let { pendingTablePayloadJson = it }
                             }
                             is StreamEvent.RoundDone -> Unit
                         }
                     }
+                    } // withVaultContext
                 } catch (e: CancellationException) {
                     // B-1 修复：CancellationException 必须 rethrow，保证结构化并发正确传播。
                     // replyJob?.cancel() 触发取消时协程库通过此异常信号通知协程停止，
@@ -480,7 +555,7 @@ class ChatMessageOrchestrator(
                 }
                 if (cleanReply.isNotBlank()) {
                     val assistantMsg = MessageEntity(
-                        id = UUID.randomUUID().toString(),
+                        id = replyMsgId,
                         characterId = getCurrentCharacterId(),
                         role = "assistant",
                         content = cleanReply,
@@ -495,11 +570,16 @@ class ChatMessageOrchestrator(
                         // exportedFilesJson 新增写全部文件——UI 应优先读后者。
                         exportedFileJson = pendingExportedFiles.lastOrNull(),
                         exportedFilesJson = packExportedFilesJson(pendingExportedFiles),
+                        // v67（表格直传 W4）：table_export 产出的 payload（单值，null=无表格）。
+                        // ≤50 行 Markdown 路径 tool 不填 tablePayloadJson，这里就是 null。
+                        tableDataJson = pendingTablePayloadJson,
                     )
                     messageRepo.insert(assistantMsg)
                     // 用完立即清空，避免串到下一轮回复（下一轮没有新的文件类工具调用时，
                     // 若不清空会把这一轮的文件卡片错误地挂到下一条不相关的消息上）。
                     pendingExportedFiles.clear()
+                    // v67（表格直传 W4）：同上，清空避免串消息。
+                    pendingTablePayloadJson = null
                     // H2 修复（race消除）：insert是挂起函数，到这里落库已完成。
                     // 做乐观更新——把刚落库的消息同步追加到内存list，
                     // 后续读 _uiState.value.messages 保证能看到这条新消息。
@@ -553,27 +633,20 @@ class ChatMessageOrchestrator(
                         ZLog.w("ChatViewModel", "applyDelta 失败（不影响主流程）", e)
                     }
 
-                    // W3-1 修复：私聊场景从未调用 memoryEngine 的任何写入方法，
-                    // 导致角色在私聊中完全不产生记忆（对比 RoundtableViewModel
-                    // 圆桌场景已正确调用 onConversationTurn，此处补齐同等逻辑）。
-                    // 与圆桌路径一致：先落一条 WorldEvent 作为 sourceEventId 溯源，
-                    // 再触发候选提取 → 评分 → 晋升；失败时仅记录日志，不打断
-                    // 已完成的落库和 UI 展示（后台补写，不应影响当前对话体验）。
+                    // 记忆写入收窄为 Agent 主动工具调用（memory_write /
+                    // narrative_memory_update 等），不再由此自动提取候选。
+                    // 这里只保留 MESSAGE 事件写入：Timeline 等事件流消费方仍需要
+                    // 这条事件（RelationshipEngine 用独立 sourceEventId，不依赖它）。
+                    // 失败时仅记录日志，不打断已完成的落库和 UI 展示。
                     viewModelScope.launch(Dispatchers.IO) {
                         try {
-                            val userEventId = eventRepo.appendMessageEvent(
+                            eventRepo.appendMessageEvent(
                                 actorId     = "user",
                                 targetId    = getCurrentCharacterId().toString(),
                                 payloadJson = """{"preview":"${text.take(50)}"}""",
                             )
-                            memoryEngine.onConversationTurn(
-                                characterId    = getCurrentCharacterId(),
-                                userMessage    = text,
-                                assistantReply = cleanReply,
-                                userEventId    = userEventId,
-                            )
                         } catch (e: Exception) {
-                            ZLog.e("ChatViewModel", "私聊记忆提取失败 characterId=${getCurrentCharacterId()}", e)
+                            ZLog.e("ChatViewModel", "私聊 MESSAGE 事件写入失败 characterId=${getCurrentCharacterId()}", e)
                         }
                     }
                 }

@@ -20,7 +20,8 @@ class SoulUpdateTool(
     private val characterId: () -> Int,
 ) : AgentTool {
     override val name = "soul_update"
-    override val description = "更新角色自己的人设备忘录（自我认知），用于角色自我成长演化（content 最长 1000 字，超长按句子边界截断并提示）"
+    override val description = "更新角色自己的人设备忘录（自我认知），用于角色自我成长演化"
+    override val usageNotes = "content 最长 1000 字，超长按句子边界截断并提示"
     override val paramKeys = listOf("content")
     override suspend fun execute(params: Map<String, String>): ToolResult = withContext(Dispatchers.IO) {
         val charId = characterId()
@@ -67,7 +68,8 @@ class NarrativeMemoryUpdateTool(
     private val characterId: () -> Int,
 ) : AgentTool {
     override val name = "narrative_memory_update"
-    override val description = "更新角色与用户之间的关系记忆摘要（长期叙事记忆）（content 最长 1500 字，超长按句子边界截断并提示）"
+    override val description = "更新角色与用户之间的关系记忆摘要，按阶段记录关系发展"
+    override val usageNotes = "大多数值得记住但不需要单独摘出的内容应改写进这里，而不是调用 memory_write 新增条目。用时间标签标注阶段（如\"7月上旬起，持续讨论了XX\"），当前阶段延续时修订/扩写最新一条，出现新话题时追加新条目而不是删除旧的，旧阶段随篇幅需要自行压缩成一两句话。content 最长 1500 字，超长按句子边界截断并提示"
     override val paramKeys = listOf("content")
     override suspend fun execute(params: Map<String, String>): ToolResult = withContext(Dispatchers.IO) {
         val charId = characterId()
@@ -112,7 +114,8 @@ class UserImpressionUpdateTool(
     private val characterId: () -> Int,
 ) : AgentTool {
     override val name = "user_impression_update"
-    override val description = "更新角色对用户的印象描述（content 最长 1000 字，超长按句子边界截断并提示）"
+    override val description = "更新角色对用户的印象描述"
+    override val usageNotes = "content 最长 1000 字，超长按句子边界截断并提示"
     override val paramKeys = listOf("content")
     override suspend fun execute(params: Map<String, String>): ToolResult = withContext(Dispatchers.IO) {
         val charId = characterId()

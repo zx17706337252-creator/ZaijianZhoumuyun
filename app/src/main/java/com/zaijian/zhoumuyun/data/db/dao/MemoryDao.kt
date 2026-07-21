@@ -86,18 +86,21 @@ abstract class MemoryDao {
 
     /**
      * 获取个人 Core Memory（scope=PERSONAL），避免群记忆串到单人对话。
+     *
+     * 排序：importance DESC 优先——isCore 锚点收紧为"稀疏、慎重"后，应优先
+     * 注入最重要的几条，而非最近更新的几条（buildMemoryBlock 注入时 take(5)）。
      */
     @Query("""
         SELECT * FROM memories
         WHERE characterId = :characterId AND isCore = 1 AND scope = 'PERSONAL'
-        ORDER BY updatedAt DESC
+        ORDER BY importance DESC, updatedAt DESC
     """)
     abstract suspend fun getCoreMemories(characterId: Int): List<MemoryEntity>
 
     @Query("""
         SELECT * FROM memories
         WHERE characterId = :characterId AND isCore = 1 AND scope = 'PERSONAL'
-        ORDER BY updatedAt DESC
+        ORDER BY importance DESC, updatedAt DESC
     """)
     abstract fun observeCoreMemories(characterId: Int): Flow<List<MemoryEntity>>
 

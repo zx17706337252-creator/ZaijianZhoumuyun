@@ -41,9 +41,8 @@ class HeartbeatSetTool(
     // P1 修复（批次2审查报告问题1/2）：原 description 只有一句话，LLM 看不到 items 的
     // 分隔/转义约定，容易在条目内写未转义引号导致 ToolParser 静默截断（见 ToolParser.kt
     // detectUnescapedQuoteTruncation 的说明）。补充格式与转义示例，给 LLM 可直接照抄的写法。
-    override val description = "整体写入/覆盖角色的心跳自检清单（定期检查项列表）。" +
-        "items 用英文逗号分隔多个条目；若某条目本身含逗号或引号，" +
-        "整个条目要用转义双引号包裹，例如 items=\"正常条目,\\\"含逗号,的条目\\\",另一条目\""
+    override val description = "整体写入/覆盖角色的心跳自检清单（定期检查项列表）"
+    override val usageNotes = "items 用英文逗号分隔多个条目；若某条目本身含逗号或引号，整个条目要用转义双引号包裹，例如 items=\"正常条目,\\\"含逗号,的条目\\\",另一条目\""
 
     override val paramKeys = listOf("title", "items")
 

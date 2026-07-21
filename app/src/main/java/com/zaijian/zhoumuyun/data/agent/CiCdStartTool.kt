@@ -28,11 +28,8 @@ class CiCdStartTool(
     // P0/P1 修复（批次4审查报告 cicd_start 问题1/2，根因③）：原 description 没说
     // files_json 格式、build_type 只接受 release/debug、create_repo 只认 "true"，
     // 现补充说明，从源头减少 LLM 输出不合规值的概率。
-    override val description = "一键启动完整CI/CD流水线（提交代码→触发构建→轮询状态），可选先创建新仓库。" +
-        "files_json 是文件列表 JSON 数组（格式同 git_commit_push，例如 " +
-        "files_json=\"[{\"path\":\"a.txt\",\"content\":\"文件内容\"}]\"）；" +
-        "build_type 只接受 release 或 debug（默认 debug）；" +
-        "create_repo 只接受 true 或 false（默认 false，其它值一律视为 false 并返回警告）"
+    override val description = "一键启动完整CI/CD流水线（提交代码→触发构建→轮询状态），可选先创建新仓库"
+    override val usageNotes = "files_json 是文件列表 JSON 数组（格式同 git_commit_push，例如 files_json=\"[{\"path\":\"a.txt\",\"content\":\"文件内容\"}]\"）；build_type 只接受 release 或 debug（默认 debug）；create_repo 只接受 true 或 false（默认 false，其它值一律视为 false 并返回警告）"
     override val paramKeys = listOf("files_json", "message", "branch", "build_type", "create_repo", "repo_name")
 
     override suspend fun execute(params: Map<String, String>): ToolResult {

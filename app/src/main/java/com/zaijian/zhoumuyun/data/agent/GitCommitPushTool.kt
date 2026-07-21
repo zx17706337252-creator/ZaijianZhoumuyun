@@ -24,10 +24,8 @@ class GitCommitPushTool(
     // ToolParser 里会被第一个内引号截断。现 ToolParser 的 findBalancedJsonEnd 已支持
     // `[` 数组配平，裸 JSON 数组可以直接开箱使用，这里补充说明让 LLM 知道两种写法都
     // 支持、优先推荐裸写法（不需要手动转义，最不容易出错）。
-    override val description = "把文件内容提交并推送到GitHub仓库指定分支。" +
-        "files_json 是文件列表的 JSON 数组，每个元素含 path 和 content 两个字段，" +
-        "例如 files_json=\"[{\"path\":\"a.txt\",\"content\":\"文件内容\"}]\"；" +
-        "直接这样写裸 JSON 即可，不需要额外转义，工具会自动识别并解析"
+    override val description = "把文件内容提交并推送到GitHub仓库指定分支"
+    override val usageNotes = "files_json 是文件列表的 JSON 数组，每个元素含 path 和 content 两个字段，例如 files_json=\"[{\"path\":\"a.txt\",\"content\":\"文件内容\"}]\"；直接这样写裸 JSON 即可，不需要额外转义，工具会自动识别并解析"
     override val paramKeys = listOf("message", "files_json", "branch")
 
     private companion object {

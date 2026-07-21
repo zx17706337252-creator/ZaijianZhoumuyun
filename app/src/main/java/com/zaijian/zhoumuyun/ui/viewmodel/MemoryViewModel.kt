@@ -4,7 +4,9 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.zaijian.zhoumuyun.data.AppContainer
+import com.zaijian.zhoumuyun.data.db.entity.CharacterIdentityEntity
 import com.zaijian.zhoumuyun.data.db.entity.MemoryDomain
+import com.zaijian.zhoumuyun.data.agent.writeVaultText
 import com.zaijian.zhoumuyun.data.db.entity.MemoryEntity
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -14,7 +16,6 @@ import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -50,6 +51,8 @@ data class MemoryUiItem(
     val domainLabel: String = "",
     /** Phase 30 方案三：维度色条颜色（ARGB Long，由 UI 层转为 Color） */
     val domainColorArgb: Long = 0xFF9E9E9EL,
+    /** v1.1：创建时间戳，供 coreMemories 按 createdAt 倒序分区展示 */
+    val createdAt: Long = 0L,
 )
 
 enum class MemoryFilter {
@@ -67,6 +70,17 @@ data class MemoryUiState(
     val filter: MemoryFilter = MemoryFilter.ALL,
     /** 操作结果提示（删除/标记等） */
     val snackbar: String? = null,
+    // ── 呈现层补充（v1.1）：叙事三字段 + 核心锚点 ──
+    /** 关系叙事（narrativeMemory）—— 阶段日志格式，空表示尚未建立 */
+    val narrativeMemory: String = "",
+    /** 角色对用户的印象（userImpression）—— 当前状态快照 */
+    val userImpression: String = "",
+    /** 角色自我认知（soulNote）—— 当前状态快照 */
+    val soulNote: String = "",
+    /** 重大事件锚点（isCore=true 的 memories），按 createdAt 倒序，单独分区展示 */
+    val coreMemories: List<MemoryUiItem> = emptyList(),
+    /** 导出存档结果提示（成功路径/失败原因），null = 无操作 */
+    val exportResult: String? = null,
 )
 
 // ─────────────────────────────────────────────────────────────
@@ -92,9 +106,14 @@ class MemoryViewModel(application: Application) : AndroidViewModel(application) 
     // 改引用 AppContainer 共享实例。db 字段本身无其他用途，一并移除。
     private val repo = AppContainer.instance.memoryRepo
 
+    // v1.1 呈现层补充：复用 IdentityViewModel 同款取法（IdentityViewModel:95），
+    // 拿 soulNote/narrativeMemory/userImpression 三个 blob 字段。不新建 Repository。
+    private val identityRepo = AppContainer.instance.identityRepo
+
     private val _characterId = MutableStateFlow(-1)
     private val _filter      = MutableStateFlow(MemoryFilter.ALL)
     private val _snackbar    = MutableStateFlow<String?>(null)
+    private val _exportResult = MutableStateFlow<String?>(null)
 
     // ─────────────────────────────────────────────────────────
     //  实时数据流：根据 filter 切换观察的 Flow
@@ -113,20 +132,52 @@ class MemoryViewModel(application: Application) : AndroidViewModel(application) 
             initialValue     = emptyList(),
         )
 
+    // v1.1：观察角色 identity，拿 soulNote/narrativeMemory/userImpression。
+    // cid < 0 时发空 entity，避免 combine 卡在首帧 loading。
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val _identity: StateFlow<CharacterIdentityEntity?> = _characterId
+        .flatMapLatest { cid ->
+            if (cid < 0) flowOf(null)
+            else identityRepo.observeById(cid)
+        }
+        .catch { emit(null) }
+        .stateIn(
+            scope            = viewModelScope,
+            started          = SharingStarted.WhileSubscribed(5_000),
+            initialValue     = null,
+        )
+
     // P1-13-24 修复：原实现 _entities.map { _filter.value } 仅在 _entities 变化时触发，
     // _filter / _snackbar 变更不会重算 uiState，导致切换过滤器后 UI 不刷新。
-    // 改为 combine 三源，任意一源变化均触发重算。
+    // 改为 combine 多源，任意一源变化均触发重算。
+    // v1.1：再 combine _identity，使叙事三字段进入 uiState。
     val uiState: StateFlow<MemoryUiState> = combine(
         _entities,
+        _identity,
         _filter,
         _snackbar,
-    ) { entities, filter, snackbar ->
+        _exportResult,
+    ) { entities, identity, filter, snackbar, exportResult ->
         val allItems = entities.map { it.toUiItem() }
+        // v1.1：coreMemories 单独分区（isCore=true），从全量 items 里拆出，
+        // 按 createdAt 倒序——锚点是"事件"性质，按发生时间倒序更符合直觉
+        // （observeAll 返回序是 importance DESC, updatedAt DESC，不适合这里）。
+        val coreItems = allItems
+            .filter { it.isCore }
+            .sortedByDescending { it.createdAt }
+        // v1.1 修正：其他记忆分区排除 isCore 条目，避免锚点在两个分区重复出现
+        // （coreItems 已单独展示在"重大事件锚点"区，下方明细列表只放非锚点记忆）
+        val otherItems = allItems.filter { !it.isCore }
         MemoryUiState(
-            items     = applyFilter(allItems, filter),
-            isLoading = false,
-            filter    = filter,
-            snackbar  = snackbar,
+            items          = applyFilter(otherItems, filter),
+            isLoading      = false,
+            filter         = filter,
+            snackbar       = snackbar,
+            narrativeMemory = identity?.narrativeMemory ?: "",
+            userImpression  = identity?.userImpression ?: "",
+            soulNote        = identity?.soulNote ?: "",
+            coreMemories    = coreItems,
+            exportResult   = exportResult,
         )
     }
         .stateIn(
@@ -200,6 +251,123 @@ class MemoryViewModel(application: Application) : AndroidViewModel(application) 
 
     fun clearSnackbar() {
         _snackbar.value = null
+    }
+
+    // ─────────────────────────────────────────────────────────
+    //  v1.1：叙事字段编辑（记忆 Tab 内联编辑入口）
+    //  复用 identityRepo.upsert* 既有方法，与人设 Tab 同一份数据源
+    // ─────────────────────────────────────────────────────────
+
+    fun updateNarrativeMemory(value: String) {
+        val cid = _characterId.value
+        if (cid < 0) return
+        viewModelScope.launch {
+            runCatching { identityRepo.upsertNarrativeMemory(cid, value) }
+                .onSuccess { _snackbar.value = "关系叙事已保存" }
+                .onFailure { _snackbar.value = "保存失败：${it.message?.take(60)}" }
+        }
+    }
+
+    fun updateSoulNote(value: String) {
+        val cid = _characterId.value
+        if (cid < 0) return
+        viewModelScope.launch {
+            runCatching { identityRepo.upsertSoulNote(cid, value) }
+                .onSuccess { _snackbar.value = "自我认知已保存" }
+                .onFailure { _snackbar.value = "保存失败：${it.message?.take(60)}" }
+        }
+    }
+
+    fun updateUserImpression(value: String) {
+        val cid = _characterId.value
+        if (cid < 0) return
+        viewModelScope.launch {
+            runCatching { identityRepo.upsertUserImpression(cid, value) }
+                .onSuccess { _snackbar.value = "印象已保存" }
+                .onFailure { _snackbar.value = "保存失败：${it.message?.take(60)}" }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────
+    //  v1.1：导出记忆存档（UI 直接触发，不经过 LLM）
+    //  数据组装是确定性字符串拼接，复用 VaultIo.writeVaultText 落盘
+    // ─────────────────────────────────────────────────────────
+
+    /**
+     * 把叙事三字段 + 核心锚点 + 其他记忆拼成一份 Markdown，落盘到 VaultScope.PERSONAL。
+     * 成功后 exportResult 给出文件名，失败给原因。不经过 LLM。
+     */
+    fun exportArchive(characterName: String) {
+        val cid = _characterId.value
+        if (cid < 0) {
+            _exportResult.value = "角色未初始化，无法导出"
+            return
+        }
+        viewModelScope.launch {
+            runCatching {
+                val state = uiState.value
+                val now = System.currentTimeMillis()
+                val ts = java.text.SimpleDateFormat("yyyy-MM-dd_HHmm", java.util.Locale.getDefault())
+                    .format(java.util.Date(now))
+                val displayTs = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault())
+                    .format(java.util.Date(now))
+
+                val coreLines = if (state.coreMemories.isEmpty()) {
+                    "（暂无）"
+                } else {
+                    state.coreMemories.joinToString("\n") { "- ${it.dateLabel} ${it.content}" }
+                }
+
+                // 其他记忆上限 50 条，避免文档过长（补充文档 §4.2）
+                val otherLimit = 50
+                val otherLines = if (state.items.isEmpty()) {
+                    "（暂无）"
+                } else {
+                    state.items.take(otherLimit).joinToString("\n") {
+                        "- [${it.domainLabel.ifEmpty { "其他" }}] ${it.dateLabel} ${it.content}"
+                    } + if (state.items.size > otherLimit) "\n…（共 ${state.items.size} 条，已截断至前 $otherLimit 条）" else ""
+                }
+
+                val safeName = characterName.ifBlank { "角色" }
+                    .replace(Regex("[\\\\/:*?\"<>|]"), "_")
+                val markdown = buildString {
+                    appendLine("# $safeName 记忆存档")
+                    appendLine("生成时间：$displayTs")
+                    appendLine()
+                    appendLine("## 关系叙事")
+                    appendLine(state.narrativeMemory.ifBlank { "（尚未建立）" })
+                    appendLine()
+                    appendLine("## 她对你的印象")
+                    appendLine(state.userImpression.ifBlank { "（尚未建立）" })
+                    appendLine()
+                    appendLine("## 她的自我认知")
+                    appendLine(state.soulNote.ifBlank { "（尚未建立）" })
+                    appendLine()
+                    appendLine("## 重大事件锚点（${state.coreMemories.size} 条）")
+                    appendLine(coreLines)
+                    appendLine()
+                    appendLine("## 其他记忆（最近 ${minOf(state.items.size, otherLimit)} 条，仅供参考）")
+                    appendLine(otherLines)
+                }
+
+                val rawFileName = "${safeName}_记忆存档_${ts}.md"
+                writeVaultText(
+                    context     = getApplication(),
+                    rawFileName = rawFileName,
+                    content     = markdown,
+                    mimeType    = "text/markdown",
+                )
+                rawFileName
+            }.onSuccess { fileName ->
+                _exportResult.value = "已导出：$fileName"
+            }.onFailure { e ->
+                _exportResult.value = "导出失败：${e.message?.take(80)}"
+            }
+        }
+    }
+
+    fun clearExportResult() {
+        _exportResult.value = null
     }
 
     // ─────────────────────────────────────────────────────────
@@ -323,6 +491,7 @@ class MemoryViewModel(application: Application) : AndroidViewModel(application) 
             decayLabel      = decayLabel,
             domainLabel     = domainLabel,
             domainColorArgb = domainColorArgb,
+            createdAt       = createdAt,
         )
     }
 }

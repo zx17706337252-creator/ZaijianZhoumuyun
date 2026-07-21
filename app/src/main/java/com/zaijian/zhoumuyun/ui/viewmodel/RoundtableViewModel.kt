@@ -5,6 +5,7 @@ import android.content.Context
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.zaijian.zhoumuyun.data.AppContainer
+import com.zaijian.zhoumuyun.data.agent.TablePayload
 import com.zaijian.zhoumuyun.data.model.CharacterConfig
 import com.zaijian.zhoumuyun.data.model.DefaultCharacters
 import com.zaijian.zhoumuyun.data.provider.ProviderManager
@@ -77,6 +78,14 @@ data class RoundtableMessage(
      * 消息没有文件附件；历史消息永远为 null，即使 exportedFileJson 有值。
      */
     val exportedFilesJson: String? = null,
+    /**
+     * v67（表格直传方案 W4）：与 [ChatMessage.tableDataJson] 同语义/同格式
+     * （JSON 序列化 [TablePayload]）。null = 该消息没有表格；历史消息永远为 null。
+     * 由 [RoundtableBotReplyGenerator] / [RoundtableIdleManager] 在 `StreamEvent.ToolDone`
+     * 里收集 `event.result.tablePayloadJson`，构造 [RoundtableMessage] 时传入，
+     * `.toEntity()` 落库时透传到 `RoundtableMessageEntity.tableDataJson`。
+     */
+    val tableDataJson: String? = null,
 ) {
     @Deprecated("单文件读取路径，历史兼容用；新代码请用 exportedFiles", ReplaceWith("exportedFiles.firstOrNull()"))
     val exportedFile: ExportedFile? get() = exportedFiles.firstOrNull()
@@ -89,6 +98,13 @@ data class RoundtableMessage(
     val exportedFiles: List<ExportedFile> get() {
         return parseExportedFilesWithFallback(exportedFilesJson, exportedFileJson)
     }
+
+    /**
+     * v67（表格直传方案 W4）：从 [tableDataJson] 反序列化得到的 [TablePayload]。
+     * null = 该消息没有表格（或 JSON 格式异常的历史脏数据兜底）。UI 层
+     * `RoundtableBubble` 在 `message.tablePayload != null` 时渲染 `TableCard`。
+     */
+    val tablePayload: TablePayload? get() = tableDataJson?.let { TablePayload.fromJson(it) }
 }
 
 

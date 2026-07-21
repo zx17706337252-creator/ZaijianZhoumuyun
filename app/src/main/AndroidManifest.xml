@@ -11,6 +11,13 @@
         android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
 
+    <!-- v1.48 修复：文件库导出到 Downloads 需要（Android 9 及以下用废弃 API 写入）。
+         Android 10+ 用 MediaStore.Downloads 无需此权限，但 API 26-28 仍需要。
+         maxSdkVersion=28 避免在 Android 10+ 申请无意义的权限。 -->
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
+
     <!-- 聊天背景图：Android 13+ 读取相册图片权限（Android 12 及以下无此权限，系统自动忽略） -->
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
 

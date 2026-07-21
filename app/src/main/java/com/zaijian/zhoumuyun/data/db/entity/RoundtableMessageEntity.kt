@@ -51,6 +51,13 @@ data class RoundtableMessageEntity(
      */
     val exportedFilesJson: String? = null,
     /**
+     * v67（表格直传方案）：与 MessageEntity.tableDataJson 同语义/同格式
+     * （JSON 序列化 TablePayload）。null = 该消息没有表格；历史消息永远为 null。
+     * 行数超过阈值时只存预览行 + 关联的完整 xlsx 文件引用（复用 exportedFilesJson），
+     * 不整份塞进这个字段，避免单行 SQLite 记录膨胀。详见 Migration66to67。
+     */
+    val tableDataJson: String? = null,
+    /**
      * 内心独白：从回复正文中 [thinking:...] 标签抽取，与 MessageEntity.thinkingText
      * 同语义（角色的决策/推理过程，戏外内容，默认折叠不展示）。
      *

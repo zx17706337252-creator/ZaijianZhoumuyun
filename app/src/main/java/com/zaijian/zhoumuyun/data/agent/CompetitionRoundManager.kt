@@ -27,6 +27,7 @@ import com.zaijian.zhoumuyun.data.db.entity.MemoryEntity
 import com.zaijian.zhoumuyun.data.repository.DaughterCharacterRepository
 import com.zaijian.zhoumuyun.data.repository.MemoryRepository
 import com.zaijian.zhoumuyun.data.repository.SpecialtyProfileRepository
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -618,25 +619,43 @@ class CompetitionRoundManager(
         rawComment: String = "",
     ) = withContext(Dispatchers.IO) {
         getRoundMutex(roundId).withLock {
-            // W1 修复：先查后写——entry 读取 + round 状态校验 + updateUserScore
-            // 在同一事务内完成，防止读到的 entry/round 状态在写入前被其他协程改变。
-            db.withTransaction {
-            // 方案 2-5：校验 entry 属于该 round 且 round 状态为 AWAITING_USER
-            val entry = db.competitionEntryDao().getById(entryId)
-            if (entry == null) {
-                ZLog.w(TAG, "[submitUserScore] entry 不存在 entryId=$entryId")
-                return@withTransaction
-            }
-            if (entry.roundId != roundId) {
-                ZLog.w(TAG, "[submitUserScore] entry 不属于该轮次 entryId=$entryId roundId=$roundId actual=${entry.roundId}")
-                return@withTransaction
-            }
-            val round = db.competitionRoundDao().getById(roundId)
-            if (round == null || round.status != STATUS_AWAITING_USER) {
-                ZLog.w(TAG, "[submitUserScore] 轮次状态不允许打分 roundId=$roundId status=${round?.status}")
-                return@withTransaction
+            // W1 修复（2.4.3 事务拆分版）：原实现把 entry/round 校验 + sentimentToScore
+            // + updateUserScore 全部包在同一个 db.withTransaction{} 块内。改造后
+            // judgeSentimentScore() 是一次挂起的 LLM 网络请求，不能在事务内调用——
+            // 挂起点会让事务在等待 LLM 响应期间一直悬空，阻塞同一 roundId 上的其他
+            // 并发写入。拆分为两个短事务，LLM 调用放在事务之间：
+            //   1. 第一个短事务：校验 entry 存在 + entry.roundId == roundId + round 状态
+            //      为 AWAITING_USER。校验通过即提交事务。
+            //   2. 事务外：计算分数（sentimentComment 路径走 judgeSentimentScore LLM 调用，
+            //      directScore/rankAmongN 路径纯本地计算）。
+            //   3. 第二个短事务：重新校验 round 状态（防止第1步到第3步之间状态被其他协程
+            //      改变——这正是 W1 修复原本要防的那类竞态），校验通过再执行 updateUserScore()。
+            //
+            // getRoundMutex(roundId).withLock 全程持有（含 LLM 调用期间），确保同一 roundId
+            // 不会有并发的 submitUserScore，但不阻塞其他 roundId 的操作。
+
+            // ── 第一步：短事务校验 entry + round 状态 ──
+            val entryValid = db.withTransaction {
+                val entry = db.competitionEntryDao().getById(entryId)
+                if (entry == null) {
+                    ZLog.w(TAG, "[submitUserScore] entry 不存在 entryId=$entryId")
+                    return@withTransaction false
+                }
+                if (entry.roundId != roundId) {
+                    ZLog.w(TAG, "[submitUserScore] entry 不属于该轮次 entryId=$entryId roundId=$roundId actual=${entry.roundId}")
+                    return@withTransaction false
+                }
+                val round = db.competitionRoundDao().getById(roundId)
+                if (round == null || round.status != STATUS_AWAITING_USER) {
+                    ZLog.w(TAG, "[submitUserScore] 轮次状态不允许打分 roundId=$roundId status=${round?.status}")
+                    return@withTransaction false
+                }
+                true
             }
 
+            if (!entryValid) return@withLock
+
+            // ── 第二步：事务外计算分数（sentimentComment 路径走 LLM）──
             val userScore = when {
                 directScore != null -> directScore.coerceIn(0, 100)
                 rankAmongN != null -> {
@@ -644,26 +663,37 @@ class CompetitionRoundManager(
                     if (n <= 0) 50
                     else (100 - (k - 1) * (100.0 / n)).toInt().coerceIn(0, 100)
                 }
-                sentimentComment != null -> sentimentToScore(sentimentComment)
+                sentimentComment != null -> judgeSentimentScore(sentimentComment)
                 else -> 50  // 兜底默认
             }
 
             val userRank = rankAmongN?.first
 
-            db.competitionEntryDao().updateUserScore(
-                id = entryId,
-                score = userScore,
-                comment = rawComment,
-                rank = userRank,
-            )
-
-            ZLog.i(TAG, "[submitUserScore] entryId=$entryId userScore=$userScore rank=$userRank")
-            } // end db.withTransaction
+            // ── 第三步：短事务重新校验 round 状态 + 写入 ──
+            db.withTransaction {
+                val round = db.competitionRoundDao().getById(roundId)
+                if (round == null || round.status != STATUS_AWAITING_USER) {
+                    ZLog.w(TAG, "[submitUserScore] 轮次状态已变更，放弃写入 roundId=$roundId status=${round?.status}")
+                    return@withTransaction
+                }
+                db.competitionEntryDao().updateUserScore(
+                    id = entryId,
+                    score = userScore,
+                    comment = rawComment,
+                    rank = userRank,
+                )
+                ZLog.i(TAG, "[submitUserScore] entryId=$entryId userScore=$userScore rank=$userRank")
+            }
         }
     }
 
     /**
-     * 情感粗粒度映射（执行方案第10节）：
+     * 情感粗粒度映射（执行方案第10节）——兜底路径。
+     *
+     * 见《Window B 执行方案 v1.1》2.4.3。原 sentimentToScore() 改名为
+     * sentimentToScoreFallback()，作为 judgeSentimentScore() LLM 语义判断
+     * 主路径的兜底——当 LLM 不可用或返回无法解析时，自动降级到本函数。
+     *
      * 把用户纯文字评语映射成 0-100 分数区间代表值。
      *
      * 否定前缀守卫（negation guard）：
@@ -674,7 +704,7 @@ class CompetitionRoundManager(
      * 不影响 mildNegative 里"有点"这类程度副词的独立判断（"有点意思"该判正面，
      * 不应被"有点"单独抢先命中，这是关键词顺序本身保证的，跟否定守卫无关）。
      */
-    private fun sentimentToScore(comment: String): Int {
+    private fun sentimentToScoreFallback(comment: String): Int {
         // 简单关键词匹配（不调 LLM，足够满足"粗粒度"要求）
         val lower = comment.lowercase()
         val negationChars = setOf('不', '没', '无', '别', '未')
@@ -705,6 +735,41 @@ class CompetitionRoundManager(
             matches(strongNegative, guardNegation = false) -> 10  // 强烈负面 0-19，取10
             matches(mildNegative, guardNegation = false)  -> 30    // 温和负面 20-39，取30
             else -> 55                                              // 中性 40-69，取55
+        }
+    }
+
+    /**
+     * LLM 语义判断为主路径：把评语交给 LLM，让它给出一个 0-100 的情感倾向分数。
+     *
+     * 见《Window B 执行方案 v1.1》2.4.3。替代旧 sentimentToScore() 关键词匹配——
+     * 关键词匹配对模式化评语有效，但无法处理"这次虽然保守但暗藏巧思"这类需要
+     * 语义理解的评语。LLM 路径能更准确地捕捉情感倾向。
+     *
+     * 降级策略：如果 LLM 不可用（provider 为 null）、调用失败、或返回无法解析的结果，
+     * 自动降级到 [sentimentToScoreFallback]，不影响竞赛流程的可用性。
+     */
+    private suspend fun judgeSentimentScore(comment: String): Int {
+        return try {
+            val response = AgentTool.callLlm(
+                providerFn   = { provider },
+                systemPrompt = "你是一个情感分析助手。给定一段评语，给出一个能代表这段评语情感倾向的 0-100 整数分（0=最负面，100=最正面，50=中性）。只回复数字，不要任何其他文字。",
+                userPrompt   = comment,
+                maxTokens    = 10,
+                temperature  = 0.3f,
+            )
+            val score = response.trim().toIntOrNull()
+            if (score != null && score in 0..100) {
+                ZLog.d(TAG, "[judgeSentimentScore] LLM 分数=$score comment=${comment.take(50)}")
+                score
+            } else {
+                ZLog.w(TAG, "[judgeSentimentScore] LLM 返回无法解析: '$response'，降级到 fallback")
+                sentimentToScoreFallback(comment)
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            ZLog.w(TAG, "[judgeSentimentScore] LLM 调用失败，降级到 fallback: ${e.message}")
+            sentimentToScoreFallback(comment)
         }
     }
 

@@ -336,6 +336,7 @@ object PromptOrchestrator {
         val memoryBlock = buildMemoryBlock(coreMemories, relevantMemories)
         val groupMemoryBlock = buildGroupMemoryBlock(groupCoreMemories, groupRelevantMemories)
         val narrativeBlock = buildNarrativeMemoryBlock(narrativeMemory)
+        val memoryGuidelineBlock = buildMemoryGuidelineBlock()
         val worldBlock  = buildCombinedWorldBlock(worldLayerBlock.trim(), groupContextBlock.trim())
 
         // Phase 13：将工具描述块追加到 Task Layer 末尾
@@ -394,11 +395,31 @@ object PromptOrchestrator {
             rKnow: String, rMem: String, rNarr: String,
             rGroup: String, rGoal: String,
         ): String = buildString {
+            // v1.48 性别指代修复（复核意见五·双保险之一）：
+            // 这里和 buildUserIdentityBlock（约 line 1081）是"双保险"——两处都注入
+            // 性别指令，但措辞不同（此处用"绝对禁止"硬性级别，buildUserIdentityBlock
+            // 用常规陈述级别）。两处的取值来源必须一致：同一个 identityEntity?.userGender
+            // 字段 + 同一个 parseUserGenderType() 函数。如果改了一处的取值来源，
+            // 必须同步改另一处，否则两段指令传达的性别事实不一致，比不加双保险还糟。
+            val userGenderLabel = parseUserGenderType(identityEntity?.userGender).displayLabel
+            if (userGenderLabel != null) {
+                append("【重要·用户性别】与你对话的用户是${userGenderLabel}。")
+                append("在任何情况下，指代用户时必须用")
+                append(if (userGenderLabel == "男性") "「他」" else "「她」")
+                append("，绝对禁止用")
+                append(if (userGenderLabel == "男性") "「她」" else "「他」")
+                append("。这不是建议，是硬性规则，违反即为错误。\n\n")
+            }
+            // 注：文件读取强制指令已移至程序层（ToolCallInterceptor.streamWithTools
+            // 入口处的自动注入），不再依赖 prompt——用户要求"从程序上锁死"。
+            // 程序会扫描消息历史里的"用户导入了一个文件"通知，自动执行 file_read
+            // 工具并把结果注入对话历史，LLM 第一轮生成时就能看到真实内容。
             append(identityBlockWithPregnancy)                                                       // 1. Identity（不裁）
             if (rKnow.isNotEmpty())                { appendLine(); appendLine(); append(rKnow)                } // 2. Knowledge
             if (stateBlock.isNotEmpty())           { appendLine(); appendLine(); append(stateBlock)           } // 3. State（不裁）
             if (agentRelationSnapshot.isNotEmpty()){ appendLine(); appendLine(); append(agentRelationSnapshot)} // 3.5
             if (rMem.isNotEmpty())                 { appendLine(); appendLine(); append(rMem)                 } // 4. Memory
+            appendLine(); appendLine(); append(memoryGuidelineBlock)                                      // 4.2 记忆使用准则（常驻）
             if (rNarr.isNotEmpty())                { appendLine(); appendLine(); append(rNarr)                } // 4.5 Narrative
             if (rGroup.isNotEmpty())               { appendLine(); appendLine(); append(rGroup)               } // 4.8 Group Memory
             if (rGoal.isNotEmpty())                { appendLine(); appendLine(); append(rGoal)                } // 5. LearningGoal
@@ -1035,6 +1056,20 @@ ${nameStr}最近状态有些不同，你注意到了，
         return "【叙事记忆 —— 她完整保留的过去】\n$narrativeMemory"
     }
 
+    /**
+     * 记忆使用准则（常驻注入，不依赖是否有记忆数据）。
+     *
+     * 给 Agent 的"四个记忆工具怎么分工"指引，对应 redesign v1.0 §2.1/2.2
+     * + 补充文档 §6.3。工具 description 讲"单个工具怎么用"，这里讲"整体分工"。
+     * 控制在 150 字以内，避免占用过多 token 预算。
+     */
+    private fun buildMemoryGuidelineBlock(): String =
+        "【记忆使用准则】memory_write 仅写锚点：身份硬事实、有明确时间/行为的承诺、" +
+        "关系重大转折、用户要求记住的事；日常情绪/偏好/寒暄改写进 narrative_memory_update " +
+        "或 user_impression_update，不单独建条。多数轮次什么都不用记是默认状态。" +
+        "narrative_memory_update 是阶段日志：延续话题扩写最新一条，换话题追加新条目并标时间段，" +
+        "不每轮整段重写。"
+
     // ── Identity Layer ───────────────────────────────────────
 
     /**
@@ -1061,6 +1096,9 @@ ${nameStr}最近状态有些不同，你注意到了，
         userName: String,
         isRoundtableContext: Boolean,
     ): String {
+        // 复核意见五·双保险之二：此处与 buildSystemPrompt 开头的强制性别块
+        // （约 line 401）构成"双保险"。两处取值来源必须一致（identityEntity?.userGender
+        // + parseUserGenderType()）。改一处必须同步改另一处。
         val genderLabel = parseUserGenderType(identityEntity?.userGender).displayLabel
         val privateLabel = identityEntity?.userRoleLabelPrivate?.trim()?.takeIf { it.isNotEmpty() }
         val publicLabel = identityEntity?.userRoleLabelPublic?.trim()?.takeIf { it.isNotEmpty() } ?: privateLabel

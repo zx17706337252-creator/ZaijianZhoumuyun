@@ -92,10 +92,8 @@ android {
     // 默认跟随运行 Gradle 的 JDK 版本，与上面 compileOptions 显式指定的 Java 11
     // 不一致，导致 compileReleaseJavaWithJavac(11) 与 kspReleaseKotlin(21) 冲突。
     // 显式把 Kotlin 编译目标也钉在 11，与 Java 侧保持一致。
-    kotlin {
-        compilerOptions {
-            jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_11)
-        }
+    kotlinOptions {
+        jvmTarget = "11"
     }
 
     packaging {
@@ -186,9 +184,8 @@ dependencies {
     // MigrationTestHelper 需要 androidx.test:core 提供的 InstrumentationRegistry/Context，
     // 以及 androidx.test.ext:junit 的 AndroidJUnit4 runner。放在 androidTest 使其在
     // 真机/模拟器上运行（MigrationTestHelper 依赖 Android 框架的 SupportSQLiteOpenHelper）。
-    // 以下依赖暂注释 — 对应的库未在 libs.versions.toml 中声明，compileDebugKotlin 无需测试依赖
-    // androidTestImplementation(libs.androidx.test.ext.junit)
-    // androidTestImplementation(libs.androidx.test.core)
-    // androidTestImplementation(libs.androidx.test.runner)
-    // androidTestImplementation(libs.androidx.room.testing)
+    androidTestImplementation(libs.androidx.test.ext.junit)
+    androidTestImplementation(libs.androidx.test.core)
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.androidx.room.testing)
 }

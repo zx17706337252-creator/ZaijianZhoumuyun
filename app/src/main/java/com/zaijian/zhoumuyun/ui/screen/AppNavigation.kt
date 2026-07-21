@@ -218,6 +218,18 @@ sealed class AppRoute(val route: String) {
     object PersonalSchedule : AppRoute("personal_schedule/{characterId}") {
         fun createRoute(characterId: Int) = "personal_schedule/$characterId"
     }
+    /** v1.48：统一文件预览编辑页。encodedPath 为 URL 编码的文件路径，
+     *  或 "memory" 表示暂存模式（配合 tempKey 查询参数传内存内容）。 */
+    object FilePreview : AppRoute("file_preview/{encodedPath}?tempKey={tempKey}") {
+        fun createRoute(filePath: String): String {
+            val encoded = android.net.Uri.encode(filePath)
+            return "file_preview/$encoded?tempKey="
+        }
+        /** 暂存模式：从内存内容进入预览。 */
+        fun createMemoryRoute(tempKey: String): String {
+            return "file_preview/memory?tempKey=$tempKey"
+        }
+    }
 }
 
 // Bottom nav tabs (root destinations only)
@@ -248,6 +260,7 @@ private val detailRoutes = listOf(
     "competition/",
     "judge_profile/",
     "personal_schedule/",
+    "file_preview/",
     "global_schedule",
     "notifications",
     // 注意：learning_goals/ 已在 Phase 27 升级为底部 Tab，
@@ -711,6 +724,19 @@ fun AppNavigation(
                     onNavigateToSchedule = { charId ->
                         navController.navigateSingle(AppRoute.PersonalSchedule.createRoute(charId))
                     },
+                    // v147：跳转到文件库（FileVaultScreen）。FileVault 路由已在第853行注册，
+                    // 接入 FileVaultScreen，这里补上 ChatScreen 的入口回调。
+                    onNavigateToVault = { charId ->
+                        navController.navigateSingle(AppRoute.FileVault.createRoute(charId))
+                    },
+                    // v1.48：跳转到统一文件预览编辑页
+                    onNavigateToFilePreview = { filePath ->
+                        navController.navigateSingle(AppRoute.FilePreview.createRoute(filePath))
+                    },
+                    // v1.48：从内存内容进入预览页（暂存模式）
+                    onNavigateToFilePreviewMemory = { tempKey ->
+                        navController.navigateSingle(AppRoute.FilePreview.createMemoryRoute(tempKey))
+                    },
                 )
             }
 
@@ -861,6 +887,37 @@ fun AppNavigation(
             }
                 FileVaultScreen(
                     characterId = charId,
+                    onBack      = { navController.popBackStack() },
+                    onNavigateToPreview = { filePath ->
+                        navController.navigateSingle(AppRoute.FilePreview.createRoute(filePath))
+                    },
+                )
+            }
+
+            // ── FilePreview（v1.48 统一文件预览编辑页）──────────
+            composable(
+                route     = AppRoute.FilePreview.route,
+                arguments = listOf(
+                    navArgument("encodedPath") { this.type = NavType.StringType },
+                    navArgument("tempKey") {
+                        this.type = NavType.StringType
+                        this.defaultValue = ""
+                    },
+                ),
+            ) { backStackEntry ->
+                val encodedPath = backStackEntry.arguments?.getString("encodedPath") ?: run {
+                    RouteParamError("encodedPath")
+                    return@composable
+                }
+                val tempKey = backStackEntry.arguments?.getString("tempKey")?.takeIf { it.isNotEmpty() }
+                val viewModel: com.zaijian.zhoumuyun.ui.viewmodel.FilePreviewViewModel =
+                    androidx.lifecycle.viewmodel.compose.viewModel(
+                        factory = com.zaijian.zhoumuyun.ui.viewmodel.FilePreviewViewModel.factory(),
+                    )
+                com.zaijian.zhoumuyun.ui.screen.filepreview.FilePreviewEditorScreen(
+                    encodedPath = encodedPath,
+                    tempKey     = tempKey,
+                    viewModel   = viewModel,
                     onBack      = { navController.popBackStack() },
                 )
             }

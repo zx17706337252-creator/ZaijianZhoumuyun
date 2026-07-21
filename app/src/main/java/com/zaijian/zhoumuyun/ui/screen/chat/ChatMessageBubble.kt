@@ -23,13 +23,23 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.rememberModalBottomSheetState
+import com.zaijian.zhoumuyun.data.agent.TablePayload
+import com.zaijian.zhoumuyun.ui.design.AppIcons
 import com.zaijian.zhoumuyun.ui.design.WorldCard
 import com.zaijian.zhoumuyun.ui.design.WorldBubble
 import androidx.compose.material.icons.outlined.ExpandMore
@@ -66,6 +76,7 @@ import com.zaijian.zhoumuyun.ui.theme.Radius
 import com.zaijian.zhoumuyun.ui.theme.Spacing
 import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
 import com.zaijian.zhoumuyun.ui.viewmodel.ChatViewModel
+import com.zaijian.zhoumuyun.ui.viewmodel.parseExportedFilesWithFallback
 
 
 
@@ -93,6 +104,10 @@ internal fun MessageBubble(
     avatarUrl: String,
     characterName: String,
     onOpenFile: (com.zaijian.zhoumuyun.ui.viewmodel.ExportedFile) -> Unit = {},
+    // v1.48：气泡点击全屏查看文本
+    onOpenFullText: (String, Boolean) -> Unit = { _, _ -> },
+    // v1.48：表格点击全屏查看
+    onOpenTable: (List<String>, List<List<String>>) -> Unit = { _, _ -> },
     // 2.1 对话内容复制：长按气泡触发，回调把消息文字交给调用方（ChatScreen）
     // 写入剪贴板并弹 Snackbar。只挂在有文字内容的气泡上（见下方 content.isNotBlank 判断），
     // 纯文件卡消息不触发。
@@ -111,6 +126,10 @@ internal fun MessageBubble(
 
     if (message.role == "user") {
         // ── 用户气泡（右对齐）──────────────────────────────
+        // 修复：原用 accentColor（对方角色专属色）填充，导致用户气泡显示角色色、
+        // 角色气泡反而显示默认色。改为用主题默认 accent 色（非任何角色专属色），
+        // 角色专属色只用于角色气泡的边框（见下方 else 分支 borderColor）。
+        val userBubbleColor = ZaijianTheme.colors.accent
         Row(
             modifier          = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.End,
@@ -138,7 +157,7 @@ internal fun MessageBubble(
                             bottomEnd   = Radius.xs,
                         )
                     )
-                    .background(accentColor)
+                    .background(userBubbleColor)
                     .combinedClickable(
                         interactionSource = userInteraction,
                         indication        = null,
@@ -248,7 +267,12 @@ internal fun MessageBubble(
                             .combinedClickable(
                                 interactionSource = charInteraction,
                                 indication        = null,
-                                onClick           = {},
+                                onClick           = {
+                                    // v1.48：点击气泡全屏查看文本（角色气泡是 Markdown 渲染的）
+                                    if (message.content.isNotBlank()) {
+                                        onOpenFullText(message.content, true)
+                                    }
+                                },
                                 onLongClick       = {
                                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                     onCopyMessage(message.content)
@@ -259,8 +283,8 @@ internal fun MessageBubble(
                         topEnd      = Radius.md,
                         bottomStart = Radius.xs,
                         bottomEnd   = Radius.md,
-                        borderColor = if (colors.isDark) Palette.Gold.copy(alpha = 0.18f) else Palette.Gold.copy(alpha = 0.28f),
-                        borderWidth = 0.5.dp,
+                        borderColor = accentColor.copy(alpha = if (colors.isDark) 0.5f else 0.7f),
+                        borderWidth = 1.dp,
                     ) {
                         Box(modifier = Modifier.padding(horizontal = Spacing.md, vertical = 12.dp)) {
                             // Phase 21：角色气泡使用 MarkdownText 渲染富文本
@@ -285,6 +309,26 @@ internal fun MessageBubble(
                         accentColor = accentColor,
                         maxWidth    = maxBubbleWidth,
                         onOpen      = { onOpenFile(ef) },
+                    )
+                }
+
+                // v67（表格直传 W4）：table_export 产出的表格卡片。
+                // 逻辑对齐上方 exportedFiles 渲染段——payload 非空时渲染 TableCard。
+                // >500 行场景 payload.exportedFileMetaJson 非 null，从里面解析出 xlsx
+                // 文件元信息走 onOpenFile（与 FileExportCard 同款打开路径）。
+                message.tablePayload?.let { payload ->
+                    val excelFile = payload.exportedFileMetaJson?.let { metaJson ->
+                        parseExportedFilesWithFallback(null, metaJson).firstOrNull()
+                    }
+                    TableCard(
+                        payload     = payload,
+                        accentColor = accentColor,
+                        maxWidth    = maxBubbleWidth,
+                        onOpenExcel = excelFile?.let { ef -> { onOpenFile(ef) } },
+                        // v1.48：表格全屏查看/编辑
+                        onOpenFullTable = {
+                            onOpenTable(payload.columns, payload.rows)
+                        },
                     )
                 }
             }
@@ -516,6 +560,308 @@ internal fun PsychCard(
             color    = colors.textSecondary,
             modifier = Modifier.padding(horizontal = 10.dp, vertical = 10.dp),
         )
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+//  TableCard / TableDetailSheet — 表格直传方案 W3 UI 组件
+//
+//  展示 `table_export` 工具产出的 [TablePayload]（W2 已实现，走
+//  `ToolResult.tablePayloadJson` 返回值；W4 管线打通后从 `message.tableDataJson`
+//  反序列化拿到）。本批次只把组件本身做完、能独立预览，**不接入**
+//  `MessageBubble` 的实际渲染分发——分发逻辑（`message.tablePayload` 非空时渲染
+//  本卡，逻辑对齐现有 `message.exportedFiles` 那段）留给 W4。
+//
+//  结构参照 [FileExportCard]（同文件）：WorldCard 外壳 + 图标徽标 + 标题/摘要列 +
+//  操作按钮。`>500` 行场景的"下载 Excel"按钮复用 [FileExportCard] 的 `onOpen`
+//  回调模式（W4 把 `TablePayload.exportedFileMetaJson` 里的 `absolutePath` 走同一套
+//  ContentProvider URI 分享）。
+//
+//  展开视图 [TableDetailSheet] 用 `ModalBottomSheet` + `LazyColumn` 逐行渲染
+//  （指令要求 LazyColumn，避免大表全量组合导致性能问题），表头 sticky 置顶，
+//  横向 `horizontalScroll` 支持宽表。
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * 表格卡片：展示 [TablePayload] 的预览入口。
+ *
+ * - 卡片本体只显示标题/行列数摘要 + "查看全部"按钮（点开弹 [TableDetailSheet]）
+ * - `onOpenExcel != null`（>500 行场景，payload 带 xlsx 附件）时多一个"下载 Excel"按钮
+ * - 不直接渲染表格内容（表格可能上千行，卡片本体保持轻量，详情走 BottomSheet）
+ *
+ * W4 接入点：`MessageBubble` 里 `message.tablePayload != null` 时调用本组件，
+ * 传 `payload = message.tablePayload!!`、`accentColor`、`maxWidth`、
+ * `onOpenExcel` 从 `payload.exportedFileMetaJson` 解析 `absolutePath` 构造。
+ *
+ * @param payload     表格数据（W2 产出，W4 从 `tableDataJson` 反序列化）
+ * @param accentColor 角色主题色（与 FileExportCard 同款，传当前消息归属角色的 accent）
+ * @param maxWidth    卡片最大宽度（与 FileExportCard 同款，传气泡宽度约束）
+ * @param onOpenExcel >500 行场景的 xlsx 下载回调；null = 无 xlsx 附件（≤500 行场景）
+ */
+@Composable
+internal fun TableCard(
+    payload: TablePayload,
+    accentColor: Color,
+    maxWidth: androidx.compose.ui.unit.Dp,
+    onOpenExcel: (() -> Unit)? = null,
+    // v1.48：表格全屏查看/编辑
+    onOpenFullTable: (() -> Unit)? = null,
+) {
+    val colors = ZaijianTheme.colors
+    val type   = ZaijianTheme.typography
+    var showDetail by remember { mutableStateOf(false) }
+
+    WorldCard(
+        modifier = Modifier.widthIn(max = maxWidth),
+        ownerAccent = accentColor,
+    ) {
+        Row(
+            modifier = Modifier.padding(Spacing.md),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
+        ) {
+            // 表格图标徽标（与 FileExportCard 的文件类型徽标同构）
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(RoundedCornerShape(Radius.sm))
+                    .background(accentColor.copy(alpha = 0.15f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = AppIcons.ToolTable,
+                    contentDescription = null,
+                    tint = accentColor,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+
+            // 标题 + 行列数摘要
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text     = payload.title.ifBlank { "表格" },
+                    style    = type.body,
+                    color    = colors.textPrimary,
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                )
+                Text(
+                    text  = "共 ${payload.rowCountTotal} 行 × ${payload.columns.size} 列",
+                    style = type.caption,
+                    color = colors.textSecondary,
+                )
+                // >500 行预览场景的额外提示
+                if (payload.rows.size < payload.rowCountTotal) {
+                    Text(
+                        text  = "卡片预览前 ${payload.rows.size} 行，点“查看全部”展开",
+                        style = type.caption,
+                        color = colors.textSecondary,
+                    )
+                }
+            }
+
+            // 查看全部按钮 + 全屏按钮（v1.48）
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(Radius.sm))
+                        .background(accentColor.copy(alpha = 0.1f))
+                        .clickable { showDetail = true }
+                        .padding(horizontal = 10.dp, vertical = 5.dp),
+                ) {
+                    Text(
+                        text  = "查看全部",
+                        style = type.label,
+                        color = accentColor,
+                    )
+                }
+                if (onOpenFullTable != null) {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(Radius.sm))
+                            .background(accentColor.copy(alpha = 0.1f))
+                            .clickable { onOpenFullTable() }
+                            .padding(horizontal = 10.dp, vertical = 5.dp),
+                    ) {
+                        Text(
+                            text  = "全屏",
+                            style = type.label,
+                            color = accentColor,
+                        )
+                    }
+                }
+            }
+
+            // >500 行场景：下载 Excel 按钮（复用 FileExportCard 的 onOpen 模式）
+            if (onOpenExcel != null) {
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(Radius.sm))
+                        .background(accentColor.copy(alpha = 0.1f))
+                        .clickable(onClick = onOpenExcel)
+                        .padding(horizontal = 10.dp, vertical = 5.dp),
+                ) {
+                    Text(
+                        text  = "下载 Excel",
+                        style = type.label,
+                        color = accentColor,
+                    )
+                }
+            }
+        }
+    }
+
+    // 详情 BottomSheet
+    if (showDetail) {
+        TableDetailSheet(
+            payload     = payload,
+            accentColor = accentColor,
+            onDismiss   = { showDetail = false },
+        )
+    }
+}
+
+/**
+ * 表格详情视图：`ModalBottomSheet` + `LazyColumn` 逐行渲染。
+ *
+ * - 表头 sticky 置顶（`stickyHeader`），滚动时始终可见
+ * - 横向 `horizontalScroll` 支持宽表（列数多时不出屏）
+ * - 大表（>500 行预览场景）只渲染 payload.rows 里的预览行（前 10 行），
+ *   全量数据已通过 xlsx 下载附件提供，BottomSheet 不重复全量渲染
+ *
+ * 参照 [FamilyPickerSheet] 的 ModalBottomSheet 用法（`onDismissRequest`/`sheetState`/
+ * `containerColor`）。
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun TableDetailSheet(
+    payload: TablePayload,
+    accentColor: Color,
+    onDismiss: () -> Unit,
+) {
+    val colors = ZaijianTheme.colors
+    val type   = ZaijianTheme.typography
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val horizontalScrollState = rememberScrollState()
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState       = sheetState,
+        containerColor   = colors.bgCard,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(bottom = Spacing.xl),
+        ) {
+            // 标题栏
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = Spacing.md, vertical = Spacing.sm),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    text  = payload.title.ifBlank { "表格" },
+                    style = type.cardTitle,
+                    color = colors.textPrimary,
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                )
+                Text(
+                    text  = "共 ${payload.rowCountTotal} 行",
+                    style = type.caption,
+                    color = colors.textSecondary,
+                )
+            }
+
+            // 表格主体：横向滚动支持宽表
+            // 注意：LazyColumn 的 stickyHeader + 横向滚动同时用，需要把横向滚动放在
+            // LazyColumn 外层——LazyColumn 纵向滚动，外层 Row/Column 横向滚动，
+            // 两个方向独立。但 stickyHeader 在横向滚动下会跟着滚走（sticky 只对纵向
+            // 生效）。这里折中：表头单独放一个不滚动的 Row（在 LazyColumn 之外），
+            // 数据行放 LazyColumn 里纵向滚动。这样表头永远置顶，数据行横向滚动时
+            // 表头也横向滚动（两个同步）——用同一个 horizontalScrollState 同步。
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(horizontalScrollState),
+            ) {
+                Column {
+                    // 表头（与数据行同步横向滚动）
+                    TableRow(
+                        cells = payload.columns,
+                        isHeader = true,
+                        accentColor = accentColor,
+                    )
+                    // 数据行（LazyColumn 纵向滚动）
+                    LazyColumn(
+                        modifier = Modifier.height(400.dp),  // 限定高度避免占满屏
+                    ) {
+                        items(payload.rows) { row ->
+                            TableRow(
+                                cells = row,
+                                isHeader = false,
+                                accentColor = accentColor,
+                            )
+                        }
+                    }
+                }
+            }
+
+            // >500 行预览场景的底部提示
+            if (payload.rows.size < payload.rowCountTotal) {
+                Text(
+                    text  = "仅显示前 ${payload.rows.size} 行（共 ${payload.rowCountTotal} 行），完整数据请下载 Excel",
+                    style = type.caption,
+                    color = colors.textSecondary,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = Spacing.md, vertical = Spacing.sm),
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 单行表格（表头或数据行），横向排列单元格。
+ *
+ * 列宽用 `Modifier.width(IntrinsicSize.Min)` 的等宽策略不够灵活，这里改用
+ * 固定最小列宽 + 内容自适应——每列 `widthIn(min = 80.dp)`，内容长则撑宽。
+ * 表头行用 accent 色背景 + 加粗，数据行用默认背景。
+ */
+@Composable
+private fun TableRow(
+    cells: List<String>,
+    isHeader: Boolean,
+    accentColor: Color,
+) {
+    val colors = ZaijianTheme.colors
+    val type   = ZaijianTheme.typography
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(if (isHeader) accentColor.copy(alpha = 0.1f) else Color.Transparent)
+            .padding(horizontal = Spacing.sm, vertical = 6.dp),
+    ) {
+        cells.forEach { cell ->
+            Text(
+                text     = cell,
+                style    = if (isHeader) type.label.copy(
+                    fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                ) else type.body,
+                color    = if (isHeader) accentColor else colors.textPrimary,
+                modifier = Modifier
+                    .widthIn(min = 80.dp)
+                    .padding(end = Spacing.sm),
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+            )
+        }
     }
 }
 

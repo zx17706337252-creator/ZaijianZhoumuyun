@@ -5,10 +5,11 @@ import com.zaijian.zhoumuyun.util.ZLog
 /**
  * DataVisTools.kt — 数据分析 / 可视化 / 自我反思工具
  *
- * 包含 9 个工具：
+ * 包含 10 个工具：
  *   CsvAnalyzeTool    — CSV 数据分析（csv_analyze）
  *   TableGenTool      — 表格生成（table_gen）
  *   ExcelGenTool      — Excel 文件生成（excel_gen）
+ *   TableExportTool   — 真实数据源表格直传（table_export，W2 表格直传方案）
  *   PptxGenTool       — PPT 演示文稿生成（pptx_gen）
  *   ChartDataTool     — 图表数据生成（chart_data）
  *   MindmapGenTool    — 思维导图生成（mindmap_gen）
@@ -17,15 +18,17 @@ import com.zaijian.zhoumuyun.util.ZLog
  *   RuleReviewTool    — 规则复审（rule_review）
  *
  * 注册入口：
- *   AgentToolRegistry.registerDataVisTools(context, memoryDao, memoryRepo)
+ *   AgentToolRegistry.registerDataVisTools(context, memoryDao, memoryRepo, scheduleRepo)
  */
 
 import android.content.Context
 import com.zaijian.zhoumuyun.data.db.dao.MemoryDao
 import com.zaijian.zhoumuyun.data.db.entity.MemoryDomain
 import com.zaijian.zhoumuyun.data.db.entity.MemoryEntity
+import com.zaijian.zhoumuyun.data.db.entity.ScheduledJobEntity
 import com.zaijian.zhoumuyun.data.provider.LLMProvider
 import com.zaijian.zhoumuyun.data.repository.MemoryRepository
+import com.zaijian.zhoumuyun.data.repository.ScheduleRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.apache.poi.ss.usermodel.FillPatternType
@@ -33,8 +36,10 @@ import org.apache.poi.ss.usermodel.IndexedColors
 import org.apache.poi.xssf.usermodel.XSSFWorkbook
 import java.io.File
 import java.time.Instant
+import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.UUID
+import java.util.concurrent.TimeUnit
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
@@ -62,28 +67,18 @@ private suspend fun callLlm(
  * 这里仍按建议改为直接流式写出，多一份字节数组副本完全没有必要。
  *
  * @param write 在打开的文件输出流上执行实际写入（如 wb.write(stream) / pptx.write(stream)）
+ *
+ * v147（文件保险库改造）：本函数改为直接委托 [writeVaultStream]，落盘目录由
+ * VaultCallContextHolder 决定（角色私库/圆桌共享/项目共享），不再固定写 exports/。
+ * 两个调用点（ExcelGenTool/PptxGenTool）签名不变、metaJson 结构不变（仅新增
+ * characterId/scope 两个附加字段），下游解析向后兼容。
  */
-private fun saveViaStream(
+private suspend fun saveViaStream(
     context:  Context,
     fileName: String,
     mimeType: String,
     write:    (java.io.OutputStream) -> Unit,
-): String {
-    val exportDir = File(context.filesDir, "exports").also { it.mkdirs() }
-    val safeName  = fileName.replace(Regex("[/\\\\:*?\"<>|]"), "_").take(60)
-    // 修复（第3窗口审查报告问题5）：纯时间戳前缀在同一毫秒内并发调用时可能重名覆盖。
-    // 附加短随机后缀（UUID 前8位）保证唯一性，同时保留时间戳前缀以维持按时间排序的可读性。
-    val uniqueSuffix = UUID.randomUUID().toString().take(8)
-    val file      = File(exportDir, "${System.currentTimeMillis()}_${uniqueSuffix}_$safeName")
-    file.outputStream().use { write(it) }
-
-    return org.json.JSONObject().apply {
-        put("fileName",     safeName)
-        put("mimeType",     mimeType)
-        put("sizeBytes",    file.length())
-        put("absolutePath", file.absolutePath)
-    }.toString()
-}
+): String = writeVaultStream(context, fileName, mimeType, write)
 
 /** 人类可读文件大小 */
 private fun formatFileSize(bytes: Long): String = when {
@@ -149,7 +144,10 @@ class CsvAnalyzeTool(private val context: Context) : AgentTool {
                 // 改用 bufferedReader().useLines{} 流式读取，逐行解析，
                 // 不再额外持有整文件的原始文本副本（最终仍需要 dataRows 全量保留
                 // 用于 group/sort 统计，这部分本身就是功能所需，不是本条要解决的问题）。
-                val rows = file.bufferedReader(Charsets.UTF_8).useLines { lines -> parseCsv(lines) }
+                // v147+ CSV 乱码修复：自动检测编码（UTF-8 / GBK），不再硬编码 UTF-8。
+                val csvCharset = com.zaijian.zhoumuyun.data.agent.detectFileCharset(file)
+                com.zaijian.zhoumuyun.util.AgentLog.info("CsvAnalyze", "读取 ${file.name}，检测编码：$csvCharset")
+                val rows = file.bufferedReader(csvCharset).useLines { lines -> parseCsv(lines) }
                 if (rows.isEmpty()) {
                     return@withContext ToolResult(name, false, "CSV 文件为空或无法解析", "empty csv")
                 }
@@ -452,6 +450,588 @@ class ExcelGenTool(
         }
         cells.add(buf.toString())
         return cells
+    }
+}
+
+// ═════════════════════════════════════════════════════════════
+//  ⑬-2 TablePayload — 表格直传统一数据载体（W2 表格直传方案 3.2）
+// ═════════════════════════════════════════════════════════════
+
+/**
+ * 表格直传方案的统一数据载体（设计文档 3.2 节）。
+ *
+ * 由 [TableExportTool] 从真实数据源（CSV 文件 / App 内部数据）产出，
+ * 数据体不再经过 LLM 逐字生成/复述。序列化为 JSON 字符串后写入
+ * `MessageEntity.tableDataJson` / `RoundtableMessageEntity.tableDataJson`
+ * （W1 数据模型已新增该字段，W4 管线打通批次负责把 payload 落库）。
+ *
+ * 三级阈值策略（设计文档 3.4 节）决定 [rows] 存全量还是预览：
+ * - ≤50 行：走现有 Markdown 表格路径，不落 `tableDataJson`（本类不参与）
+ * - 50~500 行：[rows] 存全量数据
+ * - >500 行：[rows] 只存前 10 行预览，[rowCountTotal] 记录真实总行数，
+ *   同时自动生成完整 `.xlsx` 走 `exportedFilesJson` 挂下载附件（W4 接入）
+ *
+ * @param title         表格标题（展示用，如"本月排班表"）
+ * @param columns       列名列表
+ * @param rows          行数据（每行是一个字符串列表，长度等于 columns）
+ * @param rowCountTotal 真实数据总行数（[rows] 是预览时也记全量数，用于"共 N 条"展示）
+ * @param generatedAt   生成时间戳（epoch millis）
+ * @param exportedFileMetaJson  >500 行场景下附加的 xlsx 文件元信息（[writeVaultStream]
+ *   返回的 metaJson），≤500 行场景为 null。W4 管线打通时把这个塞进 `exportedFilesJson`
+ *   走下载附件（与 excel_gen 同一条文件附件管线）
+ */
+data class TablePayload(
+    val title: String,
+    val columns: List<String>,
+    val rows: List<List<String>>,
+    val rowCountTotal: Int,
+    val generatedAt: Long,
+    val exportedFileMetaJson: String? = null,
+) {
+
+    /**
+     * 序列化为 JSON 字符串（写入 `tableDataJson` 列）。
+     *
+     * 用 org.json.JSONObject 手写序列化，与 `exportedFilesJson` 的打包方式一致
+     * （不引入 kotlinx.serialization，避免给项目增加依赖——既有文件附件 JSON 也是
+     * 手写 JSONObject 拼的）。rows 是 `List<List<String>>`，嵌套数组用 JSONArray。
+     */
+    fun toJson(): String = org.json.JSONObject().apply {
+        put("title", title)
+        put("columns", org.json.JSONArray(columns))
+        put("rows", org.json.JSONArray().apply {
+            rows.forEach { row -> put(org.json.JSONArray(row)) }
+        })
+        put("rowCountTotal", rowCountTotal)
+        put("generatedAt", generatedAt)
+        exportedFileMetaJson?.let { put("exportedFileMetaJson", it) }
+    }.toString()
+
+    companion object {
+        /**
+         * 从 `tableDataJson` 列的反序列化（W3 UI 渲染 / W4 读取时用）。
+         * 返回 null 表示 JSON 格式异常（历史脏数据兜底）。
+         */
+        fun fromJson(json: String): TablePayload? = try {
+            val o = org.json.JSONObject(json)
+            val cols = o.getJSONArray("columns").let { arr ->
+                List(arr.length()) { arr.getString(it) }
+            }
+            val rows = o.getJSONArray("rows").let { arr ->
+                List(arr.length()) { ri ->
+                    val row = arr.getJSONArray(ri)
+                    List(row.length()) { ci -> row.getString(ci) }
+                }
+            }
+            TablePayload(
+                title       = o.optString("title"),
+                columns     = cols,
+                rows        = rows,
+                rowCountTotal = o.optInt("rowCountTotal", rows.size),
+                generatedAt = o.optLong("generatedAt"),
+                exportedFileMetaJson = o.optString("exportedFileMetaJson").takeIf { it.isNotEmpty() },
+            )
+        } catch (e: Exception) {
+            ZLog.w("TablePayload", "反序列化失败：${e.message}")
+            null
+        }
+    }
+}
+
+// ═════════════════════════════════════════════════════════════
+//  ⑬-3 TableExportTool — 真实数据源表格直传（table_export）
+// ═════════════════════════════════════════════════════════════
+
+/**
+ * 从真实数据源导出完整表格（W2 表格直传方案 5.1 节）。
+ *
+ * 标签格式：
+ *   <tool:table_export source="csv_file" file_path="用户上传.csv" filter="部门=销售部" limit="0"/>
+ *   <tool:table_export source="schedule" character_id="3" date_from="2026-07-01" date_to="2026-07-31"/>
+ *
+ * 核心差异（与 table_gen / excel_gen 的本质区别）：
+ * 数据体不经过 LLM 逐字生成/复述。LLM 只负责"决定意图和参数 + 给用户写一句
+ * 自然语言摘要"，真正的表格内容由 Kotlin 代码直接从真实数据源产出。因此行数
+ * 不再是 token 瓶颈——`limit="0"` 表示不截断、全量导出。
+ *
+ * 支持两类数据源（设计文档 3.1 节）：
+ * - **来源 A（csv_file）**：复用 [CsvAnalyzeTool] 的本地 CSV 解析能力，
+ *   新增"筛选/原样导出"模式（而非仅聚合统计）。文件查找走 [resolveFileSystemPath]
+ *   （与 csv_analyze 同款路径校验），并叠加 [decideVaultPermission] 的 vault 权限
+ *   判断（跨角色私库文件不允许越权读，复用 FileSystemTools 已建立的权限模式）。
+ * - **来源 B（schedule）**：直接查 [ScheduleRepository]（纯 Kotlin，无 LLM 参与）。
+ *   跨角色查询时校验 `character_id` 是否等于当前角色，拒绝越权——与
+ *   decideVaultPermission 对 personal/{X} 的"X 必须等于当前角色"精神一致。
+ *
+ * 三级阈值分级（设计文档 3.4 节，在 [applyThresholdStrategy] 内实现）：
+ * - ≤50 行：走 Markdown 表格路径，`ToolResult.content` 放 Markdown 文本，
+ *   不产出 `TablePayload`（`ToolResult.tablePayloadJson` 为 null，W4 不落 `tableDataJson`）
+ * - 50~500 行：产出 [TablePayload]，[rows] 存全量
+ * - >500 行：产出 [TablePayload]，[rows] 只存前 10 行预览 + 自动生成 `.xlsx`
+ *   （直接调 [writeVaultStream]，与 ExcelGenTool 同款 POI 写入 + vault 落盘），
+ *   metaJson 挂在 `TablePayload.exportedFileMetaJson`，W4 把它塞进 `exportedFilesJson`
+ *
+ * 产出物走 [ToolResult.tablePayloadJson] 返回值，随 [StreamEvent.ToolDone] 事件传给
+ * W4 管线三个调用点的**局部**变量（与 `extractExportedFileJson(event.result)` 同一位置、
+ * 同一收集方式）。本批次（W2）只到 Source 层，不动 Orchestrator / MessageEntity
+ * 写入路径——`tablePayloadJson` 在 W4 接入前产出后没人读，但已走返回值，无并发风险。
+ *
+ * ⚠️ 设计原则（W2 验收修复）：payload 不得存在工具实例字段上等调用方来读。原因：
+ * 工具实例在 AgentToolRegistry 是全局单例，而 `RoundtableIdleManager` 独立持有
+ * CoroutineScope 能在私聊进行中后台并发触发（见 `VaultIo.kt:32-37`），两条
+ * `streamWithTools` 同时跑时共享字段会被后完成者覆盖/提前清空——一旦 W4 接上
+ * "执行完立刻读字段"的动作，被覆盖的那条消息最终写进 `tableDataJson` 的可能是
+ * **别的角色**的数据（若来源是 CSV 私库文件或角色日程，构成隐私越权）。走返回值
+ * 则每次 execute 的产物是函数局部对象，天然不会被别的协程摸到——与 v147 对身份
+ * 问题（`VaultCallContextElement`）给出的解法同构：别用共享可变状态传数据。
+ *
+ * @param context            Android Context（文件路径解析 + vault 落盘）
+ * @param scheduleRepository 来源 B 示例：日程数据源（纯 Kotlin 查询，无 LLM）
+ * @param characterIdProvider 当前角色 ID 提供者（权限判断用，ChatToolRegistrar
+ *   覆盖注册时传真实 `{ currentCharacterId }`，ZaijianApp 静态注册时传 `{-1}`）
+ */
+class TableExportTool(
+    private val context: Context,
+    private val scheduleRepository: ScheduleRepository,
+    private val characterIdProvider: () -> Int = { -1 },
+) : AgentTool {
+
+    override val name      = "table_export"
+    override val description =
+        "从真实数据（已上传CSV或App内部日程）导出完整表格，不经过LLM转述，支持任意行数；适合用户要查看真实数据全貌时"
+    override val paramKeys = listOf(
+        "source", "file_path", "filter", "limit",
+        "character_id", "date_from", "date_to",
+    )
+
+    // ⚠️ W2 验收修复：无实例字段承载 payload。原 `toolResultPayload` 共享可变字段已删除，
+    // payload 走 ToolResult.tablePayloadJson 返回值（见类 KDoc「设计原则」段说明原因）。
+
+    companion object {
+        // 三级阈值（设计文档 3.4 节）
+        const val MARKDOWN_THRESHOLD  = 50    // ≤50 行走 Markdown，不落 tableDataJson
+        const val FULL_PAYLOAD_LIMIT   = 500   // 50~500 行 tableDataJson 存全量
+        const val PREVIEW_ROW_COUNT    = 10    // >500 行 tableDataJson 只存前 10 行预览
+
+        // 来源 A 文件大小限制（与 CsvAnalyzeTool.MAX_FILE_BYTES 一致）
+        const val MAX_CSV_FILE_BYTES = 5 * 1024 * 1024L   // 5 MB
+    }
+
+    override suspend fun execute(params: Map<String, String>): ToolResult =
+        withContext(Dispatchers.IO) {
+            // W2 验收修复：不再清空实例字段（字段已删除）。payload 是函数局部对象，
+            // 每次 execute 独立，天然不会被别的协程摸到。
+
+            val source = params["source"]?.trim()?.lowercase()
+            if (source.isNullOrEmpty()) {
+                return@withContext ToolResult(name, false, "", "需要 source 参数（csv_file / schedule）")
+            }
+
+            return@withContext try {
+                val rawPayload: TablePayload? = when (source) {
+                    "csv_file" -> loadFromCsvFile(params)
+                    "schedule" -> loadFromSchedule(params)
+                    else       -> {
+                        return@withContext ToolResult(
+                            toolName = name,
+                            success  = false,
+                            content  = "",
+                            error    = "未知 source：$source（支持 csv_file / schedule）",
+                        )
+                    }
+                }
+
+                // rawPayload == null 表示 CSV 为空 / 日程为空 / 解析失败
+                val payload = rawPayload ?: return@withContext ToolResult(
+                    name, false, "", "数据源未返回有效数据"
+                )
+
+                // 按三级阈值决定最终形态
+                val (finalPayload, markdown) = applyThresholdStrategy(payload)
+
+                if (finalPayload == null) {
+                    // ≤50 行 Markdown 路径：content 放 Markdown 表格，不落 tableDataJson
+                    // （tablePayloadJson = null，W4 不落库）
+                    ToolResult(
+                        toolName = name,
+                        success  = true,
+                        content  = markdown,
+                        userHint = "已生成表格（${payload.rowCountTotal} 行）",
+                        // tablePayloadJson 默认 null
+                    )
+                } else {
+                    // 50~500 行 / >500 行：payload 走 ToolResult.tablePayloadJson 返回值
+                    // （W4 在 StreamEvent.ToolDone 里读 event.result.tablePayloadJson）
+                    val fileHint = if (finalPayload.exportedFileMetaJson != null) {
+                        "（数据量较大，已附完整 xlsx 下载）"
+                    } else ""
+                    ToolResult(
+                        toolName = name,
+                        success  = true,
+                        content  = "${payload.title}：共 ${payload.rowCountTotal} 行 × ${payload.columns.size} 列$fileHint\n$markdown",
+                        userHint = "正在导出表格…",
+                        tablePayloadJson = finalPayload.toJson(),
+                    )
+                }
+            } catch (e: Exception) {
+                ToolResult(name, false, "表格导出失败：${e.message?.take(120)}", e.message)
+            }
+        }
+
+    // ── 来源 A：CSV 文件 ──────────────────────────────────────
+
+    /**
+     * 从本地 CSV 文件加载数据（设计文档 3.1 来源 A）。
+     *
+     * 复用 [CsvAnalyzeTool] 的 CSV 解析能力（同样支持引号转义），新增"筛选/原样
+     * 导出"模式（csv_analyze 只做聚合统计，不支持把原始数据整份传出去）。
+     *
+     * 文件查找走 [resolveFileSystemPath]（与 csv_analyze 同款路径校验，拒绝路径穿越
+     * 与越界访问），并叠加 [decideVaultPermission] 的 vault 权限判断——跨角色私库
+     * 文件不允许越权读，与 FileSystemTools 已建立的 personal/{X} 权限模式一致。
+     *
+     * @param filter 筛选条件，格式 "列名=值"（如 "部门=销售部"），null/空 = 不筛选
+     * @param limit  截断行数，0 = 不截断全量导出（设计文档 3.1：数据体不经过 LLM，
+     *               行数不再是 token 瓶颈）
+     * @return [TablePayload] 或 null（失败时已通过返回的 ToolResult 通知，但本函数
+     *         返回 null 时调用方需要知道是错误还是空数据——这里统一返回 null
+     *         并在外层 execute 里处理。错误信息通过 [Throwable] 抛出由外层 catch）
+     */
+    private suspend fun loadFromCsvFile(params: Map<String, String>): TablePayload? {
+        val filePath = params["file_path"]?.trim()
+            ?: throw IllegalArgumentException("source=csv_file 需要 file_path 参数")
+
+        // 路径解析（与 csv_analyze 一致：拒绝路径穿越 + 限定 filesDir/cacheDir/externalFilesDir）
+        val file = resolveFileSystemPath(context, filePath)
+            ?: throw IllegalArgumentException("不允许访问该路径：$filePath")
+
+        // 叠加 vault 权限校验（跨角色私库文件拒绝越权读）
+        val permResult = decideVaultPermission(
+            file          = file,
+            vault         = vaultRoot(context),
+            characterId   = currentCharacterIdSafe(),
+            scope         = currentVaultContext().scope,
+            roundtableId  = currentVaultContext().roundtableId,
+            isDelete      = false,
+        )
+        if (permResult is VaultPathResolution.Denied) {
+            throw IllegalArgumentException("权限拒绝：${permResult.reason}")
+        }
+
+        if (!file.exists() || !file.canRead()) {
+            throw IllegalArgumentException("找不到文件：$filePath")
+        }
+        if (file.length() > MAX_CSV_FILE_BYTES) {
+            throw IllegalArgumentException(
+                "文件过大（限制 ${MAX_CSV_FILE_BYTES / 1024 / 1024} MB）：" +
+                "${"%.1f".format(file.length() / 1024.0 / 1024.0)} MB"
+            )
+        }
+
+        // CSV 解析（与 CsvAnalyzeTool.parseCsv 同构，支持引号转义）
+        // v147+ CSV 乱码修复：自动检测编码（UTF-8 / GBK），不再硬编码 UTF-8。
+        val csvCharset = com.zaijian.zhoumuyun.data.agent.detectFileCharset(file)
+        com.zaijian.zhoumuyun.util.AgentLog.info("TableExport", "读取 ${file.name}，检测编码：$csvCharset")
+        val rows = file.bufferedReader(csvCharset).useLines { lines -> parseCsvSequence(lines) }
+        if (rows.isEmpty()) throw IllegalArgumentException("CSV 文件为空或无法解析")
+
+        val headers = rows[0]
+        val dataRows = rows.drop(1)
+
+        // 筛选（filter="列名=值"）
+        val filter = params["filter"]?.trim()?.takeIf { it.isNotEmpty() }
+        val filteredRows = if (filter.isNullOrEmpty()) {
+            dataRows
+        } else {
+            val (colName, colVal) = filter.split("=", limit = 2).let {
+                if (it.size != 2) throw IllegalArgumentException("filter 格式错误，应为 列名=值：$filter")
+                it[0].trim() to it[1].trim()
+            }
+            val colIdx = headers.indexOf(colName)
+            if (colIdx < 0) throw IllegalArgumentException("筛选列「$colName」不存在。可用列：${headers.joinToString("、")}")
+            dataRows.filter { it.getOrNull(colIdx)?.trim() == colVal }
+        }
+
+        // 截断（limit=0 表示不截断）
+        val limit = params["limit"]?.toIntOrNull() ?: 0
+        val limitedRows = if (limit > 0) filteredRows.take(limit) else filteredRows
+
+        val title = file.nameWithoutExtension
+
+        return TablePayload(
+            title       = title,
+            columns     = headers,
+            rows        = limitedRows,
+            rowCountTotal = filteredRows.size,  // limit 截断时记全量数
+            generatedAt = System.currentTimeMillis(),
+        )
+    }
+
+    // ── 来源 B：日程数据 ─────────────────────────────────────
+
+    /**
+     * 从日程数据源加载（设计文档 3.1 来源 B 示例）。
+     *
+     * 直接查 [ScheduleRepository]（纯 Kotlin，无 LLM 参与），把 [ScheduledJobEntity]
+     * 列表转成表格。列固定为：标题 / 角色 / 工具 / 下次执行 / 周期 / 状态 / 关联项目。
+     *
+     * 权限：跨角色查日程时校验 `character_id` 参数是否等于当前角色（[characterIdProvider]），
+     * 不等于则拒绝——与 decideVaultPermission 对 personal/{X} 的"X 必须等于当前角色"
+     * 精神一致（角色不能越权查别人的私库 / 私人日程）。
+     *
+     * @param character_id 要查的角色 ID；不传 = 当前角色（与 ScheduleListTool 同款 fallback）
+     * @param date_from / date_to 时间窗口（ISO yyyy-MM-dd 或 epoch millis），默认本月
+     */
+    private suspend fun loadFromSchedule(params: Map<String, String>): TablePayload? {
+        // 角色 ID：优先 __character_id（工作流注入），其次 character_id 参数，最后 characterIdProvider
+        val currentCharId = currentCharacterIdSafe()
+        val requestedCharId = params["__character_id"]?.toIntOrNull()
+            ?: params["character_id"]?.toIntOrNull()
+            ?: currentCharId
+
+        // 权限校验：不允许查别的角色（与 personal/{X} 私库权限同精神）
+        if (requestedCharId != currentCharId && currentCharId >= 0) {
+            throw IllegalArgumentException(
+                "无权查询角色 $requestedCharId 的日程（当前角色 $currentCharId）"
+            )
+        }
+
+        // 时间窗口解析（默认本月 1 日 ~ 月末）
+        val zone = ZoneId.systemDefault()
+        val now = java.time.LocalDate.now(zone)
+        val defaultFrom = now.withDayOfMonth(1)
+        val defaultTo = defaultFrom.plusMonths(1).minusDays(1)
+
+        val fromMs = parseDateParam(params["date_from"], defaultFrom, zone)
+        val toMs = parseDateParam(params["date_to"], defaultTo, zone) + 86_399_999L  // 含当天 23:59:59.999
+
+        // 一次性查询（与 ScheduleListTool 同款 listJobs，非 Flow 版）
+        val jobs = scheduleRepository.listJobs(
+            characterId = requestedCharId,
+            beforeMs    = toMs,
+            enabledOnly = params["enabled_only"]?.trim()?.lowercase() != "false",
+        ).filter { it.nextRunAt >= fromMs }
+
+        if (jobs.isEmpty()) {
+            throw IllegalArgumentException(
+                "角色 $requestedCharId 在该时间范围内没有日程（${
+                    java.time.Instant.ofEpochMilli(fromMs).atZone(zone).toLocalDate()
+                } ~ ${
+                    java.time.Instant.ofEpochMilli(toMs).atZone(zone).toLocalDate()
+                }）"
+            )
+        }
+
+        // 转表格：列固定，行按 nextRunAt 升序（listJobs 已按 nextRunAt 排序，但保险再排一次）
+        val fmtDate = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
+        val columns = listOf("标题", "角色ID", "工具", "下次执行", "周期", "状态", "关联项目")
+        val rowsData = jobs.map { job ->
+            listOf(
+                job.title,
+                job.characterId.toString(),
+                if (job.toolName == "agent_task") "工单" else job.toolName,
+                Instant.ofEpochMilli(job.nextRunAt).atZone(zone).format(fmtDate),
+                job.repeatIntervalMs?.let { "${it / TimeUnit.HOURS.toMillis(1)}h" } ?: "一次性",
+                if (job.enabled) "启用" else "停用",
+                job.projectId ?: "",
+            )
+        }
+
+        return TablePayload(
+            title       = "角色${requestedCharId}日程表",
+            columns     = columns,
+            rows        = rowsData,
+            rowCountTotal = jobs.size,
+            generatedAt = System.currentTimeMillis(),
+        )
+    }
+
+    // ── 三级阈值分级（设计文档 3.4 节）──────────────────────
+
+    /**
+     * 按数据规模决定最终 payload 形态与 Markdown 文本。
+     *
+     * @return (finalPayload, markdown)
+     * - finalPayload == null：≤50 行 Markdown 路径，不落 tableDataJson
+     * - finalPayload != null：50~500 行（全量）或 >500 行（预览 + xlsx），落 tableDataJson
+     *   - >500 行时 finalPayload.rows 是前 [PREVIEW_ROW_COUNT] 行，并已生成 xlsx，
+     *     metaJson 挂在 finalPayload.exportedFileMetaJson
+     */
+    private suspend fun applyThresholdStrategy(
+        rawPayload: TablePayload,
+    ): Pair<TablePayload?, String> {
+        val totalRows = rawPayload.rowCountTotal
+        val previewRows = rawPayload.rows.take(PREVIEW_ROW_COUNT)
+
+        // Markdown 预览（≤50 行全量、>50 行前 10 行）—— 两种路径都用，区别只在 payload 是否落库
+        val markdown = buildMarkdown(rawPayload.title, rawPayload.columns, previewRows, totalRows)
+
+        return when {
+            // ≤50 行：走 Markdown 路径，不落 tableDataJson
+            totalRows <= MARKDOWN_THRESHOLD -> {
+                Pair(null, markdown)
+            }
+            // 50~500 行：tableDataJson 存全量
+            totalRows <= FULL_PAYLOAD_LIMIT -> {
+                Pair(rawPayload, markdown)
+            }
+            // >500 行：tableDataJson 只存前 10 行预览 + 自动生成 xlsx
+            else -> {
+                val xlsxMetaJson = generateXlsxAttachment(rawPayload)
+                val payloadWithPreview = rawPayload.copy(
+                    rows = previewRows,
+                    rowCountTotal = totalRows,  // 保留全量数
+                    exportedFileMetaJson = xlsxMetaJson,
+                )
+                Pair(payloadWithPreview, markdown)
+            }
+        }
+    }
+
+    /**
+     * 生成 Markdown 表格文本（表头 + 预览行）。
+     *
+     * ≤50 行场景这是主产物（落 `content` 给 LLM 组织回复）；>50 行场景这是
+     * 预览文本（落 `content` 给 LLM 写摘要，但全量数据在 payload 里）。
+     */
+    private fun buildMarkdown(
+        title: String,
+        columns: List<String>,
+        previewRows: List<List<String>>,
+        totalRows: Int,
+    ): String = buildString {
+        appendLine("### $title（共 $totalRows 行）")
+        appendLine()
+        // 表头
+        appendLine("| ${columns.joinToString(" | ")} |")
+        appendLine("|${columns.joinToString("|") { "---" }}|")
+        // 预览行
+        previewRows.forEach { row ->
+            val cells = columns.indices.map { idx -> row.getOrNull(idx) ?: "" }
+            appendLine("| ${cells.joinToString(" | ")} |")
+        }
+        if (totalRows > previewRows.size) {
+            appendLine("| …（共 $totalRows 行，仅显示前 ${previewRows.size} 行）|")
+        }
+    }.trimEnd()
+
+    /**
+     * >500 行场景：自动生成完整 `.xlsx` 走 `exportedFilesJson` 挂下载附件。
+     *
+     * 直接调 [writeVaultStream]（与 ExcelGenTool 同款落盘：vault 上下文 + 时间戳命名
+     * + 返回 metaJson）。POI 写入逻辑照抄 ExcelGenTool（XSSFWorkbook.use{} + 表头样式
+     * + 数值列识别 + 自动列宽），保证两个工具产出的 xlsx 手感一致。
+     *
+     * @return metaJson 字符串（结构与 excel_gen 的返回一致，W4 把它塞进 exportedFilesJson）
+     */
+    private suspend fun generateXlsxAttachment(payload: TablePayload): String {
+        val fileName = "${payload.title.replace(Regex("[/\\\\:*?\"<>|]"), "_")}.xlsx"
+        return writeVaultStream(
+            context  = context,
+            rawFileName = fileName,
+            mimeType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ) { stream ->
+            XSSFWorkbook().use { wb ->
+                val sheet = wb.createSheet(payload.title.take(31))
+                val headerFont = wb.createFont().apply { bold = true }
+                val headerStyle = wb.createCellStyle().apply {
+                    fillForegroundColor = IndexedColors.LIGHT_BLUE.index
+                    fillPattern         = FillPatternType.SOLID_FOREGROUND
+                    setFont(headerFont)
+                }
+                val numFormat = wb.createDataFormat().getFormat("#,##0.00")
+                val numStyle  = wb.createCellStyle().apply { dataFormat = numFormat }
+
+                // 表头行
+                val headerRow = sheet.createRow(0)
+                payload.columns.forEachIndexed { ci, colName ->
+                    headerRow.createCell(ci).apply {
+                        setCellValue(colName)
+                        cellStyle = headerStyle
+                    }
+                }
+                // 数据行（全量，不是预览）
+                payload.rows.forEachIndexed { ri, rowData ->
+                    val row = sheet.createRow(ri + 1)
+                    rowData.forEachIndexed { ci, cellVal ->
+                        val cell = row.createCell(ci)
+                        val trimmed = cellVal.trim()
+                        val numVal = trimmed.toDoubleOrNull()
+                        if (numVal != null) {
+                            cell.setCellValue(numVal)
+                            cell.cellStyle = numStyle
+                        } else {
+                            cell.setCellValue(trimmed)
+                        }
+                    }
+                }
+                // 自动列宽（最多 20 列，避免性能问题，与 ExcelGenTool 一致）
+                val colCount = payload.columns.size
+                for (ci in 0 until minOf(colCount, 20)) {
+                    sheet.autoSizeColumn(ci)
+                }
+                wb.write(stream)
+            }
+        }
+    }
+
+    // ── 内部工具方法 ──────────────────────────────────────────
+
+    /**
+     * 解析 CSV Sequence（与 CsvAnalyzeTool.parseCsv 同构，支持引号转义）。
+     *
+     * CsvAnalyzeTool 的 parseCsv 是 private，无法直接调用——这里复刻一份相同的
+     * 解析逻辑（性能 M4 修复后的流式版本，参数是 Sequence<String>，配合 useLines）。
+     * 两个实现必须保持一致，若 CsvAnalyzeTool 的解析逻辑改动，这里需同步。
+     */
+    private fun parseCsvSequence(lines: Sequence<String>): List<List<String>> =
+        lines
+            .filter { it.isNotBlank() }
+            .map { line ->
+                val cells = mutableListOf<String>()
+                val buf   = StringBuilder()
+                var inQuote = false
+                for (ch in line) {
+                    when {
+                        ch == '"' -> inQuote = !inQuote
+                        ch == ',' && !inQuote -> { cells.add(buf.toString()); buf.clear() }
+                        else -> buf.append(ch)
+                    }
+                }
+                cells.add(buf.toString())
+                cells
+            }
+            .toList()
+
+    /**
+     * 解析日期参数：支持 ISO yyyy-MM-dd 或 epoch millis。失败抛 [IllegalArgumentException]。
+     */
+    private fun parseDateParam(
+        value: String?,
+        default: java.time.LocalDate,
+        zone: ZoneId,
+    ): Long {
+        if (value.isNullOrBlank()) {
+            return default.atStartOfDay(zone).toInstant().toEpochMilli()
+        }
+        // 先试 epoch millis
+        value.toLongOrNull()?.let { return it }
+        // 再试 ISO 日期
+        return runCatching { java.time.LocalDate.parse(value.trim()).atStartOfDay(zone).toInstant().toEpochMilli() }
+            .getOrElse { throw IllegalArgumentException("日期格式错误（应为 yyyy-MM-dd 或 epoch millis）：$value") }
+    }
+
+    /**
+     * 当前角色 ID（安全版）：优先协程上下文，回退 [characterIdProvider]。
+     * 与 FileSystemTools.resolveVaultPath 的取值策略一致。
+     *
+     * ⚠️ 标 `suspend` 因为 [currentVaultContext] 是 suspend 函数（读协程局部
+     * `VaultCallContextElement`，不能在非 suspend 上下文调用）。所有调用点
+     * （[loadFromCsvFile]、[loadFromSchedule]）本身已是 `suspend fun`，无需再改。
+     */
+    private suspend fun currentCharacterIdSafe(): Int {
+        val ctx = currentVaultContext()
+        return if (ctx.characterId >= 0) ctx.characterId else characterIdProvider()
     }
 }
 
@@ -1520,6 +2100,7 @@ fun AgentToolRegistry.registerDataVisTools(
     context: Context,
     memoryDao: MemoryDao,
     memoryRepo: MemoryRepository,
+    scheduleRepository: ScheduleRepository,
 ) {
     val fileExport = FileExportTool.getInstance(context)
     val providerFn: () -> LLMProvider? = AgentTool.defaultProviderFn()
@@ -1527,6 +2108,14 @@ fun AgentToolRegistry.registerDataVisTools(
         CsvAnalyzeTool(context = context),
         TableGenTool(providerFn = providerFn),
         ExcelGenTool(providerFn = providerFn, context = context),
+        // W2 表格直传方案：真实数据源表格直传，紧挨 ExcelGenTool（设计文档 5.1 节）。
+        // 静态注册时 characterIdProvider={-1} 占位（与 SelfReflectTool/RuleReviewTool
+        // 同款模式），ChatToolRegistrar 在聊天场景覆盖为真实 { currentCharacterId }。
+        TableExportTool(
+            context             = context,
+            scheduleRepository  = scheduleRepository,
+            characterIdProvider = { -1 },
+        ),
         PptxGenTool(providerFn = providerFn, context = context),
         ChartDataTool(providerFn = providerFn, fileExportTool = fileExport),
         MindmapGenTool(providerFn = providerFn, fileExportTool = fileExport),

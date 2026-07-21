@@ -498,7 +498,8 @@ class AgentMessageTool(
 ) : AgentTool {
 
     override val name      = "agent_message"
-    override val description = "向另一个角色发送异步消息，对方下次对话时会看到（to_character_id 必须是整数角色 ID，非角色名）"
+    override val description = "向另一个角色发送异步消息，对方下次对话时会看到"
+    override val usageNotes = "to_character_id 必须是整数角色 ID，非角色名"
     override val paramKeys = listOf("to_character_id", "content")
 
     override suspend fun execute(params: Map<String, String>): ToolResult =
@@ -569,9 +570,8 @@ class RoundtableTriggerTool(
     // P1 修复（批次2审查报告问题1/2）：原 description 太薄，没说 participant_ids 是
     // 逗号分隔的角色ID列表、可留空，也没说 topic 含引号时如何转义，容易导致 topic 被
     // ToolParser 静默截断（见 ToolParser.kt detectUnescapedQuoteTruncation 的说明）。
-    override val description = "主动发起多角色圆桌讨论，用于「叫大家一起聊聊」这类场景。" +
-        "participant_ids 为逗号分隔的角色ID列表，留空表示全员参与；" +
-        "topic 若本身含双引号，需写成转义形式 \\\"，否则内容会在该处被截断"
+    override val description = "主动发起多角色圆桌讨论，用于「叫大家一起聊聊」这类场景"
+    override val usageNotes = "participant_ids 为逗号分隔的角色ID列表，留空表示全员参与；topic 若本身含双引号，需写成转义形式 \\\"，否则内容会在该处被截断"
     override val paramKeys = listOf("topic", "participant_ids")
 
     override suspend fun execute(params: Map<String, String>): ToolResult =
@@ -648,9 +648,8 @@ class TaskDelegateTool(
     // P1 修复（批次2审查报告问题1/2）：原 description 太薄，没说 delegate_to 是逗号分隔
     // 的角色ID、task 是自由文本，容易导致 task 含引号时被 ToolParser 静默截断（见
     // ToolParser.kt detectUnescapedQuoteTruncation 的说明），委托出去的是残缺任务。
-    override val description = "把一个任务拆分后委托给多个角色分别执行。" +
-        "delegate_to 为逗号分隔的角色ID列表；task 为自由文本任务描述，" +
-        "若本身含双引号，需写成转义形式 \\\"，否则内容会在该处被截断；due 为可选截止时间"
+    override val description = "把一个任务拆分后委托给多个角色分别执行"
+    override val usageNotes = "delegate_to 为逗号分隔的角色ID列表；task 为自由文本任务描述，若本身含双引号，需写成转义形式 \\\"，否则内容会在该处被截断；due 为可选截止时间"
     override val paramKeys = listOf("task", "delegate_to", "due")
 
     override suspend fun execute(params: Map<String, String>): ToolResult =

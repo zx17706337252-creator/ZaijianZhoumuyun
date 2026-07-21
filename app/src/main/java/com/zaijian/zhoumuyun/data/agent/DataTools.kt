@@ -66,7 +66,8 @@ import kotlin.math.tan
 class CalculatorTool : AgentTool {
 
     override val name = "calculator"
-    override val description = "本地四则运算/函数计算器，用于数学表达式求值，不联网（支持 +-*/^%、sqrt/sin/cos/ln/log/ceil/floor/abs 等函数、pi/e 常量、单位换算如 100 km to miles）"
+    override val description = "本地四则运算/函数计算器，用于数学表达式求值，不联网"
+    override val usageNotes = "支持 +-*/^%、sqrt/sin/cos/ln/log/ceil/floor/abs 等函数、pi/e 常量、单位换算如 100 km to miles"
     override val paramKeys = listOf("expr")
 
     override suspend fun execute(params: Map<String, String>): ToolResult = withContext(Dispatchers.IO) {
@@ -356,7 +357,8 @@ internal object ExpressionEvaluator {
 class UnitConvertTool : AgentTool {
 
     override val name      = "unit_convert"
-    override val description = "单位换算(value/from/to)。长度:m/km/cm/mm/inch/foot/yard/mile; 重量:kg/g/mg/lb/oz; 温度:celsius/fahrenheit/kelvin; 速度:m/s,km/h,mph; 数据:bit/byte/KB/MB/GB; 时间:s/min/hour/day/week/month/year; 汇率:CNY/USD/EUR/JPY 固定汇率不联网"
+    override val description = "单位换算工具，支持长度/重量/温度/速度/数据/时间/汇率互转，不联网"
+    override val usageNotes = "参数(value/from/to)。长度:m/km/cm/mm/inch/foot/yard/mile; 重量:kg/g/mg/lb/oz; 温度:celsius/fahrenheit/kelvin; 速度:m/s,km/h,mph; 数据:bit/byte/KB/MB/GB; 时间:s/min/hour/day/week/month/year; 汇率:CNY/USD/EUR/JPY 固定汇率不联网"
     override val paramKeys = listOf("value", "from", "to")
 
     override suspend fun execute(params: Map<String, String>): ToolResult = withContext(Dispatchers.IO) {
@@ -504,7 +506,8 @@ class UnitConvertTool : AgentTool {
 class CountdownTool : AgentTool {
 
     override val name      = "countdown"
-    override val description = "计算日期差(to 必填/from 可选默认今天，格式均为 yyyy-MM-dd)，返回相差天数/周数/月数，用于倒计时或已过去多久"
+    override val description = "计算日期差，返回相差天数/周数/月数，用于倒计时或已过去多久"
+    override val usageNotes = "to 必填/from 可选默认今天，格式均为 yyyy-MM-dd"
     override val paramKeys = listOf("to", "from")
 
     override suspend fun execute(params: Map<String, String>): ToolResult = withContext(Dispatchers.IO) {

@@ -130,7 +130,8 @@ class ReminderTool(
 ) : AgentTool {
 
     override val name      = "reminder"
-    override val description = "设置一次性提醒（到点系统通知），用于「提醒我/记得叫我/晚上十点联系我」这类口语化的单次约定，不用于周期性任务"
+    override val description = "设置一次性提醒（到点系统通知），用于口语化单次约定，不用于周期性任务"
+    override val usageNotes = "典型说法如「提醒我/记得叫我/晚上十点联系我」"
     override val paramKeys = listOf("text", "time", "date")
 
     override suspend fun execute(params: Map<String, String>): ToolResult = withContext(Dispatchers.IO) {

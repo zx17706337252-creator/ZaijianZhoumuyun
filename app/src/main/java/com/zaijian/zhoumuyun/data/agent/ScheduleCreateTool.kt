@@ -56,7 +56,8 @@ class ScheduleCreateTool(
 ) : AgentTool {
 
     override val name = "schedule_create"
-    override val description = "创建自动化定时任务。两种模式：(A) 工具型，到点执行指定已注册工具（如每天定时web_search）；(B) 工单型 mode=\"agent_task\"，到点把 description 作为触发消息让角色自己推理回应，适合「提醒我喝水」这类没有现成工具可精确映射、需要角色语言表达的模糊任务。工具型需要明确的可重复执行动作，工单型只需写清楚要做什么。params 必须用 key=\"val1\",key2=\"val2\" 格式（值中允许逗号），不要传 JSON 对象。可选参数 project_id 关联到某个项目（需是已存在的项目 ID），用于把日程挂载到项目上。"
+    override val description = "创建自动化定时任务，支持工具型和工单型两种模式"
+    override val usageNotes = "两种模式：(A) 工具型，到点执行指定已注册工具（如每天定时web_search）；(B) 工单型 mode=\"agent_task\"，到点把 description 作为触发消息让角色自己推理回应，适合「提醒我喝水」这类没有现成工具可精确映射、需要角色语言表达的模糊任务。工具型需要明确的可重复执行动作，工单型只需写清楚要做什么。params 必须用 key=\"val1\",key2=\"val2\" 格式（值中允许逗号），不要传 JSON 对象。可选参数 project_id 关联到某个项目（需是已存在的项目 ID），用于把日程挂载到项目上。"
     override val paramKeys = listOf("title", "mode", "tool", "params", "description", "project_id", "interval_hours", "delay_hours")
 
     // params 的 key="val" 解析（含逗号安全、JSON fallback）与 interval/delay 的

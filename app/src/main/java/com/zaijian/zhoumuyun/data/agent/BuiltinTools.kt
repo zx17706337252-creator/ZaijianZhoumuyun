@@ -75,7 +75,8 @@ import java.util.Locale
 class WebSearchTool : AgentTool {
 
     override val name = "web_search"
-    override val description = "联网搜索关键词，返回摘要和相关话题，用于获取外部实时信息（limit 可选，结果数量 1-10，默认 5）"
+    override val description = "联网搜索关键词，返回摘要和相关话题，用于获取外部实时信息"
+    override val usageNotes = "limit 可选，结果数量 1-10，默认 5"
     override val paramKeys = listOf("query", "limit")
 
     private companion object {
@@ -211,7 +212,8 @@ class WebSearchTool : AgentTool {
 class DateTimeTool : AgentTool {
 
     override val name = "datetime"
-    override val description = "获取本地当前日期/时间/星期/时区等信息（format 可选值：full/date/time/week/year/timestamp，默认 full）"
+    override val description = "获取本地当前日期/时间/星期/时区等信息"
+    override val usageNotes = "format 可选值：full/date/time/week/year/timestamp，默认 full"
     override val paramKeys = listOf("format")
 
     // 修复（第3窗口审查报告问题4）：统一包裹 withContext(Dispatchers.IO)，
@@ -278,7 +280,8 @@ class DateTimeTool : AgentTool {
 class TranslateTool : AgentTool {
 
     override val name = "translate"
-    override val description = "将文本在不同语言之间翻译（text 最长 500 字，超长部分会被截断并在结果中提示；target/source 用语言代码如 zh/en/ja/ko，source 可选默认自动检测）"
+    override val description = "将文本在不同语言之间翻译"
+    override val usageNotes = "text 最长 500 字，超长部分会被截断并在结果中提示；target/source 用语言代码如 zh/en/ja/ko，source 可选默认自动检测"
     override val paramKeys = listOf("text", "target", "source")
 
     private companion object {
@@ -473,10 +476,29 @@ class FileReadTool(private val context: Context) : AgentTool {
                     return@withContext readZipContents(file, maxLines)
                 }
 
-                val lines = file.bufferedReader(Charsets.UTF_8).useLines { seq ->
+                // v1.48 docx 读取修复：.docx 本质是 ZIP 压缩包（Office Open XML），
+                // 直接当文本读会读到 PK 开头的二进制乱码。需解压后读 word/document.xml
+                // 提取正文文本。
+                if (file.name.lowercase().endsWith(".docx")) {
+                    return@withContext readDocxContents(file, maxLines)
+                }
+
+                // v1.48 xlsx 读取修复：.xlsx 同理是 ZIP，内含 sharedStrings.xml +
+                // sheetN.xml。提取出纯文本供 AI 阅读。
+                if (file.name.lowercase().endsWith(".xlsx")) {
+                    return@withContext readXlsxContents(file, maxLines)
+                }
+
+                // v147+ CSV 乱码修复：自动检测文件编码（UTF-8 / GBK / UTF-16），
+                // 不再硬编码 UTF-8。Windows Excel 导出的中文 CSV 默认 GBK，硬编码
+                // UTF-8 会导致乱码（AI 看到"鏉傞繝鍧?"之类的误解码产物）。
+                val charset = detectFileCharset(file)
+                com.zaijian.zhoumuyun.util.AgentLog.info("FileRead", "读取 ${file.name}，检测编码：$charset")
+
+                val lines = file.bufferedReader(charset).useLines { seq ->
                     seq.take(maxLines).toList()
                 }
-                val totalLineCount = file.bufferedReader(Charsets.UTF_8).useLines { it.count() }
+                val totalLineCount = file.bufferedReader(charset).useLines { it.count() }
 
                 var content = lines.joinToString("\n")
                 var truncated = false
@@ -548,9 +570,18 @@ class FileReadTool(private val context: Context) : AgentTool {
                     totalChars += header.length
 
                     try {
-                        val lines = zip.getInputStream(entry)
-                            .bufferedReader(Charsets.UTF_8)
-                            .useLines { it.take(maxLines).toList() }
+                        // v147+ CSV 乱码修复：ZIP 内文件也做编码检测
+                        // 把 entry 内容读到临时字节数组再检测编码（ZIP entry 不能 seek）
+                        val bytes = zip.getInputStream(entry).use { it.readBytes() }
+                        val tempFile = java.io.File.createTempFile("zip_entry", ".tmp")
+                        tempFile.deleteOnExit()
+                        tempFile.writeBytes(bytes)
+                        val charset = detectFileCharset(tempFile)
+                        tempFile.delete()
+
+                        val lines = java.io.BufferedReader(java.io.InputStreamReader(
+                            bytes.inputStream(), charset,
+                        )).useLines { it.take(maxLines).toList() }
 
                         val remaining = MAX_CHARS - totalChars
                         val fileContent = lines.joinToString("\n").take(remaining.coerceAtLeast(0))
@@ -574,6 +605,166 @@ class FileReadTool(private val context: Context) : AgentTool {
                     toolName = name,
                     success  = false,
                     content  = "无法解析 ZIP 文件：${e.message?.take(80)}",
+                    error    = e.message,
+                )
+            }
+        }
+
+    /**
+     * 读取 .docx 文件内容（Office Open XML）。
+     *
+     * .docx 本质是 ZIP 压缩包，正文在 `word/document.xml` 里，用 `<w:t>` 标签包裹文本。
+     * 直接当文本读会读到 PK 开头的二进制乱码，需解压后解析 XML 提取纯文本。
+     *
+     * 实现：用 JDK ZipFile 解压，取 word/document.xml，用正则提取 `<w:t>` 标签内容，
+     * `<w:p>` 段落分隔用换行——不依赖 Apache POI（项目未引入）。
+     */
+    private suspend fun readDocxContents(docxFile: java.io.File, maxLines: Int): ToolResult =
+        withContext(Dispatchers.IO) {
+            try {
+                val zip = java.util.zip.ZipFile(docxFile)
+                val docEntry = zip.getEntry("word/document.xml")
+                    ?: return@withContext ToolResult(
+                        name, false, "无法解析 docx：找不到 word/document.xml（可能不是标准 docx 格式）",
+                    )
+
+                val xmlContent = zip.getInputStream(docEntry).use { it.readBytes().toString(Charsets.UTF_8) }
+                zip.close()
+
+                // 提取 <w:t> 标签内的文本（正文文字）
+                // <w:p> 是段落，用换行分隔
+                val textBuilder = StringBuilder()
+                val wTPattern = Regex("<w:t[^>]*>([^<]*)</w:t>")
+                val wPPattern = Regex("<w:p[^>]*>")
+                var pos = 0
+                while (pos < xmlContent.length) {
+                    val wPMatch = wPPattern.find(xmlContent, pos)
+                    if (wPMatch == null) {
+                        // 剩余文本
+                        wTPattern.findAll(xmlContent, pos).forEach { textBuilder.append(it.groupValues[1]) }
+                        break
+                    }
+                    // 段落前的 <w:t>
+                    wTPattern.findAll(xmlContent, pos).takeWhile { it.range.first < wPMatch.range.first }
+                        .forEach { textBuilder.append(it.groupValues[1]) }
+                    textBuilder.append('\n')  // 段落分隔
+                    pos = wPMatch.range.last + 1
+                }
+
+                val extractedText = textBuilder.toString().trim()
+                if (extractedText.isEmpty()) {
+                    return@withContext ToolResult(
+                        name, true,
+                        "[docx 文件: ${docxFile.name}]\n文档为空或正文无可提取文本（可能是图片型文档或加密文档）。",
+                    )
+                }
+
+                val lineCount = extractedText.lines().size
+                val preview = extractedText.lines().take(maxLines).joinToString("\n")
+                ToolResult(
+                    toolName = name,
+                    success  = true,
+                    content  = "[docx 文件: ${docxFile.name}]\n── 正文内容（共 ${lineCount} 行，显示前 ${minOf(maxLines, lineCount)} 行）──\n$preview",
+                    userHint = "正在解析 Word 文档…",
+                )
+            } catch (e: Exception) {
+                com.zaijian.zhoumuyun.util.AgentLog.error("FileRead", "解析 docx 失败：${docxFile.name}", e)
+                ToolResult(
+                    toolName = name,
+                    success  = false,
+                    content  = "无法解析 docx 文件：${e.message?.take(80)}",
+                    error    = e.message,
+                )
+            }
+        }
+
+    /**
+     * 读取 .xlsx 文件内容（Office Open XML）。
+     *
+     * .xlsx 本质是 ZIP，单元格文本在 xl/sharedStrings.xml 里（共享字符串表），
+     * 每个 `<si>` 是一个字符串，内含 `<t>` 标签。工作表在 xl/worksheets/sheetN.xml。
+     *
+     * 实现：提取 sharedStrings.xml 的 `<t>` 标签内容作为单元格值列表，然后读
+     * sheet1.xml 的 `<c>` 单元格，按行列拼成文本表格——不依赖 Apache POI。
+     */
+    private suspend fun readXlsxContents(xlsxFile: java.io.File, maxLines: Int): ToolResult =
+        withContext(Dispatchers.IO) {
+            try {
+                val zip = java.util.zip.ZipFile(xlsxFile)
+
+                // 1. 提取共享字符串表
+                val sharedStrings = mutableListOf<String>()
+                val ssEntry = zip.getEntry("xl/sharedStrings.xml")
+                if (ssEntry != null) {
+                    val ssXml = zip.getInputStream(ssEntry).use { it.readBytes().toString(Charsets.UTF_8) }
+                    // <si> 是一个字符串项，内含一个或多个 <t> 标签（富文本可能有多个）
+                    val siPattern = Regex("<si>(.*?)</si>", RegexOption.DOT_MATCHES_ALL)
+                    val tPattern = Regex("<t[^>]*>([^<]*)</t>")
+                    siPattern.findAll(ssXml).forEach { siMatch ->
+                        val text = tPattern.findAll(siMatch.groupValues[1])
+                            .joinToString("") { it.groupValues[1] }
+                        sharedStrings.add(text)
+                    }
+                }
+
+                // 2. 读取第一个工作表
+                val sheetEntry = zip.getEntry("xl/worksheets/sheet1.xml")
+                    ?: return@withContext ToolResult(
+                        name, false, "无法解析 xlsx：找不到 xl/worksheets/sheet1.xml",
+                    )
+                val sheetXml = zip.getInputStream(sheetEntry).use { it.readBytes().toString(Charsets.UTF_8) }
+                zip.close()
+
+                // 3. 解析行和单元格
+                // <row> 是行，<c r="A1" t="s"><v>0</v></c> 是单元格
+                // t="s" 表示值是共享字符串索引（查 sharedStrings），无 t 属性是数字
+                val rowPattern = Regex("<row[^>]*>(.*?)</row>", RegexOption.DOT_MATCHES_ALL)
+                val cellPattern = Regex("""<c\s+r="([A-Z]+)\d+"([^>]*)>\s*(?:<v>([^<]*)</v>)?""")
+                val colPattern = Regex("[A-Z]+")
+
+                val rows = mutableListOf<List<String>>()
+                for (rowMatch in rowPattern.findAll(sheetXml)) {
+                    val rowContent = rowMatch.groupValues[1]
+                    val cells = cellPattern.findAll(rowContent).map { cellMatch ->
+                        val attrs = cellMatch.groupValues[2]
+                        val value = cellMatch.groupValues[3]
+                        if (attrs.contains("t=\"s\"") && value.isNotEmpty()) {
+                            // 共享字符串索引
+                            val idx = value.toIntOrNull() ?: -1
+                            if (idx in sharedStrings.indices) sharedStrings[idx] else value
+                        } else {
+                            value
+                        }
+                    }.toList()
+                    if (cells.isNotEmpty()) rows.add(cells)
+                }
+
+                if (rows.isEmpty()) {
+                    return@withContext ToolResult(
+                        name, true,
+                        "[xlsx 文件: ${xlsxFile.name}]\n工作表为空或无数据。",
+                    )
+                }
+
+                // 4. 格式化输出为文本表格
+                val preview = rows.take(maxLines).joinToString("\n") { it.joinToString(" | ") }
+                // 复核意见三：暂不支持多 sheet，必须在返回内容里显式提示，
+                // 不能让用户/AI 以为读到的是完整表格数据而实际读漏了其他 sheet。
+                // 未来若支持多 sheet（解析 xl/workbook.xml 的 sheet 列表），
+                // 移除此提示并改为列出可用 sheet 供 AI 选择读取。
+                val multiSheetHint = "（仅读取工作簿的第一个工作表 sheet1，如需其他工作表请说明）"
+                ToolResult(
+                    toolName = name,
+                    success  = true,
+                    content  = "[xlsx 文件: ${xlsxFile.name}]\n── 表格内容（共 ${rows.size} 行，显示前 ${minOf(maxLines, rows.size)} 行）──\n$multiSheetHint\n$preview",
+                    userHint = "正在解析 Excel 文档…",
+                )
+            } catch (e: Exception) {
+                com.zaijian.zhoumuyun.util.AgentLog.error("FileRead", "解析 xlsx 失败：${xlsxFile.name}", e)
+                ToolResult(
+                    toolName = name,
+                    success  = false,
+                    content  = "无法解析 xlsx 文件：${e.message?.take(80)}",
                     error    = e.message,
                 )
             }
@@ -616,7 +807,8 @@ class FileReadTool(private val context: Context) : AgentTool {
 class WeatherTool : AgentTool {
 
     override val name     = "weather"
-    override val description = "查询指定城市的天气情况（unit 可选 celsius/fahrenheit，默认 celsius）"
+    override val description = "查询指定城市的天气情况"
+    override val usageNotes = "unit 可选 celsius/fahrenheit，默认 celsius"
     override val paramKeys = listOf("city", "unit")
 
     override suspend fun execute(params: Map<String, String>): ToolResult = withContext(Dispatchers.IO) {
@@ -733,7 +925,8 @@ class WeatherTool : AgentTool {
 class UrlFetchTool : AgentTool {
 
     override val name      = "url_fetch"
-    override val description = "抓取网页正文内容，用于「帮我看看这个链接讲了什么」（max_chars 可选，100-8000，默认 3000；不支持抓取内网地址）"
+    override val description = "抓取网页正文内容，用于「帮我看看这个链接讲了什么」"
+    override val usageNotes = "max_chars 可选，100-8000，默认 3000；不支持抓取内网地址"
     override val paramKeys = listOf("url", "max_chars")
 
     private companion object {
@@ -853,6 +1046,70 @@ class UrlFetchTool : AgentTool {
 }
 
 // ─────────────────────────────────────────────────────────────
+//  文件编码检测（v147+ CSV 乱码修复）
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * 检测文件编码，解决中文 CSV 乱码问题。
+ *
+ * 背景：Windows 下 Excel 导出的 CSV 默认是 GBK 编码，但 [FileReadTool] 和
+ * [com.zaijian.zhoumuyun.data.agent.TableExportTool] 原来硬编码用 UTF-8 读取，
+ * 导致中文内容变成乱码（AI 看到"鏉傞繝鍧?”之类的 GBK 字节被 UTF-8 误解码的产物）。
+ *
+ * 检测策略（按优先级）：
+ * 1. **BOM 检测**：前 3 字节 `EF BB BF` → UTF-8 BOM；前 2 字节 `FF FE` → UTF-16 LE
+ * 2. **UTF-8 验证**：无 BOM 时，读前 4KB 尝试 UTF-8 解码，如果出现替换字符
+ *    （U+FFFD）说明不是合法 UTF-8 → 判定为 GBK
+ * 3. **回退 UTF-8**：UTF-8 解码无替换字符 → 判定为 UTF-8
+ *
+ * @return 检测到的 [Charset]（UTF-8 / GBK / UTF-16）
+ */
+fun detectFileCharset(file: java.io.File): Charset {
+    if (!file.exists() || file.length() == 0L) return Charsets.UTF_8
+
+    return try {
+        file.inputStream().use { fis ->
+            val bom = ByteArray(3)
+            val read = fis.read(bom)
+
+            // 1. BOM 检测
+            if (read >= 3 && bom[0] == 0xEF.toByte() && bom[1] == 0xBB.toByte() && bom[2] == 0xBF.toByte()) {
+                return Charsets.UTF_8  // UTF-8 BOM
+            }
+            if (read >= 2 && bom[0] == 0xFF.toByte() && bom[1] == 0xFE.toByte()) {
+                return Charset.forName("UTF-16LE")  // UTF-16 LE BOM
+            }
+            if (read >= 2 && bom[0] == 0xFE.toByte() && bom[1] == 0xFF.toByte()) {
+                return Charset.forName("UTF-16BE")  // UTF-16 BE BOM
+            }
+
+            // 2. UTF-8 验证：读前 4KB 尝试 UTF-8 解码
+            // 重新从头读（BOM 那 3 字节也包含进来，UTF-8 无 BOM 时不影响解码）
+            fis.channel.position(0)
+            val sample = ByteArray(4096)
+            val sampleLen = fis.read(sample)
+            if (sampleLen <= 0) return Charsets.UTF_8
+
+            val sampleStr = String(sample, 0, sampleLen, Charsets.UTF_8)
+            // U+FFFD 是 UTF-8 解码失败时的替换字符，出现说明不是合法 UTF-8
+            if (sampleStr.contains('\uFFFD')) {
+                // 不是 UTF-8 → 大概率是 GBK（中文 Windows 默认编码）
+                return try {
+                    Charset.forName("GBK")
+                } catch (_: Exception) {
+                    Charsets.UTF_8  // GBK 不可用时回退
+                }
+            }
+
+            // 3. 合法 UTF-8
+            Charsets.UTF_8
+        }
+    } catch (_: Exception) {
+        Charsets.UTF_8  // 检测失败时安全回退
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
 //  ⑦ FileExportTool
 // ─────────────────────────────────────────────────────────────
 
@@ -865,7 +1122,9 @@ class UrlFetchTool : AgentTool {
  *   format="md"（或 "txt"，默认 "md"）
  *
  * 实现：
- *   - 将 content 写入 filesDir/exports/{timestamp}_{name} 文件
+ *   - v147（文件保险库改造）：将 content 经统一入口 [writeVaultFile] 写入
+ *     vault/personal/{characterId}/ 或 vault/shared/roundtable/{rtId}/ 或
+ *     vault/shared/project/（具体目录由 VaultCallContextHolder 决定）
  *   - 返回 JSON 元数据（供 ChatViewModel 解析为 ExportedFile）
  *   - UI 层（ChatScreen）在消息气泡中渲染下载卡片
  */
@@ -880,12 +1139,13 @@ class FileExportTool(private val context: Context) : AgentTool {
                 _instance ?: FileExportTool(context.applicationContext).also { _instance = it }
             }
 
-        private const val EXPORT_DIR = "exports"
+        // v147：EXPORT_DIR 已废弃（落盘统一走 VaultIo），移除该常量。
         private val UNSAFE_CHARS = Regex("[/\\\\:*?\"<>|]")
     }
 
     override val name      = "file_export"
-    override val description = "将生成的内容写入文件并落盘导出，供用户下载查看（用户直接调用时 format 仅支持 md/txt，默认 md；html 是内部委托格式，供 docx_gen/pdf_export/html_gen/markdown_to_doc 等工具生成 HTML 内容时使用，不建议直接传入）"
+    override val description = "将生成的内容写入文件并落盘导出，供用户下载查看"
+    override val usageNotes = "用户直接调用时 format 仅支持 md/txt，默认 md；html 是内部委托格式，供 docx_gen/pdf_export/html_gen/markdown_to_doc 等工具生成 HTML 内容时使用，不建议直接传入"
     override val paramKeys = listOf("name", "content", "format")
 
     override suspend fun execute(params: Map<String, String>): ToolResult = withContext(Dispatchers.IO) {
@@ -962,20 +1222,14 @@ class FileExportTool(private val context: Context) : AgentTool {
         }
 
         try {
-            val exportDir = java.io.File(context.filesDir, EXPORT_DIR).also { it.mkdirs() }
-            val timestamp = System.currentTimeMillis()
-            val file = java.io.File(exportDir, "${timestamp}_${fileName}")
-
-            file.writeText(content, Charsets.UTF_8)
-
-            val sizeBytes = file.length()
-
-            val metaJson = org.json.JSONObject().apply {
-                put("fileName",     fileName)
-                put("mimeType",     mimeType)
-                put("sizeBytes",    sizeBytes)
-                put("absolutePath", file.absolutePath)
-            }.toString()
+            // v147（文件保险库改造）：落盘改走统一入口 [writeVaultFile]，
+            // 由 VaultIo 依据 VaultCallContextHolder 决定写入
+            // vault/personal/{characterId}/ 或 vault/shared/roundtable/{rtId}/ 或
+            // vault/shared/project/。FileExportTool 自身不再感知目录与角色身份。
+            // fileName 已是本函数上方计算好的安全人读名（含后缀），直接传给
+            // writeVaultFile（它不会再二次 sanitize/截断，避免截掉扩展名）。
+            val metaJson = writeVaultFile(context, fileName, content, mimeType)
+            val sizeBytes = content.toByteArray(Charsets.UTF_8).size.toLong()
 
             val formatNotice = if (formatWasUnsupported) {
                 "\n[提示：format=\"$format\" 不受支持，仅支持 md/txt，已按 md 生成]"
@@ -1008,17 +1262,21 @@ class FileExportTool(private val context: Context) : AgentTool {
  *
  * 标签格式：<tool:zip_export names="{逗号分隔的已导出文件名}"/>
  *
- * 把已经导出到 filesDir/exports/ 下的多个文件打包成一个 zip，供用户一次性
+ * 把已经导出到文件保险库（vault/）下的多个文件打包成一个 zip，供用户一次性
  * 下载/分享——不重复实现"导出"，只做"打包"，前置文件必须已经由 file_export /
  * excel_gen / pptx_gen / docx_gen / pdf_export 等工具生成过。
  *
- * names 匹配用 endsWith 而非精确匹配：exports 目录下的真实文件名带前缀
+ * v147（文件保险库改造）：源文件不再固定从 filesDir/exports/ 找，而是从
+ * "当前作用域目录 + 项目共享目录"两个可见范围内搜索（尊重权限边界——私聊
+ * 场景只看得到当前角色私库 + 项目共享，看不到别的角色私库）。zip 产物也走
+ * [writeVaultStream] 落到当前作用域目录。
+ *
+ * names 匹配用 endsWith 而非精确匹配：vault 下的真实文件名带前缀
  * （file_export 是 "{timestamp}_{name}"，excel_gen/pptx_gen 是
  * "{timestamp}_{uuid8}_{name}"，两种命名风格都在项目里并存），LLM/用户只会
  * 提供原始文件名，用 endsWith 兼容两种前缀模式。
  *
- * 产物同样落在 filesDir/exports/ 下，metaJson 走 1.1 打通的
- * extractExportedFileJson 同一条通用识别链路，不需要改 orchestrator。
+ * metaJson 走 1.1 打通的 extractExportedFileJson 同一条通用识别链路，不需要改 orchestrator。
  */
 class ArchiveExportTool(private val context: Context) : AgentTool {
 
@@ -1032,34 +1290,36 @@ class ArchiveExportTool(private val context: Context) : AgentTool {
             return@withContext ToolResult(name, false, "", "需要 names 参数（逗号分隔的文件名）")
         }
 
-        val exportDir = File(context.filesDir, "exports")
-        val matched = exportDir.listFiles { f -> names.any { f.name.endsWith(it) } }?.toList().orEmpty()
+        // v147：在当前可见范围内搜索源文件。resolveVaultTargetDir 返回当前作用域目录
+        // （私聊=角色私库，圆桌=圆桌共享）；projectVaultDir 是所有角色可见的项目共享。
+        // 两者合并去重，保证用户能打包自己有权访问的全部文件。
+        val searchDirs = linkedSetOf(resolveVaultTargetDir(context), projectVaultDir(context))
+        val matched = searchDirs
+            .filter { it.exists() }
+            .flatMap { dir -> dir.listFiles { f -> f.isFile && names.any { f.name.endsWith(it) } }?.toList().orEmpty() }
         if (matched.isEmpty()) {
             return@withContext ToolResult(name, false, "", "未找到匹配的已导出文件")
         }
 
         try {
-            // 与 DataVisTools.kt saveViaStream 同款命名风格：时间戳 + 短随机
-            // 后缀，避免同一毫秒内并发打包时文件名冲突。
-            val uniqueSuffix = java.util.UUID.randomUUID().toString().take(8)
-            val zipFile = File(exportDir, "${System.currentTimeMillis()}_${uniqueSuffix}_导出合集.zip")
-            java.util.zip.ZipOutputStream(zipFile.outputStream()).use { zos ->
-                matched.forEach { f ->
-                    zos.putNextEntry(java.util.zip.ZipEntry(f.name))
-                    f.inputStream().use { it.copyTo(zos) }
-                    zos.closeEntry()
+            // 走统一落盘入口 [writeVaultStream]：命名风格（时间戳+短随机后缀）与原实现一致，
+            // 由 VaultIo 决定写入哪个 vault 目录，metaJson 结构与 file_export 对齐。
+            val humanName = "导出合集.zip"
+            val metaJson = writeVaultStream(context, humanName, "application/zip") { out ->
+                java.util.zip.ZipOutputStream(out).use { zos ->
+                    matched.forEach { f ->
+                        zos.putNextEntry(java.util.zip.ZipEntry(f.name))
+                        f.inputStream().use { it.copyTo(zos) }
+                        zos.closeEntry()
+                    }
                 }
             }
-            val metaJson = JSONObject().apply {
-                put("fileName", zipFile.name)
-                put("mimeType", "application/zip")
-                put("sizeBytes", zipFile.length())
-                put("absolutePath", zipFile.absolutePath)
-            }.toString()
+            // metaJson 里带了 sizeBytes，但为打 success 消息要个 Long，直接解析一下。
+            val sizeBytes = JSONObject(metaJson).optLong("sizeBytes", 0L)
             ToolResult(
                 toolName = name,
                 success  = true,
-                content  = "压缩包已生成：${zipFile.name}（${formatZipSize(zipFile.length())}）\n$metaJson",
+                content  = "压缩包已生成：$humanName（${formatZipSize(sizeBytes)}）\n$metaJson",
                 userHint = "正在打包…",
             )
         } catch (e: Exception) {
@@ -1071,6 +1331,71 @@ class ArchiveExportTool(private val context: Context) : AgentTool {
         bytes < 1024        -> "${bytes} B"
         bytes < 1024 * 1024 -> "${"%.1f".format(bytes / 1024.0)} KB"
         else                -> "${"%.1f".format(bytes / 1024.0 / 1024.0)} MB"
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+//  诊断日志导出工具（v147+ vault FileProvider 修复同步引入）
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * 导出 Agent 行为诊断日志。
+ *
+ * 当用户反馈"工具说存了但没文件"或"点文件没反应"时，让 Agent 调用本工具
+ * 把 `filesDir/logs/agent_log.txt` 复制成一份可下载的文件，用户分享给开发者排查。
+ *
+ * 日志内容（由 [com.zaijian.zhoumuyun.util.AgentLog] 写入）：
+ * - 所有工具调用的开始/成功/失败/超时（含 params 和 result 摘要）
+ * - LLM 调用失败
+ * - 工具未注册/被禁用
+ * - 未捕获异常堆栈
+ *
+ * 走 [writeVaultStream] 落盘，与 [FileExportTool] 同款 metaJson，UI 层渲染成
+ * [FileExportCard] 供用户下载。
+ */
+class DiagLogExportTool(private val context: Context) : AgentTool {
+
+    override val name = "diag_export_log"
+    override val description = "导出诊断日志，用于排查AI行为问题或用户反馈异常时"
+    override val usageNotes = "包含Agent工具调用记录、异常堆栈等"
+    override val paramKeys = emptyList<String>()
+
+    override suspend fun execute(params: Map<String, String>): ToolResult = withContext(Dispatchers.IO) {
+        try {
+            val logFile = com.zaijian.zhoumuyun.util.AgentLog.exportLog(context)
+            if (logFile == null || !logFile.exists() || logFile.length() == 0L) {
+                return@withContext ToolResult(
+                    toolName = name,
+                    success  = true,
+                    content  = "诊断日志为空（没有记录到任何工具调用或异常）。如果用户反馈了问题但日志为空，说明问题发生在 AgentLog 覆盖范围之外（如 UI 层或数据库层）。",
+                )
+            }
+
+            // 复制到 vault 目录，生成可下载的文件
+            val stamp = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.getDefault()).format(java.util.Date())
+            val humanName = "诊断日志_$stamp.txt"
+            val metaJson = writeVaultStream(context, humanName, "text/plain") { out ->
+                logFile.inputStream().use { it.copyTo(out) }
+            }
+
+            val sizeBytes = JSONObject(metaJson).optLong("sizeBytes", 0L)
+            val sizeKb = sizeBytes / 1024.0
+            ToolResult(
+                toolName = name,
+                success  = true,
+                content  = "诊断日志已导出：$humanName（${String.format("%.1f", sizeKb)} KB）\n" +
+                           "日志包含 Agent 工具调用记录、异常堆栈等。用户下载后可分享给开发者排查。\n" +
+                           "$metaJson",
+            )
+        } catch (e: Exception) {
+            com.zaijian.zhoumuyun.util.AgentLog.error("DiagLogExport", "导出诊断日志失败", e)
+            ToolResult(
+                toolName = name,
+                success  = false,
+                content  = "[导出诊断日志失败：${e.message}]",
+                error    = e.message,
+            )
+        }
     }
 }
 
@@ -1092,5 +1417,6 @@ fun AgentToolRegistry.registerBuiltinTools(context: Context) {
         UrlFetchTool(),
         FileExportTool.getInstance(context),
         ArchiveExportTool(context),
+        DiagLogExportTool(context),
     )
 }

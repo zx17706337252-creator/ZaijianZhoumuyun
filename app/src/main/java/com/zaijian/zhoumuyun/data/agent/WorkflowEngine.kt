@@ -1,12 +1,16 @@
 package com.zaijian.zhoumuyun.data.agent
 
+import com.zaijian.zhoumuyun.data.AppContainer
 import com.zaijian.zhoumuyun.data.provider.chatSyncWithRetry
 import com.zaijian.zhoumuyun.data.db.entity.WorkflowJobEntity
 import com.zaijian.zhoumuyun.data.db.entity.WorkflowStepResultEntity
 import com.zaijian.zhoumuyun.data.provider.LLMConfig
 import com.zaijian.zhoumuyun.data.provider.LLMMessage
 import com.zaijian.zhoumuyun.data.provider.LLMProvider
+import com.zaijian.zhoumuyun.data.repository.AgentActivityRepository
 import com.zaijian.zhoumuyun.data.repository.WorkflowRepository
+import com.zaijian.zhoumuyun.util.ZLog
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.json.JSONObject
@@ -206,10 +210,13 @@ object WorkflowEngine {
             val now = System.currentTimeMillis()
             if (now >= job.deadlineAt) {
                 repository.markTimeout(jobId, buildLimitReason(job, "总耗时超过 10 分钟上限"))
+                // §2.1.4 失败写回：以整个 job 的 goal 为 context
+                recordJobFailure(repository, jobId, job.characterId, "workflow_timeout", "总耗时超过 10 分钟上限", job.currentStep)
                 return
             }
             if (job.currentStep >= job.maxSteps) {
                 repository.markTimeout(jobId, buildLimitReason(job, "步数达到上限（${job.maxSteps} 步）"))
+                recordJobFailure(repository, jobId, job.characterId, "workflow_step_limit", "步数达到上限（${job.maxSteps} 步）", job.currentStep)
                 return
             }
 
@@ -224,12 +231,18 @@ object WorkflowEngine {
                 }
                 is EngineDecision.Stuck -> {
                     repository.markFailed(jobId, decision.reason)
+                    // §2.1.4 失败写回：LLM 自主判定卡住
+                    recordJobFailure(repository, jobId, job.characterId, "workflow_stuck", decision.reason, stepIndex)
                     return
                 }
                 is EngineDecision.CallTool -> {
                     // 批次2 2-3修复：executeToolStep 返回 false 表示 recordStep 失败已
                     // markFailed，需中止循环避免工具重复执行（详见 executeToolStep 注释）
-                    if (!executeToolStep(repository, jobId, stepIndex, decision, job.characterId)) return
+                    if (!executeToolStep(repository, jobId, stepIndex, decision, job.characterId)) {
+                        // §2.1.4 失败写回：executeToolStep 内部 markFailed，此处补写记忆
+                        recordJobFailure(repository, jobId, job.characterId, decision.call.toolName, "executeToolStep 失败（recordStep 异常）", stepIndex)
+                        return
+                    }
                     // 正常情况不 return，回到循环顶部重新读取 job（currentStep 已 +1）
                 }
                 is EngineDecision.Invalid -> {
@@ -255,6 +268,8 @@ object WorkflowEngine {
                         runCatching {
                             repository.markFailed(jobId, "记录步骤失败（LLM 无效输出），中止工作流：${e.message?.take(120)}")
                         }
+                        // §2.1.4 失败写回：LLM 无效输出 + recordStep 失败
+                        recordJobFailure(repository, jobId, job.characterId, "llm_decision", "LLM 无效输出 + recordStep 失败：${e.message?.take(120)}", stepIndex)
                         return
                     }
                 }
@@ -293,6 +308,19 @@ object WorkflowEngine {
                     decidedNextAction = decision.rawText,
                     startedAt = startedAt,
                     completedAt = System.currentTimeMillis(),
+                )
+                // §2.1.4 镜像埋点：白名单拒绝也写一条心迹事件
+                recordWorkflowActivity(
+                    characterId    = characterId,
+                    jobId          = jobId,
+                    toolName       = toolName,
+                    toolParamsJson = paramsToJson(decision.call.params),
+                    success        = false,
+                    output         = null,
+                    errorMessage   = "工具 $toolName 不在工作流安全白名单内，已拒绝执行",
+                    decisionNote   = decision.rawText,
+                    startedAt      = startedAt,
+                    completedAt    = System.currentTimeMillis(),
                 )
             } catch (e: Exception) {
                 // 批次2 2-3修复：recordStep 失败说明 DB 有问题。@Transaction 回滚
@@ -349,6 +377,23 @@ object WorkflowEngine {
                 decidedNextAction = decision.rawText,
                 startedAt = startedAt,
                 completedAt = System.currentTimeMillis(),
+            )
+            // §2.1.4 镜像埋点：主路径也写一条心迹事件
+            recordWorkflowActivity(
+                characterId    = characterId,
+                jobId          = jobId,
+                toolName       = toolName,
+                toolParamsJson = paramsToJson(decision.call.params),
+                success        = result?.success == true,
+                output         = result?.content,
+                errorMessage   = when {
+                    tool == null -> "工具未注册：$toolName"
+                    result?.success == false -> result.error
+                    else -> null
+                },
+                decisionNote   = decision.rawText,
+                startedAt      = startedAt,
+                completedAt    = System.currentTimeMillis(),
             )
         } catch (e: Exception) {
             // 批次2 2-3修复（核心风险点）：L-P1-1 此处只补了 try-catch 防止 DB 写入
@@ -497,6 +542,85 @@ object WorkflowEngine {
         } catch (_: Exception) {
             "{}"
         }
+
+    // ─────────────────────────────────────────────────────────
+    //  §2.1.4 心迹镜像埋点 + 失败写回
+    // ─────────────────────────────────────────────────────────
+
+    /**
+     * §2.1.4 第1点：工作流步骤镜像写入 agent_activity_events（sceneType=workflow）。
+     *
+     * workflow_step_results 是工作流执行的事实来源，此处是镜像——让心迹时间线
+     * 不必单独查 workflow_step_results 表就能看到工作流步骤。fire-and-forget，
+     * DB 写入失败不影响工作流执行。
+     */
+    private suspend fun recordWorkflowActivity(
+        characterId: Int,
+        jobId: String,
+        toolName: String?,
+        toolParamsJson: String?,
+        success: Boolean,
+        output: String?,
+        errorMessage: String?,
+        decisionNote: String?,
+        startedAt: Long,
+        completedAt: Long,
+    ) {
+        try {
+            AppContainer.instance.agentActivityRepo.recordEvent(
+                characterId    = characterId,
+                sessionRef     = jobId,
+                sceneType      = AgentActivityRepository.SceneType.WORKFLOW,
+                eventType      = AgentActivityRepository.EventType.TOOL_CALL,
+                toolName       = toolName,
+                outcome        = if (success)
+                    AgentActivityRepository.Outcome.SUCCESS
+                else AgentActivityRepository.Outcome.FAIL,
+                toolParamsJson = toolParamsJson,
+                outputRaw      = output,
+                errorMessage   = errorMessage,
+                decisionNote   = decisionNote,
+                startedAt      = startedAt,
+                completedAt    = completedAt,
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            ZLog.w("WorkflowEngine", "心迹镜像埋点失败（不影响工作流）", e)
+        }
+    }
+
+    /**
+     * §2.1.4 第2点：Job 终结为 FAILED/TIMEOUT/STUCK 时，以整个 job 的 goal 为
+     * goalContext 触发一次 [MemoryEngine.onToolFailureExhausted]。
+     *
+     * 不是每步单独触发，避免同一个失败任务反复写入多条几乎重复的记忆。
+     * fire-and-forget，记忆写入失败不影响工作流终止流程。
+     */
+    private suspend fun recordJobFailure(
+        repository: WorkflowRepository,
+        jobId: String,
+        characterId: Int,
+        toolName: String,
+        failureReason: String,
+        stepsExecuted: Int,
+    ) {
+        val job = repository.findById(jobId) ?: return
+        val goalContext = job.goal.take(200)
+        try {
+            AppContainer.instance.memoryEngine.onToolFailureExhausted(
+                characterId       = characterId,
+                toolName          = toolName,
+                goalContext       = goalContext,
+                failureReason     = failureReason,
+                attemptsExhausted = stepsExecuted,
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            ZLog.w("WorkflowEngine", "失败写回记忆失败（不影响工作流终止）", e)
+        }
+    }
 
     private fun buildLimitReason(job: WorkflowJobEntity, cause: String): String =
         "在第 ${job.currentStep} 步处停止：$cause。已完成 ${job.currentStep} / ${job.maxSteps} 步。"

@@ -65,6 +65,20 @@ fun MarkdownText(
                 // 让 TextView 宽度自适应父容器（Compose 会约束外层 Box 宽度）
                 maxLines = Int.MAX_VALUE
                 setLineSpacing(0f, 1.15f)         // 行距 1.15x，与 Compose Text 接近
+                // 修复：TextView 默认会消费触摸事件，导致外层 WorldBubble 的
+                // combinedClickable（长按复制）收不到长按事件。设为 false 让事件
+                // 透传到外层，用户就能长按角色气泡复制内容了。
+                //
+                // ── 耦合前提（复核意见四）──
+                // 这里禁用 clickable 依赖于当前 Markwon/MarkdownText 配置**未启用任何
+                // 链接点击相关插件**（未使用 Linkify、未设置 MovementMethod、未注册
+                // LinkPlugin）。如果未来给 Markdown 渲染增加可点击链接功能（如 Linkify、
+                // autolink、自定义链接点击回调），必须重新评估这个改动——届时需要让
+                // 链接点击和长按复制共存（例如用 GestureDetector 区分单击和长按），
+                // 而不是简单地恢复 isClickable=true（那会让长按复制再次失效）。
+                // 在改动链接功能前先搜索本注释的"耦合前提"关键词确认影响范围。
+                isClickable = false
+                isLongClickable = false
             }
         },
         update = { view ->

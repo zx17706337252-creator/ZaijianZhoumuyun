@@ -549,6 +549,7 @@ fun CharacterDetailScreen(
                         },
                         onShowAddDialog  = { showAddMemoryDialog = true },
                         onEditMemory     = { id, content -> editingMemory = id to content },
+                        characterName    = character.name,
                     )
                 }
             }

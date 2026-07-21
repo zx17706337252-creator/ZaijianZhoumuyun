@@ -44,6 +44,9 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.runtime.produceState
+import com.zaijian.zhoumuyun.data.agent.personalVaultDir
+import com.zaijian.zhoumuyun.data.agent.projectVaultDir
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -88,6 +91,8 @@ import com.zaijian.zhoumuyun.ui.viewmodel.ChatViewModel
 import com.zaijian.zhoumuyun.ui.viewmodel.PresenceViewModel
 import com.zaijian.zhoumuyun.ui.viewmodel.ProjectViewModel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.compose.runtime.mutableIntStateOf
 
 import com.zaijian.zhoumuyun.ZaijianApp
@@ -132,6 +137,14 @@ fun ChatScreen(
     // 与 onNavigateToProfile 同款签名 (Int) -> Unit，由 AppNavigation 透传
     // 实际导航逻辑（navigate 到 AppRoute.PersonalSchedule.createRoute(charId)）。
     onNavigateToSchedule: (Int) -> Unit = {},
+    // v147（文件保险库改造）：跳转到文件库（FileVaultScreen）。与 onNavigateToSchedule
+    // 同款签名 (Int) -> Unit，由 AppNavigation 透传 navigate 到 AppRoute.FileVault。
+    onNavigateToVault: (Int) -> Unit = {},
+    // v1.48：跳转到统一文件预览编辑页（FilePreviewEditorScreen）。
+    // 参数是文件绝对路径，由 AppNavigation 透传 navigate 到 AppRoute.FilePreview。
+    onNavigateToFilePreview: (String) -> Unit = {},
+    // v1.48：从内存内容进入预览页（暂存模式）
+    onNavigateToFilePreviewMemory: (String) -> Unit = {},
     presenceViewModel: PresenceViewModel = viewModel(),
     projectViewModel: ProjectViewModel = viewModel(),
     // Bug1修复：ChatViewModel 只有 Application 参数（AndroidViewModel子类），
@@ -291,21 +304,34 @@ fun ChatScreen(
         }
     }
     val openFile: (com.zaijian.zhoumuyun.ui.viewmodel.ExportedFile) -> Unit = { ef ->
-        try {
-            val file = java.io.File(ef.absolutePath)
-            if (file.exists()) {
-                val uri = androidx.core.content.FileProvider.getUriForFile(
-                    ctx2,
-                    "${ctx2.packageName}.fileprovider",
-                    file,
-                )
-                val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
-                    setDataAndType(uri, ef.mimeType)
-                    addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        // v1.48：先尝试应用内预览，不支持再跳外部应用
+        val ext = ef.fileName.substringAfterLast('.', "").lowercase()
+        if (com.zaijian.zhoumuyun.data.agent.FilePreviewParser.isPreviewable(ext)) {
+            // 应用内预览
+            onNavigateToFilePreview(ef.absolutePath)
+        } else {
+            // 兜底：FileProvider + ACTION_VIEW（原逻辑）
+            try {
+                val file = java.io.File(ef.absolutePath)
+                if (file.exists()) {
+                    val uri = androidx.core.content.FileProvider.getUriForFile(
+                        ctx2,
+                        "${ctx2.packageName}.fileprovider",
+                        file,
+                    )
+                    val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
+                        setDataAndType(uri, ef.mimeType)
+                        addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }
+                    ctx2.startActivity(android.content.Intent.createChooser(intent, "打开 ${ef.fileName}"))
+                } else {
+                    android.widget.Toast.makeText(ctx2, "文件不存在：${ef.fileName}", android.widget.Toast.LENGTH_SHORT).show()
                 }
-                ctx2.startActivity(android.content.Intent.createChooser(intent, "打开 ${ef.fileName}"))
+            } catch (e: Exception) {
+                com.zaijian.zhoumuyun.util.ZLog.e("ChatScreen", "打开文件失败：${ef.absolutePath}", e)
+                android.widget.Toast.makeText(ctx2, "无法打开文件：${e.message?.take(60)}", android.widget.Toast.LENGTH_LONG).show()
             }
-        } catch (_: Exception) { /* 无默认应用时静默忽略 */ }
+        }
     }
 
     // 聊天背景图选择器：持久化 URI 权限，确保下次打开仍能读取图片。
@@ -682,6 +708,20 @@ fun ChatScreen(
                                 snackbarHostState.showSnackbar("已复制", duration = SnackbarDuration.Short)
                             }
                         },
+                        // v1.48：气泡点击全屏查看文本
+                        onOpenFullText = { text, isMarkdown ->
+                            val tempKey = com.zaijian.zhoumuyun.ui.screen.filepreview.PreviewMemoryCache.put(
+                                com.zaijian.zhoumuyun.ui.screen.filepreview.PreviewMemoryCache.MemoryItem.MemoryText(text, isMarkdown),
+                            )
+                            onNavigateToFilePreviewMemory(tempKey)
+                        },
+                        // v1.48：表格点击全屏查看
+                        onOpenTable = { columns, rows ->
+                            val tempKey = com.zaijian.zhoumuyun.ui.screen.filepreview.PreviewMemoryCache.put(
+                                com.zaijian.zhoumuyun.ui.screen.filepreview.PreviewMemoryCache.MemoryItem.MemoryTable(columns, rows),
+                            )
+                            onNavigateToFilePreviewMemory(tempKey)
+                        },
                         avatarCropOffsetX = character.avatarCropCircleOffsetX,
                         avatarCropOffsetY = character.avatarCropCircleOffsetY,
                         avatarCropScale   = character.avatarCropCircleScale,
@@ -826,6 +866,17 @@ fun ChatScreen(
                 .onSizeChanged { headerHeightPx = it.height },
         )
 
+        // v147：计算当前角色可见范围内的文件总数，供 ChatSettingsSheet「文件」条目
+        // 副标题显示。produceState 在 characterId 变化时重算；IO 切后台线程。
+        val vaultCtx = androidx.compose.ui.platform.LocalContext.current
+        val vaultFileCount by produceState(initialValue = 0, characterId) {
+            value = withContext(Dispatchers.IO) {
+                val personal = personalVaultDir(vaultCtx, characterId)
+                val project = projectVaultDir(vaultCtx)
+                countFilesUnder(personal) + countFilesUnder(project)
+            }
+        }
+
         // ── Phase 16：聊天设置底部面板 ────────────────────────
         if (showChatSettings) {
             ChatSettingsSheet(
@@ -855,6 +906,9 @@ fun ChatScreen(
                 // 批次4：透传日程入口回调，与 onNavigateToDetail 同款范式——
                 // ChatSettingsSheet 内部已负责 onDismiss()，这里只传导航动作。
                 onNavigateToSchedule = { onNavigateToSchedule(characterId) },
+                // v147：透传文件库入口回调，与 onNavigateToSchedule 同款范式。
+                onNavigateToVault    = { onNavigateToVault(characterId) },
+                vaultFileCount       = vaultFileCount,
                 onDismiss          = { showChatSettings = false },
             )
         }
@@ -947,5 +1001,13 @@ private fun PreviewChatLight() {
     ZaijianTheme(appTheme = AppTheme.LIGHT) {
         ChatScreen(characterId = 6)
     }
+}
+
+// v147：递归统计目录下文件数（含子目录），供 ChatSettingsSheet「文件」条目副标题角标用。
+private fun countFilesUnder(dir: java.io.File): Int {
+    if (!dir.exists()) return 0
+    val files = dir.listFiles { f -> f.isFile }?.size ?: 0
+    val subDirs: List<java.io.File> = dir.listFiles { f -> f.isDirectory }?.toList() ?: emptyList()
+    return files + subDirs.sumOf { countFilesUnder(it) }
 }
 

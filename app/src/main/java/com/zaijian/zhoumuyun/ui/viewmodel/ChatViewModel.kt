@@ -3,6 +3,7 @@ package com.zaijian.zhoumuyun.ui.viewmodel
 import android.app.Application
 import com.zaijian.zhoumuyun.util.ZLog
 import com.zaijian.zhoumuyun.data.agent.AgentToolRegistry
+import com.zaijian.zhoumuyun.data.agent.TablePayload
 import com.zaijian.zhoumuyun.data.model.PregnancyTriggerResult
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -97,6 +98,15 @@ data class ChatMessage(
      * null = 该消息没有文件附件；历史消息永远为 null，即使 exportedFileJson 有值。
      */
     val exportedFilesJson: String? = null,
+    /**
+     * v67（表格直传方案 W4）：`table_export` 工具产出的 [TablePayload] 序列化 JSON。
+     * null = 该消息没有表格；历史消息永远为 null。由 [ChatMessageOrchestrator] 在
+     * `StreamEvent.ToolDone` 里收集 `event.result.tablePayloadJson` 写入
+     * `MessageEntity.tableDataJson`，UI 层通过 [tablePayload] 计算属性反序列化渲染。
+     * ≤50 行 Markdown 路径不落本字段（null）；50~500 行存全量；>500 行存前 10 行
+     * 预览 + xlsx 附件走 `exportedFilesJson`（与表格字段同级、同生命周期）。
+     */
+    val tableDataJson: String? = null,
     // Fix-ThinkingLeak：从回复正文剥离出的内心推理/工具调用意图原文，null = 无想法内容。
     val thinkingText: String? = null,
     // v1.36 问题2：从回复正文中圆括号包裹的内容抽取出的心理感受/神态描写，null = 无心理描写。
@@ -111,6 +121,13 @@ data class ChatMessage(
      * 这次改造丢失已有的文件卡片。两个字段都为 null 时返回空 list。
      */
     val exportedFiles: List<ExportedFile> get() = parseExportedFilesWithFallback(exportedFilesJson, exportedFileJson)
+
+    /**
+     * v67（表格直传方案 W4）：从 [tableDataJson] 反序列化得到的 [TablePayload]。
+     * null = 该消息没有表格（或 JSON 格式异常的历史脏数据兜底）。UI 层
+     * `MessageBubble` 在 `message.tablePayload != null` 时渲染 [TableCard]。
+     */
+    val tablePayload: TablePayload? get() = tableDataJson?.let { TablePayload.fromJson(it) }
 }
 
 /**
@@ -844,6 +861,16 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         if (currentCharacterId < 0) return
         viewModelScope.launch(Dispatchers.IO) {
             try {
+                // v1.48：用户上传文件后插入 system 消息通知 AI。
+                // 不自动读取文件内容（用户要求 AI 主动调用 file_read 工具读取，
+                // 而不是系统帮它读好塞给它）。在 system prompt 里强制要求 AI
+                // 收到此通知后必须调用 file_read 工具读取内容（见 PromptOrchestrator
+                // 的 file_read 强制指令）。
+                // ── 更新 ──
+                // 用户进一步要求"从程序上锁死"，不靠 prompt。现在 ToolCallInterceptor
+                // 会扫描消息历史里的"用户导入了一个文件"通知，自动执行 file_read
+                // 工具并把结果注入对话历史——程序层面锁死，不依赖 LLM 是否执行。
+                // 这里只插入标准格式的通知消息，供 ToolCallInterceptor 扫描匹配。
                 messageRepo.insert(
                     MessageEntity(
                         id = UUID.randomUUID().toString(),

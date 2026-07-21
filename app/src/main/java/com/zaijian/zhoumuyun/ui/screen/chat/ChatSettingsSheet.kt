@@ -86,6 +86,11 @@ internal fun ChatSettingsSheet(
     // 默认空实现保持向后兼容——ChatScreen 一定会透传真实回调，默认值只是让
     // 其他潜在调用点（如预览）不必关心此参数。
     onNavigateToSchedule: () -> Unit = {},
+    // v147（文件保险库改造）：跳转到文件库（FileVaultScreen），展示该角色的
+    // 私库 + 参与的圆桌共享 + 项目共享。与"日程"条目同款 Row+IconBadge+Column
+    // 视觉范式。vaultFileCount 用于副标题角标（为 0 时显示引导文案）。
+    onNavigateToVault: () -> Unit = {},
+    vaultFileCount: Int = 0,
 ) {
     val colors     = ZaijianTheme.colors
     val type       = ZaijianTheme.typography
@@ -184,6 +189,44 @@ internal fun ChatSettingsSheet(
                 Column(modifier = Modifier.weight(1f)) {
                     Text(text = "日程", style = type.body, color = colors.textPrimary)
                     Text(text = "定时任务 · 工单提醒", style = type.caption, color = colors.textSecondary)
+                }
+            }
+
+            HorizontalDivider(color = colors.border, modifier = Modifier.padding(horizontal = Spacing.screenHorizontal))
+
+            // v147（文件保险库改造）：文件条目，紧邻"日程"。
+            // 视觉范式与"日程"/"角色档案"严格一致：Row + IconBadge + Column(主副标题)。
+            // 点击触发 onNavigateToVault 并关闭 Sheet——与"日程"条目 onNavigateToSchedule()
+            // + onDismiss() 的范式严格一致。副标题根据 vaultFileCount 显示数量或引导文案。
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable {
+                        onNavigateToVault()
+                        onDismiss()
+                    }
+                    .padding(
+                        horizontal = Spacing.screenHorizontal,
+                        vertical   = Spacing.md,
+                    ),
+                verticalAlignment     = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Spacing.md),
+            ) {
+                com.zaijian.zhoumuyun.ui.design.IconBadge(
+                    icon               = Icons.Outlined.FolderOpen,
+                    contentDescription = null,
+                    tint               = accentColor,
+                    background         = accentColor.copy(alpha = 0.12f),
+                    size               = 20.dp,
+                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(text = "文件", style = type.body, color = colors.textPrimary)
+                    Text(
+                        text  = if (vaultFileCount > 0) "$vaultFileCount 个文件 · 预览/下载/编辑"
+                                else "角色生成的文件在此管理",
+                        style = type.caption,
+                        color = colors.textSecondary,
+                    )
                 }
             }
 

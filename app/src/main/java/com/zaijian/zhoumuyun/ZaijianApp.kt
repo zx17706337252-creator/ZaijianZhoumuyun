@@ -74,6 +74,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.CancellationException
 import com.zaijian.zhoumuyun.data.agent.DailyPracticeScheduler
 import com.zaijian.zhoumuyun.data.agent.ProjectDailyPlannerTool
+import com.zaijian.zhoumuyun.data.agent.migrateExportsToVault
 import com.zaijian.zhoumuyun.data.repository.DaughterCharacterRepository
 
 /**
@@ -184,11 +185,20 @@ class ZaijianApp : Application() {
     override fun onCreate() {
         super.onCreate()
 
+        // AgentLog 初始化：注入 appContext，否则日志静默丢弃
+        com.zaijian.zhoumuyun.util.AgentLog.init(this)
+
         // S1问题3修复：全局未捕获异常处理器，将崩溃堆栈写入文件
         // 供开发者诊断，ZLog 仅写 logcat 在进程崩溃时不可追溯
         val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
             try {
+                // 崩溃也写一份到 AgentLog
+                kotlinx.coroutines.runBlocking {
+                    com.zaijian.zhoumuyun.util.AgentLog.error(
+                        "CrashHandler", "未捕获异常（线程 ${thread.name}）", throwable,
+                    )
+                }
                 val crashDir = java.io.File(filesDir, "crashes")
                 crashDir.mkdirs()
                 val crashFile = java.io.File(crashDir, "crash_${System.currentTimeMillis()}.txt")
@@ -236,6 +246,13 @@ class ZaijianApp : Application() {
         // 1a. AppContainer 紧跟 db 之后同步初始化，与下方 presenceEngine 构建
         // 属于同一批"主线程、无 IO、纯内存构造"操作（Phase 3 修复手册）
         com.zaijian.zhoumuyun.data.AppContainer.init(this)
+
+        // v147（文件保险库改造）：一次性把旧 filesDir/exports/ 下的文件迁到
+        // vault/shared/project/。同步执行（早于下方 scope.launch 的工具注册/写入），
+        // 保证老数据不丢。用 runCatching 兜底，迁移失败绝不阻断 App 启动。
+        // 幂等：vault/.migrated 标记文件存在则直接跳过。
+        runCatching { migrateExportsToVault(this) }
+            .onFailure { ZLog.w("ZaijianApp", "exports→vault 迁移失败（不阻断启动）", it) }
 
         // 2. 初始化 API Provider 管理器（延迟初始化 + 后台预加载）
         ProviderManager.init(this)
@@ -873,16 +890,28 @@ class ZaijianApp : Application() {
         }.onFailure { ZLog.e("ZaijianApp", "RuleDistillTool 注册失败", it) }
 
         // ── CreativeDocTools / DataVisTools / AgentMetaTools ─────────────────
+        // W2 表格直传方案：scheduleRepository 必须在 registerDataVisTools 之前创建，
+        // 因为 TableExportTool（在 DataVisTools.kt 里）注入了 scheduleRepository 作为
+        // 来源 B 数据源。原 scheduleRepository 创建语句在下方（schedule_* 工具注册前），
+        // 现提前到这里，供 registerDataVisTools 使用，下方原位置删除重复创建。
+        val scheduleRepository = ScheduleRepository(
+            scheduledJobDao = db.scheduledJobDao(),
+            jobResultDao    = db.jobResultDao(),
+            db              = db,
+            context         = context,  // 批次1 1-5修复：补 context（registerAgentTools 形参），让 runLocalCompensation 的 finally 块重新入队逻辑生效
+        )
         runCatching { AgentToolRegistry.registerCreativeDocTools(context) }.onFailure { ZLog.e("ZaijianApp", "registerCreativeDocTools 注册失败", it) }
         runCatching {
             AgentToolRegistry.registerDataVisTools(
-                context    = context,
-                memoryDao  = db.memoryDao(),
+                context            = context,
+                memoryDao          = db.memoryDao(),
                 // 复审修复：SelfReflectTool 的 Step3 写入需要走 MemoryRepository.save()
                 // 才能同步 FTS，否则自我反思记忆永久无法被全文检索召回。
                 // 复用本函数（registerAgentTools）开头已创建的 memoryRepository，
                 // 不再新建实例。
-                memoryRepo = memoryRepository,
+                memoryRepo         = memoryRepository,
+                // W2：TableExportTool 来源 B（日程数据源）需要 ScheduleRepository。
+                scheduleRepository = scheduleRepository,
             )
         }.onFailure { ZLog.e("ZaijianApp", "registerDataVisTools 注册失败", it) }
         runCatching {
@@ -953,12 +982,9 @@ class ZaijianApp : Application() {
         }.onFailure { ZLog.e("ZaijianApp", "CICD 工具注册失败", it) }
 
         // ── Phase 29 · 调度系统初始化 ─────────────────────────────
-        val scheduleRepository = ScheduleRepository(
-            scheduledJobDao = db.scheduledJobDao(),
-            jobResultDao    = db.jobResultDao(),
-            db              = db,
-            context         = context,  // 批次1 1-5修复：补 context（registerAgentTools 形参），让 runLocalCompensation 的 finally 块重新入队逻辑生效
-        )
+        // W2：scheduleRepository 已提前到 registerDataVisTools 之前创建（上方），
+        // 供 TableExportTool 注入使用；此处不再重复创建，原创建语句已删除。
+        // 下方的 calendarSync / projectRepository 仍在此处创建（schedule_* 工具注册用）。
 
         // 修复手册 Phase 1.1：此前注册 Schedule 系列工具时遗漏了 CalendarSyncHelper 和
         // context 注入，导致 WorkManager 精确调度、系统日历同步、旧 WorkRequest 取消

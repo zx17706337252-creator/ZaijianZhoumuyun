@@ -306,8 +306,14 @@ fun RoundtableScreen(
                     addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 }
                 ctxBg.startActivity(android.content.Intent.createChooser(intent, "打开 ${ef.fileName}"))
+            } else {
+                android.widget.Toast.makeText(ctxBg, "文件不存在：${ef.fileName}", android.widget.Toast.LENGTH_SHORT).show()
             }
-        } catch (_: Exception) { /* 无默认应用时静默忽略，与 ChatScreen.openFile 行为一致 */ }
+        } catch (e: Exception) {
+            // v147 vault 改造修复：与 ChatScreen.openFile 同步修复（见该文件注释）。
+            com.zaijian.zhoumuyun.util.ZLog.e("RoundtableScreen", "打开文件失败：${ef.absolutePath}", e)
+            android.widget.Toast.makeText(ctxBg, "无法打开文件：${e.message?.take(60)}", android.widget.Toast.LENGTH_LONG).show()
+        }
     }
 
     // 圆桌背景图选择器：持久化 URI 权限 + 触发裁剪弹窗，与

@@ -97,6 +97,7 @@ import com.zaijian.zhoumuyun.data.model.FloorEnum
 import com.zaijian.zhoumuyun.data.model.StatusType
 import com.zaijian.zhoumuyun.data.model.accentLight
 import com.zaijian.zhoumuyun.ui.component.BreathingAvatar
+import com.zaijian.zhoumuyun.ui.component.MarkdownText
 import com.zaijian.zhoumuyun.ui.design.WorldCard
 import com.zaijian.zhoumuyun.ui.theme.AppTheme
 import com.zaijian.zhoumuyun.ui.theme.AppColors
@@ -113,11 +114,6 @@ import com.zaijian.zhoumuyun.util.ZLog
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material.icons.outlined.CameraAlt
-import androidx.compose.ui.platform.LocalContext
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.flowOn
-import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.withContext
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 
@@ -159,11 +155,64 @@ internal fun MemoryTabContent(
     onSecondaryChipChange:(Int) -> Unit,
     onShowAddDialog:      () -> Unit,
     onEditMemory:         (String, String) -> Unit,
+    characterName:        String,
 ) {
     // ★ collectAsState 在此处执行，仅当 mainTab == 0 时该 Composable 存在
     val memoryState by memoryViewModel.uiState.collectAsStateWithLifecycle()
 
     Column {
+        // ── v1.1：四段式"记忆档案"视图（自上而下）──────────────
+        // 1.关系叙事 / 2.她对你的印象 / 3.重大事件锚点 / 4.其他记忆（原有 filter+list）
+        // 前三段此前完全不可见（藏是人设 Tab 配置表单里），这里改为查看入口。
+        // 人设 Tab 的编辑功能不删除，两处共享同一份数据源。
+
+        // 导出按钮（顶部，独立一行）
+        MemoryExportButton(
+            accentColor   = accentColor,
+            exportResult  = memoryState.exportResult,
+            onExport      = { memoryViewModel.exportArchive(characterName) },
+            onClearResult = { memoryViewModel.clearExportResult() },
+        )
+        Spacer(Modifier.height(Spacing.sm))
+
+        // 1. 关系叙事（narrativeMemory）—— MarkdownText 渲染，阶段日志结构
+        NarrativeSection(
+            label       = "关系叙事",
+            content     = memoryState.narrativeMemory,
+            accentColor = accentColor,
+            onSave      = { memoryViewModel.updateNarrativeMemory(it) },
+            modifier    = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = Spacing.screenHorizontal),
+        )
+        Spacer(Modifier.height(Spacing.md))
+
+        // 2. 她对你的印象（userImpression）—— 纯文本
+        NarrativeSection(
+            label       = "她对你的印象",
+            content     = memoryState.userImpression,
+            accentColor = accentColor,
+            onSave      = { memoryViewModel.updateUserImpression(it) },
+            modifier    = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = Spacing.screenHorizontal),
+        )
+        Spacer(Modifier.height(Spacing.md))
+
+        // 3. 重大事件锚点（isCore=true 的 memories）—— 单独分区
+        CoreAnchorsSection(
+            coreMemories = memoryState.coreMemories,
+            accentColor  = accentColor,
+            modifier     = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = Spacing.screenHorizontal),
+        )
+        Spacer(Modifier.height(Spacing.md))
+
+        // 4. 其他记忆（现有 filter + list，折叠在后面作为明细）
+        MemoryOtherMemoriesHeader()
+        Spacer(Modifier.height(Spacing.xs))
+
         // Phase 30 方案三：两层过滤结构
         // 第一层（主维度 Tab）：全部 | 工作 | 情感
         MemoryDimTabRow(
@@ -230,6 +279,225 @@ internal fun MemoryTabContent(
             )
         }
     }
+}
+
+// ─────────────────────────────────────────────────────────────
+//  v1.1：四段式"记忆档案"视图的子组件
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * 导出记忆存档按钮 + 结果提示。
+ * UI 直接触发 exportArchive，不经过 LLM（补充文档 §4.1）。
+ */
+@Composable
+private fun MemoryExportButton(
+    accentColor: Color,
+    exportResult: String?,
+    onExport: () -> Unit,
+    onClearResult: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val type   = ZaijianTheme.typography
+    val colors = ZaijianTheme.colors
+
+    Column(modifier = modifier) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(Radius.md))
+                .background(accentColor.copy(alpha = 0.12f))
+                .clickable { onExport() }
+                .padding(vertical = 12.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                text  = "导出记忆存档",
+                style = type.button,
+                color = accentColor,
+            )
+        }
+        exportResult?.let { result ->
+            Spacer(Modifier.height(Spacing.xs))
+            Row(
+                modifier          = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment     = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text     = result,
+                    style    = type.caption,
+                    color    = colors.textSecondary,
+                    modifier = Modifier.weight(1f),
+                )
+                Box(
+                    modifier = Modifier
+                        .sizeIn(minWidth = 48.dp, minHeight = 36.dp)
+                        .clickable { onClearResult() }
+                        .wrapContentSize(Alignment.Center),
+                ) {
+                    Text("关闭", style = type.caption, color = accentColor)
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 叙事字段展示+内联编辑（关系叙事 / 她对你的印象）。
+ * 预览态用 MarkdownText 渲染（阶段日志的时间标签天然显示成结构化文档），
+ * 编辑态用 BasicTextField，保存复用 identityRepo.upsert*。
+ */
+@Composable
+private fun NarrativeSection(
+    label: String,
+    content: String,
+    accentColor: Color,
+    onSave: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = ZaijianTheme.colors
+    val type   = ZaijianTheme.typography
+    var isEditing by remember { mutableStateOf(false) }
+    var draft by remember(content) { mutableStateOf(content) }
+
+    WorldCard(modifier = modifier, cornerRadius = Radius.sm) {
+        Column(modifier = Modifier.padding(Spacing.md)) {
+            Row(
+                modifier              = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment     = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text       = label,
+                    style      = type.body,
+                    color      = accentColor,
+                    fontWeight = FontWeight.Bold,
+                )
+                Box(
+                    modifier = Modifier
+                        .sizeIn(minWidth = 48.dp, minHeight = 36.dp)
+                        .clickable {
+                            if (isEditing) onSave(draft)
+                            isEditing = !isEditing
+                        }
+                        .wrapContentSize(Alignment.Center),
+                ) {
+                    Text(
+                        text  = if (isEditing) "保存" else "编辑",
+                        style = type.caption,
+                        color = accentColor,
+                    )
+                }
+            }
+            Spacer(Modifier.height(Spacing.xs))
+            if (isEditing) {
+                BasicTextField(
+                    value         = draft,
+                    onValueChange = { draft = it },
+                    textStyle     = type.body.copy(color = colors.textPrimary),
+                    modifier      = Modifier
+                        .fillMaxWidth()
+                        .sizeIn(minHeight = 100.dp),
+                )
+            } else {
+                if (content.isBlank()) {
+                    Text(
+                        text  = "（尚未建立）",
+                        style = type.body,
+                        color = colors.textDisabled,
+                    )
+                } else {
+                    MarkdownText(
+                        markdown  = content,
+                        textColor = colors.textPrimary,
+                        style     = type.body,
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 重大事件锚点分区（isCore=true 的 memories），按 createdAt 倒序。
+ * 视觉上和普通记忆列表区分：单独 WorldCard + 左侧 accent 色条。
+ */
+@Composable
+private fun CoreAnchorsSection(
+    coreMemories: List<MemoryUiItem>,
+    accentColor: Color,
+    modifier: Modifier = Modifier,
+) {
+    val colors = ZaijianTheme.colors
+    val type   = ZaijianTheme.typography
+
+    WorldCard(modifier = modifier, cornerRadius = Radius.sm) {
+        Column(modifier = Modifier.padding(Spacing.md)) {
+            Text(
+                text       = "重大事件锚点（${coreMemories.size} 条）",
+                style      = type.body,
+                color      = accentColor,
+                fontWeight = FontWeight.Bold,
+            )
+            Spacer(Modifier.height(Spacing.xs))
+            if (coreMemories.isEmpty()) {
+                Text(
+                    text  = "（暂无锚点）",
+                    style = type.caption,
+                    color = colors.textDisabled,
+                )
+            } else {
+                coreMemories.forEach { memory ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.Top,
+                    ) {
+                        // 左侧锚点标识色条（和普通 MemoryRow 的维度色条区分：用 accent 色）
+                        Box(
+                            modifier = Modifier
+                                .width(3.dp)
+                                .height(20.dp)
+                                .background(
+                                    color  = accentColor,
+                                    shape  = RoundedCornerShape(2.dp),
+                                ),
+                        )
+                        Spacer(Modifier.width(Spacing.sm))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text  = memory.content,
+                                style = type.body,
+                                color = colors.textPrimary,
+                            )
+                            Text(
+                                text  = memory.dateLabel,
+                                style = type.label,
+                                color = colors.textDisabled,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** "其他记忆"分区标题，视觉上和前三段区分。 */
+@Composable
+private fun MemoryOtherMemoriesHeader() {
+    val type   = ZaijianTheme.typography
+    val colors = ZaijianTheme.colors
+    Text(
+        text       = "其他记忆",
+        style      = type.body,
+        color      = colors.textSecondary,
+        fontWeight = FontWeight.Bold,
+        modifier   = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = Spacing.screenHorizontal),
+    )
 }
 
 @Composable

@@ -20,6 +20,7 @@ package com.zaijian.zhoumuyun.data.agent
 import com.zaijian.zhoumuyun.data.db.entity.AgentPlanEntity
 import com.zaijian.zhoumuyun.data.db.entity.MemoryDomain
 import com.zaijian.zhoumuyun.data.db.entity.MemoryEntity
+import com.zaijian.zhoumuyun.data.db.entity.MemoryScope
 import com.zaijian.zhoumuyun.data.provider.chatSyncWithRetry
 import com.zaijian.zhoumuyun.data.repository.AgentPlanRepository
 import com.zaijian.zhoumuyun.data.repository.LearningGoalRepository
@@ -115,21 +116,21 @@ class PlanSaveTool(
 // ─────────────────────────────────────────────────────────────
 
 /**
- * Agent 主动向自己的记忆库写入一条记忆。
+ * Agent 主动向自己的记忆库写入一条记忆（稀疏锚点）。
  *
  * 标签格式：
  *   <tool:memory_write content="记忆内容" domain="WORK|PERSONAL|WORLD" importance="1-5"/>
  *
  * 可选参数：
  *   keywords="关键词1 关键词2"（空格分隔，用于 FTS4 检索；不填则自动提取前5个词）
+ *   scope="PERSONAL|GROUP"（默认 PERSONAL；圆桌全员共享的群体事实传 GROUP）
+ *   roundtableId="圆桌ID"（scope=GROUP 时必填，否则群记忆无法归属）
  *
  * 行为：
  *   - 直接写入 memories 表（跳过 MemoryCandidate 层，Agent 主动写入无需评分）
- *   - importance 默认为 3（长期记忆）
+ *   - importance 默认为 3（长期记忆）；=5 时自动标记 isCore（永不衰减）
  *   - domain 默认为 WORK
- *
- * 注意：此工具绕过 MemoryCandidate 评分流程，Agent 应谨慎使用，
- * 避免写入低质量或重复记忆。
+ *   - scope=GROUP 时校验 roundtableId 非空，缺失则写入失败（不静默降级为 PERSONAL）
  */
 class MemoryWriteTool(
     private val memoryRepository: MemoryRepository,
@@ -137,8 +138,8 @@ class MemoryWriteTool(
 ) : AgentTool {
 
     override val name = "memory_write"
-    override val description = "Agent主动写入一条长期记忆（跳过评分流程），用于记录角色认为重要的信息"
-    override val paramKeys = listOf("content", "domain", "importance", "keywords")
+    override val description = "Agent主动写入一条独立检索用的记忆条目。仅用于：身份类硬事实、有具体时间/行为的明确承诺、关系的重大转折点、用户明确要求记住的事实。日常情绪、偏好、寒暄不要用这个工具，应通过 narrative_memory_update / user_impression_update 融入整体叙事。圆桌场景下，若这条信息是全员共享的群体事实，传 scope=GROUP + roundtableId。"
+    override val paramKeys = listOf("content", "domain", "importance", "keywords", "scope", "roundtableId")
 
     companion object {
         const val MAX_CONTENT_CHARS = 500
@@ -170,6 +171,24 @@ class MemoryWriteTool(
         val keywords = params["keywords"]?.trim()?.ifEmpty { null }
             ?: extractKeywords(truncatedContent)
 
+        // 解析 scope：缺省/非法值一律按 PERSONAL（不静默降级 GROUP→PERSONAL，
+        // 仅对非法的 scope 取值宽松处理）；scope=GROUP 时必须带 roundtableId，
+        // 缺失则直接返回失败——避免群记忆被误写成无归属的个人记忆。
+        val scopeStr = params["scope"]?.uppercase()?.trim() ?: "PERSONAL"
+        val isGroup = scopeStr == "GROUP"
+        val roundtableId: String? = if (isGroup) {
+            val rtId = params["roundtableId"]?.trim()
+            if (rtId.isNullOrEmpty()) {
+                return@withContext ToolResult(
+                    name, false, "",
+                    "scope=GROUP 时必须提供 roundtableId（圆桌 ID），群记忆需要明确归属",
+                )
+            }
+            rtId
+        } else {
+            null
+        }
+
         val now = System.currentTimeMillis()
         val memoryId = UUID.randomUUID().toString()
 
@@ -187,6 +206,8 @@ class MemoryWriteTool(
                 createdAt      = now,
                 updatedAt      = now,
                 lastAccessedAt = now,
+                scope          = if (isGroup) MemoryScope.GROUP.name else MemoryScope.PERSONAL.name,
+                roundtableId   = roundtableId,
             )
             // saveOrMerge：先找同角色同关键词的相似记忆，有则合并，无则新建。
             // FTS 同步由 MemoryRepository.save() / update() 内部处理，无需手动维护。

@@ -1,9 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-    Phase 18 · FileProvider 路径配置
+    FileProvider 路径配置
     ─────────────────────────────────────────────────────────────
+    files-path name="vault"     → filesDir/vault/
+      v147 vault 改造后所有文件类工具（file_export / docx_gen / excel_gen /
+      table_export 等）通过 writeVaultStream 落盘到 vault/ 下，必须在此声明
+      否则 FileProvider.getUriForFile() 抛 IllegalArgumentException 被静默吞掉，
+      导致 FileExportCard 点击无反应。
+
     files-path name="exports"   → filesDir/exports/
-      file_export 工具生成的 .txt / .md 文件。
+      file_export 工具生成的 .txt / .md 文件（v147 前的旧路径，vault 迁移后
+      不再往里写新文件，但保留配置兼容历史消息里 absolutePath 指向 exports/ 的文件）。
 
     files-path name="notes"     → filesDir/notes/
       note_save 工具写入的笔记文件。
@@ -20,6 +27,11 @@
     若将来需要，按实际子目录精确声明（不得用 path="."）。
 -->
 <paths>
+    <!-- AgentLog 诊断日志文件（agent_log.txt / agent_log.old）-->
+    <files-path name="logs"      path="logs/" />
+    <!-- v147 vault 改造后新增：所有文件类工具的落盘根目录 -->
+    <files-path name="vault"     path="vault/" />
+    <!-- v147 前的旧路径，保留兼容历史消息 -->
     <files-path name="exports"   path="exports/" />
     <files-path name="notes"     path="notes/" />
     <files-path name="reminders" path="reminders/" />

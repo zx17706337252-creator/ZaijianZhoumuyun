@@ -16,10 +16,8 @@ class CreateGithubRepoTool(
     // P0/P1 修复（批次4审查报告问题1/2）：原 description 没说 private/auto_init
     // 只认 "true"，LLM 自然会填 yes/1/y 等常见布尔写法，静默创建公开仓库
     // （不可逆操作）。现补充明确取值范围。
-    override val description = "在GitHub上创建一个新仓库（可设为私有/自动初始化）。" +
-        "private 和 auto_init 只接受 true 或 false（不区分大小写）；" +
-        "private 不填时默认私有（true），因为创建仓库不可逆，宁可默认保守；" +
-        "写其它值（如 yes/1）会返回错误而不是静默当作 false，请明确使用 true/false"
+    override val description = "在GitHub上创建一个新仓库（可设为私有/自动初始化）"
+    override val usageNotes = "private 和 auto_init 只接受 true 或 false（不区分大小写）；private 不填时默认私有（true），因为创建仓库不可逆，宁可默认保守；写其它值（如 yes/1）会返回错误而不是静默当作 false，请明确使用 true/false"
     override val paramKeys = listOf("name", "description", "private", "auto_init")
 
     override suspend fun execute(params: Map<String, String>): ToolResult =

@@ -570,5 +570,7 @@ $digest
         // 事件），透传只是保持三处 toEntity 结构对称，实际恒为 null。
         exportedFileJson = exportedFileJson,
         exportedFilesJson = exportedFilesJson,
+        // v67（表格直传 W4）：同上，透传保持结构对称，用户消息恒为 null。
+        tableDataJson = tableDataJson,
     )
 }

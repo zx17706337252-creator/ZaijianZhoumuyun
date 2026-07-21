@@ -435,7 +435,7 @@ class CompetitionViewModel(
      *
      * SLIDER  → directScore = sliderValue.toInt()
      * RANK    → rankAmongN  = Pair(rankPosition, participantCount)
-     * COMMENT → sentimentComment = comment（Manager 内 sentimentToScore 换算）
+     * COMMENT → sentimentComment = comment（Manager 内 judgeSentimentScore 换算）
      *
      * @param participantCount 本轮参赛总人数，用于 RANK 模式换算
      *

@@ -64,6 +64,14 @@ data class MessageEntity(
      */
     val exportedFilesJson: String? = null,
     /**
+     * v67（表格直传方案）：工具产出的表格数据（JSON 序列化 TablePayload）。
+     * null = 该消息没有表格。行数超过阈值时只存预览行 + 关联的完整 xlsx 文件引用
+     * （复用 exportedFilesJson），不整份塞进这个字段，避免单行 SQLite 记录膨胀。
+     * 与 exportedFileJson/exportedFilesJson 同级、同生命周期、同兼容策略（同样
+     * 挂在"Agent附件下发方案 v2.0"打通的管线上，不平行造一套）。详见 Migration66to67。
+     */
+    val tableDataJson: String? = null,
+    /**
      * Fix-ThinkingLeak：从回复正文剥离出的内心推理/工具调用意图原文。
      * null = 没有思考内容，非 null = 气泡下方展示可折叠的"想法"卡片。
      */

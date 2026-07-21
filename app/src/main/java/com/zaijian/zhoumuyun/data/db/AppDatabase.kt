@@ -31,6 +31,7 @@ import com.zaijian.zhoumuyun.data.db.dao.TaskDao
 import com.zaijian.zhoumuyun.data.db.dao.WorldEventDao
 import com.zaijian.zhoumuyun.data.db.dao.WorkflowJobDao
 import com.zaijian.zhoumuyun.data.db.dao.WorkflowStepResultDao
+import com.zaijian.zhoumuyun.data.db.dao.AgentActivityDao                  // 心迹：Agent 过程可见层
 import com.zaijian.zhoumuyun.data.db.dao.RoundtableMessageDao             // 待办7
 import com.zaijian.zhoumuyun.data.db.dao.DaughterCharacterDao             // D4
 import com.zaijian.zhoumuyun.data.db.dao.DaughterIdAllocatorDao          // D4
@@ -78,6 +79,7 @@ import com.zaijian.zhoumuyun.data.db.entity.TaskEntity
 import com.zaijian.zhoumuyun.data.db.entity.WorldEventEntity
 import com.zaijian.zhoumuyun.data.db.entity.WorkflowJobEntity
 import com.zaijian.zhoumuyun.data.db.entity.WorkflowStepResultEntity
+import com.zaijian.zhoumuyun.data.db.entity.AgentActivityEventEntity        // 心迹：Agent 过程可见层
 import com.zaijian.zhoumuyun.data.db.entity.RoundtableMessageEntity          // 待办7
 import com.zaijian.zhoumuyun.data.db.entity.EvolutionPlanEntity              // P6
 import com.zaijian.zhoumuyun.data.db.entity.PracticeRecordEntity             // P6
@@ -209,6 +211,7 @@ import com.zaijian.zhoumuyun.data.db.entity.JudgeAccuracyLogEntity           // 
         DaughterIdAllocatorEntity::class,     // D4 女儿编号发号器
         WorkflowJobEntity::class,
         WorkflowStepResultEntity::class,
+        AgentActivityEventEntity::class,     // 心迹：Agent 过程可见层（Window B 2.2.2）
         RoundtableMessageEntity::class,       // 待办7：圆桌消息持久化
         EvolutionPlanEntity::class,            // P6 专长进化系统
         PracticeRecordEntity::class,
@@ -224,7 +227,15 @@ import com.zaijian.zhoumuyun.data.db.entity.JudgeAccuracyLogEntity           // 
         PromotedSkillTagEntity::class,          // 擅长领域标签墙
         NotificationReadStateEntity::class,     // 通知中心已读状态
     ],
-    version = 66,  // 65 → 66：Agent附件下发方案 v2.0 · 1.7 P3——messages /
+    version = 68,  // 67 → 68：Agent 过程可见层（「心迹」，Window B 2.2.2）——新增
+    // agent_activity_events 表，承载 Agent 工具调用/降级链路/工作流镜像的过程痕迹，
+    // 供「心迹」面板时间线呈现。纯新增表，不改动任何既有 schema，详见 Migration67to68.kt。
+    // 66 → 67：表格直传方案 W1 数据模型——messages /
+    // roundtable_messages 两表新增 tableDataJson 列（JSON 序列化 TablePayload），
+    // 让 table_export 工具产出的表格数据不经过 LLM token 预算直接落库。
+    // 仅两张表（practice_records 不动：修炼播报是独立文件下发流程，不产出表格）。
+    // 详见 Migration66to67.kt。
+    // 65 → 66：Agent附件下发方案 v2.0 · 1.7 P3——messages /
     // roundtable_messages / practice_records 三表新增 exportedFilesJson 列，
     // 支持单条消息挂载多个文件附件（此前 exportedFileJson 是单文件字段，
     // 一轮回复连续产出多个文件时后一次会覆盖前一次）。详见 Migration65to66.kt。
@@ -297,6 +308,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun roundtableMessageDao(): RoundtableMessageDao       // 待办7：圆桌消息持久化
     abstract fun workflowJobDao(): WorkflowJobDao
     abstract fun workflowStepResultDao(): WorkflowStepResultDao
+    abstract fun agentActivityDao(): AgentActivityDao        // 心迹：Agent 过程可见层
     abstract fun evolutionPlanDao(): EvolutionPlanDao               // P6 专长进化系统
     abstract fun practiceRecordDao(): PracticeRecordDao
     abstract fun practiceRecordArchiveDao(): PracticeRecordArchiveDao
@@ -368,6 +380,8 @@ abstract class AppDatabase : RoomDatabase() {
                         com.zaijian.zhoumuyun.data.db.migration.MIGRATION_63_64,
                         com.zaijian.zhoumuyun.data.db.migration.MIGRATION_64_65,
                         com.zaijian.zhoumuyun.data.db.migration.MIGRATION_65_66,
+                        com.zaijian.zhoumuyun.data.db.migration.MIGRATION_66_67,
+                        com.zaijian.zhoumuyun.data.db.migration.MIGRATION_67_68,
                     )
                     .fallbackToDestructiveMigrationOnDowngrade()
                     // P1-11 修复：原先仅有 fallbackToDestructiveMigrationOnDowngrade()

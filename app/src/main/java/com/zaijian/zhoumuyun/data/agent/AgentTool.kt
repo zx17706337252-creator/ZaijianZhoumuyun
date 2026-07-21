@@ -43,6 +43,22 @@ import com.zaijian.zhoumuyun.data.provider.chatSyncWithRetry
  * @param content   成功时的结果文本（注入 context 给 LLM）
  * @param error     失败时的简短错误描述（不暴露给用户）
  * @param userHint  可选：展示给用户的简短提示（如"正在搜索…"），null = 不展示
+ * @param tablePayloadJson  可选：表格直传方案（W2）产出的 [TablePayload] 序列化 JSON。
+ *   仅 `table_export` 工具在 50~500 行 / >500 行场景下填此字段；≤50 行 Markdown 路径
+ *   及其他所有工具此字段为 null。W4 管线在三个调用点（ChatMessageOrchestrator /
+ *   RoundtableBotReplyGenerator / RoundtableIdleManager）的 `is StreamEvent.ToolDone -> { }`
+ *   里读 `event.result.tablePayloadJson`，与 `extractExportedFileJson(event.result)` 同一
+ *   位置、同一局部变量收集方式，写入 `MessageEntity.tableDataJson`。
+ *
+ *   ⚠️ 设计原则（W2 验收修复）：payload 必须走 [ToolResult] 返回值随 [StreamEvent.ToolDone]
+ *   事件传给调用点的**局部**变量，**不得**存在工具实例字段上等调用方来读。原因：
+ *   工具实例在 AgentToolRegistry 是全局单例，而 `RoundtableIdleManager` 独立持有
+ *   CoroutineScope 能在私聊进行中后台并发触发（见 `VaultIo.kt:32-37`），两条
+ *   `streamWithTools` 同时跑时，共享字段会被后完成者覆盖/提前清空，一旦 W4 接上
+ *   "执行完立刻读字段"的动作，被覆盖的那条消息最终写进 `tableDataJson` 的可能是
+ *   **别的角色**的数据（若来源是 CSV 私库文件或角色日程，构成隐私越权）。走返回值
+ *   则每次 execute 的产物是函数局部对象，天然不会被别的协程摸到——这与 v147 对
+ *   身份问题（`VaultCallContextElement`）给出的解法同构：别用共享可变状态传数据。
  */
 data class ToolResult(
     val toolName: String,
@@ -50,6 +66,7 @@ data class ToolResult(
     val content: String,
     val error: String? = null,
     val userHint: String? = null,
+    val tablePayloadJson: String? = null,
 )
 
 // ─────────────────────────────────────────────────────────────
@@ -84,6 +101,19 @@ interface AgentTool {
      * 每个工具都必须显式 override，不允许依赖默认值。
      */
     val description: String get() = ""
+
+    /**
+     * 可选的参数使用说明（长度不限）。
+     *
+     * 见《Window B 执行方案 v1.1》2.3.2。不注入 [buildToolDescriptionBlock]，不参与
+     * LLM"要不要调用这个工具"的判断，只在需要时（例如未来做参数纠错重试的决策
+     * Prompt、或 2.1 节降级决策 Prompt 需要给 LLM 看可用工具时）按需读取。
+     *
+     * 本轮只做接口新增 + 现有超长 description 的内容搬迁，"调用前展示 usageNotes"
+     * 这个消费逻辑本身不在本轮实现（YAGNI，留作扩展点）。默认 null，对未覆写的
+     * 其余工具零影响，是纯向后兼容的接口新增。
+     */
+    val usageNotes: String? get() = null
 
     /** 工具支持的参数 key 列表，用于校验解析结果 */
     val paramKeys: List<String>
