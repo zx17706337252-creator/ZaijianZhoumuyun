@@ -92,9 +92,8 @@ android {
     // 默认跟随运行 Gradle 的 JDK 版本，与上面 compileOptions 显式指定的 Java 11
     // 不一致，导致 compileReleaseJavaWithJavac(11) 与 kspReleaseKotlin(21) 冲突。
     // 显式把 Kotlin 编译目标也钉在 11，与 Java 侧保持一致。
-    kotlinOptions {
-        jvmTarget = "11"
-    }
+    // 【2026-07-21】kotlinOptions 已弃用，迁至 compilerOptions DSL
+
 
     packaging {
         resources {
@@ -113,6 +112,12 @@ android {
     // androidTest 的 assets 源，MigrationTestHelper 通过 assets 打开 58.json/62.json。
     sourceSets {
         getByName("androidTest").assets.srcDir("$projectDir/schemas")
+    }
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_11)
     }
 }
 

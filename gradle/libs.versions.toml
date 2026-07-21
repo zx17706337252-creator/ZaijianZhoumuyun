@@ -20,6 +20,9 @@ androidMail = "1.6.7"
 markwon = "4.6.2"
 poiOoxml = "5.4.0"
 googleServicesPlugin = "4.4.2"
+androidxTestExtJunit = "1.2.1"
+androidxTestCore = "1.6.1"
+androidxTestRunner = "1.6.2"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -55,6 +58,9 @@ firebase-bom               = { group = "com.google.firebase",   name = "firebase
 firebase-messaging-ktx     = { group = "com.google.firebase",   name = "firebase-messaging-ktx" }
 android-mail               = { group = "com.sun.mail",           name = "android-mail",           version.ref = "androidMail" }
 poi-ooxml                  = { group = "org.apache.poi",         name = "poi-ooxml",              version.ref = "poiOoxml" }
+androidx-test-ext-junit    = { group = "androidx.test.ext",     name = "junit",                  version.ref = "androidxTestExtJunit" }
+androidx-test-core         = { group = "androidx.test",         name = "core",                   version.ref = "androidxTestCore" }
+androidx-test-runner       = { group = "androidx.test",         name = "runner",                 version.ref = "androidxTestRunner" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
