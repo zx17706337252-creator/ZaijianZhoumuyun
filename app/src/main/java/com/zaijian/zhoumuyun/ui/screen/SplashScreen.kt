@@ -180,7 +180,12 @@ fun SplashScreen(onFinished: () -> Unit) {
         val bgPainterState = bgPainter?.state
         val imageLoadFailed = bgPainterState is AsyncImagePainter.State.Error
 
-        if (customBgUri != null && !imageLoadFailed) {
+        // 编译修复：原判断条件为 customBgUri != null，与实际使用的 bgPainter（AsyncImagePainter?）
+        // 不是同一个变量，编译器无法据此对 bgPainter 做智能转换，导致下方 Image(painter = bgPainter)
+        // 报 "actual type is 'AsyncImagePainter?', but 'Painter' was expected"。
+        // 改为直接对 bgPainter 判空——二者在语义上等价（bgPainter 为 null 当且仅当 customBgUri 为 null），
+        // 且是同一个 val，编译器可在本代码块内智能转换为非空 Painter。
+        if (bgPainter != null && !imageLoadFailed) {
             // ── 全屏自定义背景图 ─────────────────────────────
             // 与聊天背景（ChatScreen.kt）/头像裁剪同一套"较大边覆盖容器"
             // 基准尺寸公式 + graphicsLayer scale/translation，保证裁剪弹窗

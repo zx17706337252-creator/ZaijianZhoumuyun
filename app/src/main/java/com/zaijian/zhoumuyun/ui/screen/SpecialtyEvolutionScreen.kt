@@ -456,7 +456,7 @@ private fun SpecialtyDetailContent(
                         detail.planHistory.filter { !it.isActive }.forEach { old ->
                             Column(modifier = Modifier.padding(top = Spacing.xs)) {
                                 Text(
-                                    text = "v${old.version} · ${dateFormatter.format(Date(old.createdAt))}",
+                                    text = "v${old.version} · ${TimeFormatUtils.formatShortDate(old.createdAt)}",
                                     style = type.label,
                                     color = colors.textDisabled,
                                 )
@@ -645,7 +645,7 @@ private fun PracticeRecordRow(
                     modifier = Modifier.weight(1f),
                 )
                 Text(
-                    text = dateFormatter.format(Date(record.createdAt)),
+                    text = TimeFormatUtils.formatShortDate(record.createdAt),
                     style = type.label,
                     color = colors.textDisabled,
                 )
