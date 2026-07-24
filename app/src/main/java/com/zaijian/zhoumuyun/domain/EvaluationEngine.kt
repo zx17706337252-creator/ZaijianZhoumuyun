@@ -19,7 +19,7 @@ private enum class SessionStatus { PENDING, REVIEWED, SCORED, SKIPPED }
  * EvaluationEngine — Phase 24 打分机制核心
  *
  * 职责：
- * ① [maybeCreateSession]  — 判断是否满足触发条件，满足则创建 EvaluationSession（PENDING）
+ * ① [maybeCreateSessions] — 判断是否满足触发条件，满足则创建 EvaluationSession（PENDING）
  * ② [runAgentReview]      — 以 Agent B 角色调用 LLM 精简评审，结果写回 DB（REVIEWED）
  * ③ [submitUserScore]     — 用户打分后计算综合分，完成整个 Session（SCORED）
  * ④ [skipSession]         — 用户跳过打分（SKIPPED，不纳入 Phase 26 提炼统计）

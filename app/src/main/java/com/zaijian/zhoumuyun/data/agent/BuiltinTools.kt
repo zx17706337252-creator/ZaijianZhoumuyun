@@ -19,7 +19,7 @@ import java.util.Locale
  * Phase 13 · Tool Call Engine（Prompt-based Dispatch）
  *
  * ═══════════════════════════════════════════════════════════════
- * BuiltinTools.kt — 网络/IO 基础工具（8个）
+ * BuiltinTools.kt — 网络/IO 基础工具（9个）
  * ═══════════════════════════════════════════════════════════════
  *
  * Fix-17 拆分后保留：
@@ -35,6 +35,7 @@ import java.util.Locale
  *   ⑧ ArchiveExportTool — 压缩包打包（zip_export），把已导出的多个文件打包成
  *      zip 供用户一次性下载。走 1.1 打通的同一条 exportedFileJson 回填链路，
  *      不需要改 orchestrator。
+ *   ⑨ DiagLogExportTool — 诊断日志导出（diag_export_log），原计数遗漏，E3 校验发现后补录。
  *
  * 已拆出到独立文件：
  *   CreativeTools.kt  → CodeGenTool, CodeReviewTool
@@ -1283,6 +1284,7 @@ class ArchiveExportTool(private val context: Context) : AgentTool {
     override val name = "zip_export"
     override val description = "把已导出的多个文件打包成zip供用户一次性下载"
     override val paramKeys = listOf("names")
+    override val usageNotes = "names 为逗号分隔的已导出文件名列表，如 file1.pdf,file2.docx"
 
     override suspend fun execute(params: Map<String, String>): ToolResult = withContext(Dispatchers.IO) {
         val names = params["names"]?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() }

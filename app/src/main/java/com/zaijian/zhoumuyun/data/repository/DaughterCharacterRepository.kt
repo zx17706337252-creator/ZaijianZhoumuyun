@@ -135,6 +135,14 @@ class DaughterCharacterRepository(
     }
 
     /**
+     * [updateDaughterCharacterId] 的回滚方法，供 DaughterRegistrationHelper 注册流程
+     * 在回填之后的步骤失败时撤销这次回填（见该文件 onIdentityRegister 的 step 回滚逻辑）。
+     */
+    suspend fun clearDaughterCharacterIdForRollback(motherCharacterId: Int, daughterCharacterId: Int) {
+        dao.clearDaughterCharacterIdForRollback(motherCharacterId, daughterCharacterId)
+    }
+
+    /**
      * 唯一入口：给定女儿自己的 characterId（1000+），返回拼装好的完整
      * [com.zaijian.zhoumuyun.data.model.CharacterConfig]。
      *

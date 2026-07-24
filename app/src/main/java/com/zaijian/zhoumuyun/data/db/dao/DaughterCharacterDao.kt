@@ -109,6 +109,20 @@ interface DaughterCharacterDao {
     )
     suspend fun updateDaughterCharacterId(motherCharacterId: Int, daughterCharacterId: Int)
 
+    /**
+     * updateDaughterCharacterId 的回滚方法：注册流程在回填之后的某一步失败时，
+     * 把这一行的 daughterCharacterId 撤回 NULL（未注册状态）。
+     *
+     * WHERE 里同时带 motherCharacterId 和 daughterCharacterId 两个条件，是为了只在
+     * 当前值确实等于本次分配的 allocatedId 时才清空——防止和其他并发注册撞车时
+     * 清掉了不属于本次回滚的行。
+     */
+    @Query(
+        "UPDATE daughter_character SET daughterCharacterId = NULL " +
+        "WHERE motherCharacterId = :motherCharacterId AND daughterCharacterId = :daughterCharacterId"
+    )
+    suspend fun clearDaughterCharacterIdForRollback(motherCharacterId: Int, daughterCharacterId: Int)
+
     // ── B 类卡点修复：后台遍历扩展 ──────────────────────────────
 
     /**
