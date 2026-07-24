@@ -33,14 +33,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material.icons.outlined.Add
-import androidx.compose.material.icons.outlined.ChevronRight
-import androidx.compose.material.icons.outlined.Star
-import androidx.compose.material.icons.outlined.Delete
-import androidx.compose.material.icons.outlined.Edit
-import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.foundation.text.BasicTextField
@@ -108,13 +100,13 @@ import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
 import com.zaijian.zhoumuyun.util.ZLog
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.material.icons.outlined.CameraAlt
 import androidx.compose.ui.platform.LocalContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 import androidx.compose.material3.FilterChip
+import com.zaijian.zhoumuyun.ui.design.AppIcons
 
 // 擅长领域标签墙接通真实数据修复：此前这里是硬编码占位符，所有角色
 // 显示同一份写死的五个词，与专长进化系统的晋升流程完全没有接通。
@@ -133,12 +125,14 @@ internal fun AbilitySubTabRow(
 ) {
     val colors = ZaijianTheme.colors
     val type   = ZaijianTheme.typography
-    // P1-12 修复：移除无意义的"工具"子Tab，只保留"能力"和"任务"
-    val tabs   = listOf("能力", "任务")
+    // P1-12 修复：移除无意义的"工具"子Tab。
+    // Window C 缺口2：新增"技能"子Tab（index=2），挂载 SkillTabContent。
+    // 窗口7贯通：新增"心迹"子Tab（index=3），挂载 AgentActivityTimelinePanel。
+    // "任务"（index=1）现为 CapabilityPanelContent（Window D-4 已挂载）。
+    val tabs   = listOf("能力", "任务", "技能", "心迹")
 
-    // P3-45 修复：只有"能力""任务"两个 Tab，用 TabRow 即可，
-    // ScrollableTabRow 是为 5+ 个 Tab 设计的可滚动版本，两 Tab 场景
-    // 用 ScrollableTabRow 是多余开销，改为 TabRow 让 Tab 均分宽度。
+    // P3-45 修复：四个 Tab 用 TabRow 即可（≤4 个 Tab 均分宽度即可，
+    // ScrollableTabRow 是为 5+ 个 Tab 设计的可滚动版本）。
     TabRow(
         selectedTabIndex  = selectedIndex,
         containerColor    = Color.Transparent,
@@ -260,7 +254,7 @@ internal fun AddButton(
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(
-                imageVector        = Icons.Outlined.Add,
+                imageVector        = AppIcons.Add,
                 contentDescription = label,
                 tint               = Color.White,
                 modifier           = Modifier.size(18.dp),
@@ -272,15 +266,6 @@ internal fun AddButton(
                 color = Color.White,
             )
         }
-    }
-}
-
-@Composable
-internal fun EmptyState(text: String, modifier: Modifier = Modifier) {
-    val colors = ZaijianTheme.colors
-    val type   = ZaijianTheme.typography
-    Box(modifier = modifier, contentAlignment = Alignment.Center) {
-        Text(text = text, style = type.caption, color = colors.textDisabled)
     }
 }
 

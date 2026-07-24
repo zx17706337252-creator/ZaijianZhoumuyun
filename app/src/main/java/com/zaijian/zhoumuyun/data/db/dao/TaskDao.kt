@@ -164,11 +164,25 @@ interface TaskDao {
     /**
      * 轻量勾选：将 project_growth 任务状态在 PENDING↔COMPLETED 之间翻转。
      * P2-A/B TodayGrowthSection 勾选框交互使用。
+     *
+     * P1-02 修复：原 CASE 只判断 status = 'COMPLETED'，ELSE 分支覆盖了所有其他
+     * 情况——RUNNING（Agent 正在执行中）的任务被用户勾一下就会直接改成
+     * COMPLETED，而不是"翻转"。这里改为显式判断三种非完成状态（PENDING /
+     * RUNNING / FAILED）都统一翻转为 COMPLETED，其余未知状态原样保留，
+     * 不再用兜底 ELSE 吞掉非预期状态。
      */
     @Query("""
         UPDATE tasks
-        SET status    = CASE WHEN status = 'COMPLETED' THEN 'PENDING' ELSE 'COMPLETED' END,
-            completedAt = CASE WHEN status = 'COMPLETED' THEN NULL ELSE :now END,
+        SET status    = CASE
+                             WHEN status = 'COMPLETED' THEN 'PENDING'
+                             WHEN status IN ('PENDING', 'RUNNING', 'FAILED') THEN 'COMPLETED'
+                             ELSE status
+                         END,
+            completedAt = CASE
+                             WHEN status = 'COMPLETED' THEN NULL
+                             WHEN status IN ('PENDING', 'RUNNING', 'FAILED') THEN :now
+                             ELSE completedAt
+                         END,
             updatedAt = :now
         WHERE id = :id
     """)

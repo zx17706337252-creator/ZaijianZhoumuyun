@@ -91,6 +91,12 @@ internal object ScheduleToolParamUtil {
         if (trimmed.isNullOrEmpty()) return Result.success(0.0)
         val value = trimmed.toDoubleOrNull()
             ?: return Result.failure(IllegalArgumentException("$fieldName 必须是数字，收到: $trimmed"))
+        // 同文件-13 修复：负数此前未被拦截，interval_hours=-1 会被下游静默降级为
+        // 一次性任务，delay_hours=-2 会算出过去时间戳被截断为立即执行，均无任何
+        // 错误提示。现显式拒绝负数，与本函数已有的"非数字"校验风格一致。
+        if (value < 0) {
+            return Result.failure(IllegalArgumentException("$fieldName 不能为负数，收到: $trimmed"))
+        }
         return Result.success(value)
     }
 }

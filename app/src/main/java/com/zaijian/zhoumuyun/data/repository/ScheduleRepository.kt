@@ -572,10 +572,35 @@ class ScheduleRepository(
     }
 
     /**
-     * 删除日程（完整版）：日历事件删除 → WorkManager 取消 → Supabase 删除 → Room 删除。
+     * 删除日程（完整版）：权限校验 → 日历事件删除 → WorkManager 取消 → Supabase 删除 → Room 删除。
      * 若 calendarSync 或 context 为 null，则跳过对应步骤。
+     *
+     * P2-18 修复：userId/characterId 此前是死参数（声明了但从未使用），
+     * 现补上归属校验逻辑：
+     * - 先通过 [getJob] 查出实体，若不存在则抛 [IllegalArgumentException]，
+     *   避免对已删除或不存在的 jobId 做无意义的日历/WorkManager 清理。
+     * - 若 characterId 非空，校验 job.characterId 与之一致；不一致说明调用方
+     *   试图删除不属于自己的日程，抛 [SecurityException] 阻断。
+     *   PersonalScheduleViewModel 传入当前角色 ID 做归属约束；
+     *   GlobalScheduleViewModel 展示全量日程，传入 null 跳过角色校验
+     *   （但仍有"job 存在性"校验）。
+     * - userId 暂无对应实体字段（ScheduledJobEntity 无 userId），保留参数
+     *   供未来多用户体系接入，当前仅做日志记录。
      */
     suspend fun deleteJobWithFullSync(jobId: String, userId: String?, characterId: Int?) {
+        // P2-18：权限/归属校验
+        val job = getJob(jobId)
+            ?: throw IllegalArgumentException("待删除的日程不存在：$jobId")
+        if (characterId != null && job.characterId != characterId) {
+            throw SecurityException(
+                "无权删除此日程：jobId=$jobId 归属角色 ${job.characterId}，" +
+                    "调用方角色 $characterId"
+            )
+        }
+        if (userId != null) {
+            ZLog.i("ScheduleRepository", "deleteJobWithFullSync: userId=$userId（未来多用户校验预留）")
+        }
+
         // 日历事件删除（优先执行，因为 deleteJob 会删除主表记录）
         calendarSync?.let { sync ->
             try {

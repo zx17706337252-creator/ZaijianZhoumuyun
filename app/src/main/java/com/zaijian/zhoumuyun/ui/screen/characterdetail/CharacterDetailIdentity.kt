@@ -33,19 +33,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material.icons.outlined.Add
-import androidx.compose.material.icons.outlined.ChevronRight
-import androidx.compose.material.icons.outlined.Code
-import androidx.compose.material.icons.outlined.Description
-import androidx.compose.material.icons.outlined.Email
-import androidx.compose.material.icons.outlined.Search
-import androidx.compose.material.icons.outlined.Star
-import androidx.compose.material.icons.outlined.Delete
-import androidx.compose.material.icons.outlined.Edit
-import androidx.compose.material.icons.outlined.StarBorder
-import androidx.compose.material.icons.outlined.TableChart
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.foundation.text.BasicTextField
@@ -113,7 +100,6 @@ import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
 import com.zaijian.zhoumuyun.util.ZLog
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.material.icons.outlined.CameraAlt
 import androidx.compose.ui.platform.LocalContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.flowOn
@@ -226,7 +212,7 @@ internal fun IdentityPanel(
         // ── 关于你（用户身份：性别 + 关系称谓）★ v1.36 问题3 ──────
         // 修复"角色统一用她称呼用户"：此前提示词从未告知模型用户是谁，
         // 这里让 世界书 按角色分别配置，未设置的角色仍会以默认"男性"注入。
-        Spacer(Modifier.height(4.dp))
+        Spacer(Modifier.height(Spacing.xs))
         UserIdentitySection(
             userGender            = state.userGender,
             userRoleLabelPrivate  = state.userRoleLabelPrivate,
@@ -262,12 +248,12 @@ internal fun IdentityPanel(
         )
 
         // ── 角色内核（Phase 1 zaijian）────────────────────────
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(Spacing.sm))
         Text(
             text     = "角色内核（AI 可见，影响角色深度表现）",
             style    = type.label,
             color    = accentColor,
-            modifier = Modifier.padding(bottom = 4.dp),
+            modifier = Modifier.padding(bottom = Spacing.xs),
         )
         IdentityField(
             label         = "核心创伤",
@@ -276,7 +262,7 @@ internal fun IdentityPanel(
             onValueChange = onCoreWoundChange,
             accentColor   = accentColor,
         )
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(Spacing.sm))
         IdentityField(
             label         = "核心渴望",
             placeholder   = "被一个人完全接住，不需要交换，不需要表演。",
@@ -284,7 +270,7 @@ internal fun IdentityPanel(
             onValueChange = onCoreDesireChange,
             accentColor   = accentColor,
         )
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(Spacing.sm))
         IdentityField(
             label         = "面具何时碎裂（触发条件）",
             placeholder   = "对方第一次让她感到真正的安全；或她突然意识到自己已经在乎了。",
@@ -292,7 +278,7 @@ internal fun IdentityPanel(
             onValueChange = onMaskTriggerChange,
             accentColor   = accentColor,
         )
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(Spacing.sm))
         IdentityField(
             label         = "私下真实面目（面具碎裂后）",
             placeholder   = "情感极度浓烈，像最纯粹的孩子，没有防御，也没有理智。",
@@ -300,7 +286,7 @@ internal fun IdentityPanel(
             onValueChange = onPrivatePersonaChange,
             accentColor   = accentColor,
         )
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(Spacing.sm))
         IdentityField(
             label         = "私下说话方式",
             placeholder   = "语气突然软下来，开始没有逻辑。可能哑口无言，也可能一下子说很多。",
@@ -308,7 +294,7 @@ internal fun IdentityPanel(
             onValueChange = onPrivateStyleChange,
             accentColor   = accentColor,
         )
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(Spacing.sm))
         IdentityField(
             label         = "私下对话示例（破防时的 Few-shot）",
             placeholder   = "用户：你哭了吗？\n角色：（没有回答，只是把头埋进他肩膀）",
@@ -317,7 +303,7 @@ internal fun IdentityPanel(
             accentColor   = accentColor,
             minLines      = 3,
         )
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(Spacing.sm))
         IdentityField(
             label         = "情境反应规则",
             placeholder   = "在被问到家人时：停顿三秒，换话题，如果对方继续问才会说一句模糊的话。",
@@ -326,7 +312,7 @@ internal fun IdentityPanel(
             accentColor   = accentColor,
             minLines      = 3,
         )
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(Spacing.sm))
         IdentityField(
             label         = "有心事时的外显信号",
             placeholder   = "比平时沉默多一些；回复速度变慢；说话开始用「随便」、「都行」。",
@@ -335,14 +321,14 @@ internal fun IdentityPanel(
             accentColor   = accentColor,
             minLines      = 3,
         )
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(Spacing.sm))
 
         // ── 附加（NyxChat V18 A.1/A.2）：喜恶 + 人际关系行为逻辑 ──
         Text(
             text     = "喜恶与人际（注入行为层，权重等同情境规则）",
             style    = type.label,
             color    = accentColor,
-            modifier = Modifier.padding(bottom = 4.dp),
+            modifier = Modifier.padding(bottom = Spacing.xs),
         )
         IdentityField(
             label         = "你喜欢",
@@ -351,7 +337,7 @@ internal fun IdentityPanel(
             onValueChange = onLikesChange,
             accentColor   = accentColor,
         )
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(Spacing.sm))
         IdentityField(
             label         = "你厌恶",
             placeholder   = "被人打断、无意义的客套、被当成工具",
@@ -359,7 +345,7 @@ internal fun IdentityPanel(
             onValueChange = onDislikesChange,
             accentColor   = accentColor,
         )
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(Spacing.sm))
         IdentityField(
             label         = "人际关系行为逻辑",
             placeholder   = "在露娜面前：压制自己的情绪反应，偶尔用锐利的话刺她，但事后会后悔。\n在宥熙面前：隐性保护，不承认自己在关心她。",
@@ -368,7 +354,7 @@ internal fun IdentityPanel(
             accentColor   = accentColor,
             minLines      = 4,
         )
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(Spacing.sm))
 
         // ── Soul/Memory/User 三模块 ─────────────────────────────
         if (lastEditedNoteField != null) {
@@ -378,7 +364,7 @@ internal fun IdentityPanel(
                 "user"   -> "她对你的印象"
                 else     -> "笔记"
             }
-            Spacer(Modifier.height(4.dp))
+            Spacer(Modifier.height(Spacing.xs))
             androidx.compose.material3.TextButton(onClick = onUndoLastNoteEdit) {
                 Text("↩ 撤销上次对「$undoLabel」的修改", style = type.caption, color = colors.accent)
             }
@@ -392,7 +378,7 @@ internal fun IdentityPanel(
             minLines      = 3,
             softLimit     = 600,
         )
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(Spacing.sm))
         IdentityField(
             label         = "关系记忆摘要",
             placeholder   = "按阶段记：\"7月上旬起，持续讨论了XX话题\"——当前阶段延续就扩写最新一条，出现新话题就追加新的一条，旧阶段自己压缩变短",
@@ -402,7 +388,7 @@ internal fun IdentityPanel(
             minLines      = 3,
             softLimit     = 800,
         )
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(Spacing.sm))
         IdentityField(
             label         = "她对你的印象",
             placeholder   = "角色对用户的整体印象",
@@ -412,14 +398,14 @@ internal fun IdentityPanel(
             minLines      = 2,
             softLimit     = 400,
         )
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(Spacing.sm))
 
         // ── 高级：完全替换 System Prompt ────────────────────
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .clickable { advancedExpanded = !advancedExpanded }
-                .padding(vertical = 4.dp),
+                .padding(vertical = Spacing.xs),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
@@ -484,7 +470,7 @@ internal fun IdentityField(
     val colors = ZaijianTheme.colors
     val type   = ZaijianTheme.typography
 
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
         if (label.isNotEmpty()) {
             Text(text = label, style = type.label, color = colors.textSecondary)
         }
@@ -579,7 +565,7 @@ private fun UserIdentitySection(
         )
 
         // ── 性别 ─────────────────────────────────────────────
-        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
             Text(text = "你的性别", style = type.label, color = colors.textSecondary)
             Row(horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
                 UserGenderOptions.forEach { (savedValue, label) ->
@@ -639,7 +625,7 @@ private fun RoleLabelEditor(
     val colors = ZaijianTheme.colors
     val type   = ZaijianTheme.typography
 
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
         Text(text = label, style = type.label, color = colors.textSecondary)
         FlowRow(
             horizontalArrangement = Arrangement.spacedBy(Spacing.xs),

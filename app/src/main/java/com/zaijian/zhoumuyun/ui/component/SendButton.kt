@@ -7,8 +7,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.Send
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -18,6 +16,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.zaijian.zhoumuyun.ui.theme.Palette
+import com.zaijian.zhoumuyun.ui.design.AppIcons
 
 // ─────────────────────────────────────────────────────────────
 //  SendButton — 聊天/圆桌共享的发送按钮
@@ -55,7 +54,7 @@ internal fun SendButton(
             contentAlignment = Alignment.Center,
         ) {
             Icon(
-                imageVector        = Icons.AutoMirrored.Outlined.Send,
+                imageVector        = AppIcons.Send,
                 contentDescription = "发送",
                 tint               = iconTint,
                 modifier           = Modifier.size(iconSize),

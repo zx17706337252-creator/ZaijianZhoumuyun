@@ -57,6 +57,7 @@ class WorkflowJobWorker(
             db = db,
             workflowJobDao = db.workflowJobDao(),
             workflowStepResultDao = db.workflowStepResultDao(),
+            context = context,
         )
 
         val job = repository.findById(jobId) ?: return Result.failure()

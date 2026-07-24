@@ -57,7 +57,7 @@ class PregnancySettlementWorker(
             settleAndRecord(
                 context       = applicationContext,
                 pregnancyRepo = PregnancyRepository(db.pregnancyDao()),
-                memoryRepo    = MemoryRepository(db.memoryDao(), db.memoryCandidateDao()),
+                memoryRepo    = MemoryRepository(db.memoryDao(), db.memoryCandidateDao(), db.memoryTagDao()),
                 daughterRepo  = DaughterCharacterRepository(db, db.daughterCharacterDao()),
             )
         } catch (e: Exception) {

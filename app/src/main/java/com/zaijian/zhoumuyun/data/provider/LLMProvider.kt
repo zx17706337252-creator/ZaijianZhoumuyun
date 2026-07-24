@@ -68,17 +68,49 @@ enum class ProviderType(val displayName: String, val defaultModel: String) {
 }
 
 // ─────────────────────────────────────────────────────────────
+//  HTTP exception (P1-03)
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * LLM HTTP 层错误异常，携带 HTTP 状态码。
+ *
+ * P1-03 修复：原 [chatSyncWithRetry] 对所有异常一视同仁地重试，
+ * 导致 401（API Key 无效）、400（请求格式错误）、403（权限不足）等
+ * 不可重试错误也被浪费重试次数和退避等待时间。
+ *
+ * 引入本异常后，[chatSyncWithRetry] 可根据 [isRetryable] 判断：
+ *   - 429（限流）、5xx（服务端错误）→ 重试
+ *   - 400/401/403/404 等其他 4xx   → 立即抛出，不重试
+ *
+ * 继承 [IllegalStateException]，保证已有的 `catch (e: IllegalStateException)`
+ * 代码路径仍然兼容。
+ */
+class LLMHttpException(
+    val statusCode: Int,
+    responseBody: String,
+    cause: Throwable? = null,
+) : IllegalStateException("API 错误 (HTTP $statusCode)：$responseBody", cause) {
+
+    /** 是否为可重试的 HTTP 状态码：429（限流）和 5xx（服务端错误） */
+    val isRetryable: Boolean
+        get() = statusCode == 429 || statusCode >= 500
+}
+
+// ─────────────────────────────────────────────────────────────
 //  Retry extension
 // ─────────────────────────────────────────────────────────────
 
 /**
- * LLMProvider 的指数退避重试扩展函数（S3 修复）。
+ * LLMProvider 的指数退避重试扩展函数（S3 修复 / P1-03 修复）。
  * 遇到 429 限流或 5xx 瞬时错误时，自动重试一次，成本极低。
  * 主流式调用（chat）不适合重试（打字机效果会重置），仅供 chatSync 场景使用。
  *
  * (S-6) 从 OpenAICompatProvider.kt 迁至此处：本函数是 LLMProvider 接口的通用扩展，
  * 与具体实现类 OpenAICompatProvider 无关，理应与接口定义放在一起。
  * 迁移前后均在 data.provider 包下，调用方 import 路径不变。
+ *
+ * P1-03 修复：新增 [LLMHttpException] 分支，对不可重试的 HTTP 错误
+ * （400/401/403/404 等）立即抛出，不再浪费重试次数和退避等待。
  */
 suspend fun LLMProvider.chatSyncWithRetry(
     messages: List<LLMMessage>,
@@ -93,6 +125,14 @@ suspend fun LLMProvider.chatSyncWithRetry(
             return chatSync(messages, systemPrompt, config)
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e  // 不吞 CancellationException
+        } catch (e: LLMHttpException) {
+            // P1-03 修复：不可重试的 HTTP 错误（4xx 除 429）立即抛出，
+            // 不浪费重试次数和退避等待时间。只有 429（限流）和 5xx（服务端错误）才重试。
+            if (!e.isRetryable) throw e
+            lastError = e
+            if (attempt < maxAttempts - 1) {
+                kotlinx.coroutines.delay(1000L * (1L shl attempt))
+            }
         } catch (e: Exception) {
             lastError = e
             // 指数退避：1s, 2s, 4s, 8s...

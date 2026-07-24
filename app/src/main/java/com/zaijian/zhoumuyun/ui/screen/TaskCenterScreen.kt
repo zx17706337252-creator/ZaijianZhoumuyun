@@ -10,8 +10,6 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -30,8 +28,11 @@ import com.zaijian.zhoumuyun.data.db.entity.TaskEntity
 import com.zaijian.zhoumuyun.data.db.entity.TaskStatus
 import com.zaijian.zhoumuyun.data.model.CharacterConfig
 import com.zaijian.zhoumuyun.data.model.DefaultCharacters
-import com.zaijian.zhoumuyun.ui.design.WorldCard
+import com.zaijian.zhoumuyun.ui.component.EmptyStateView
+import com.zaijian.zhoumuyun.ui.component.RootTabTopBar
+import com.zaijian.zhoumuyun.ui.design.AppIcons
 import com.zaijian.zhoumuyun.ui.design.GridTabItem
+import com.zaijian.zhoumuyun.ui.design.WorldCard
 import com.zaijian.zhoumuyun.ui.theme.*
 import com.zaijian.zhoumuyun.ui.viewmodel.TaskViewModel
 import com.zaijian.zhoumuyun.ui.viewmodel.TodayJobUiItem
@@ -166,24 +167,11 @@ fun TaskCenterScreen(
                 .fillMaxSize()
                 .padding(paddingValues),
         ) {
-            // ── 顶部栏 ────────────────────────────────────────
-            // 精修方案 v2.1 2.1：原右侧「目标/项目/日程」三个跳转按钮已删
-            // （目标→底部成长Tab已覆盖；项目/日程升级为下方预览卡），
-            // 顶栏现在只剩标题，SpaceBetween 排布已无意义，改回默认排布。
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .statusBarsPadding()
-                    .heightIn(min = 44.dp) // E fix: 改 height 为 heightIn，大字体缩放时标题不被截断
-                    .padding(horizontal = Spacing.screenHorizontal),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text  = "任务",
-                    style = type.titleLarge.copy(fontWeight = FontWeight.Bold),
-                    color = colors.textPrimary,
-                )
-            }
+            // 窗口4补充：统一为 RootTabTopBar（无返回箭头的根Tab页面）
+            RootTabTopBar(
+                title    = "任务",
+                headerBg = colors.bgBase,
+            )
 
             // ── 精修方案 v2.1 2.1：项目/日程迷你预览卡 ──────────
             // 原「目标」按钮已删（底部「成长」Tab 一步直达，多余）；
@@ -443,7 +431,7 @@ private fun TaskCard(
                     )
                 }
 
-                Spacer(Modifier.height(4.dp))
+                Spacer(Modifier.height(Spacing.xs))
 
                 // 工具名标签 + 状态标签
                 Row(
@@ -478,7 +466,7 @@ private fun TaskCard(
                 // 结果摘要（已完成 / 失败时显示）
                 task.resultSummary?.let { result ->
                     if (task.status != TaskStatus.RUNNING.name) {
-                        Spacer(Modifier.height(4.dp))
+                        Spacer(Modifier.height(Spacing.xs))
                         Text(
                             text     = result,
                             style    = type.small,
@@ -489,7 +477,7 @@ private fun TaskCard(
                     }
                 }
 
-                Spacer(Modifier.height(4.dp))
+                Spacer(Modifier.height(Spacing.xs))
 
                 // 时间戳
                 Text(
@@ -508,7 +496,7 @@ private fun TaskCard(
             // P3-33 修复：触摸目标 < 48dp，移除 IconButton 的 size 限制，让 minimumInteractiveComponentSize 生效
             IconButton(onClick = onDelete) {
                 Icon(
-                    imageVector        = if (isCancellable) Icons.Outlined.Cancel else Icons.Outlined.DeleteOutline,
+                    imageVector        = if (isCancellable) AppIcons.Cancel else AppIcons.DeleteOutline,
                     contentDescription = if (isCancellable) "取消任务" else "删除任务",
                     modifier           = Modifier.size(16.dp),
                     tint               = colors.textDisabled,
@@ -566,28 +554,16 @@ private fun TaskChip(
 
 @Composable
 private fun EmptyTasksHint(selectedTab: Int) {
-    val colors = ZaijianTheme.colors
-    val type   = ZaijianTheme.typography
-    val (icon, hint) = when (selectedTab) {
-        0    -> Pair(Icons.Outlined.Bolt, "还没有进行中的任务\n对角色说「帮我……」开始你的第一个任务")
-        1    -> Pair(Icons.Outlined.CheckCircle, "还没有已完成的任务")
-        else -> Pair(Icons.Outlined.ErrorOutline, "还没有失败的任务")
-    }
+    // D-3 P3：空状态收口至统一组件 EmptyStateView，图标收口至 AppIcons。
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Icon(
-                imageVector        = icon,
-                contentDescription = null,
-                modifier           = Modifier.size(36.dp),
-                tint               = colors.textDisabled,
+        when (selectedTab) {
+            0    -> EmptyStateView(
+                icon     = AppIcons.Bolt,
+                title    = "还没有进行中的任务",
+                subtitle = "对角色说「帮我……」开始你的第一个任务",
             )
-            Spacer(Modifier.height(Spacing.sm))
-            Text(
-                text      = hint,
-                style     = type.body,
-                color     = colors.textSecondary,
-                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-            )
+            1    -> EmptyStateView(icon = AppIcons.CheckCircle, title = "还没有已完成的任务")
+            else -> EmptyStateView(icon = AppIcons.ErrorOutline, title = "还没有失败的任务")
         }
     }
 }
@@ -599,31 +575,13 @@ private fun EmptyTasksHint(selectedTab: Int) {
 
 @Composable
 private fun TodayEmptyHint() {
-    val colors = ZaijianTheme.colors
-    val type   = ZaijianTheme.typography
+    // D-3 P3：空状态收口至统一组件 EmptyStateView，图标收口至 AppIcons。
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Icon(
-                imageVector        = Icons.Outlined.Spa,
-                contentDescription = null,
-                modifier           = Modifier.size(36.dp),
-                tint               = colors.textDisabled,
-            )
-            Spacer(Modifier.height(Spacing.sm))
-            Text(
-                text      = "今天还没有任何任务",
-                style     = type.body,
-                color     = colors.textSecondary,
-                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-            )
-            Spacer(Modifier.height(4.dp))
-            Text(
-                text      = "和角色聊聊，或去建立进化项目",
-                style     = type.small,
-                color     = colors.textDisabled,
-                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-            )
-        }
+        EmptyStateView(
+            icon     = AppIcons.Spa,
+            title    = "今天还没有任何任务",
+            subtitle = "和角色聊聊，或去建立进化项目",
+        )
     }
 }
 
@@ -736,7 +694,7 @@ private fun TodayGroupedView(
             when (listItem) {
                 is TodayListItem.GrowthHeader -> {
                     TodaySectionHeader(
-                        icon  = Icons.Outlined.Spa,
+                        icon  = AppIcons.Spa,
                         label = "成长任务 (${listItem.count})",
                         color = Palette.GrowthGreen,
                     )
@@ -754,7 +712,7 @@ private fun TodayGroupedView(
                 }
                 is TodayListItem.ScheduledHeader -> {
                     TodaySectionHeader(
-                        icon  = Icons.Outlined.Schedule,
+                        icon  = AppIcons.Schedule,
                         label = "定时任务 (${scheduledJobs.size})",
                         color = ZaijianTheme.colors.accent,
                     )
@@ -914,7 +872,7 @@ private fun ScheduledJobCard(
                 style = type.small.copy(fontWeight = FontWeight.Medium),
                 color = if (isPast) colors.textSecondary else colors.textPrimary,
             )
-            Spacer(Modifier.height(4.dp))
+            Spacer(Modifier.height(Spacing.xs))
             Box(
                 modifier = Modifier
                     .size(10.dp)
@@ -1014,10 +972,10 @@ private fun ScheduledJobCard(
                 }
                 Spacer(Modifier.width(Spacing.xs))
                 val (statusIcon, statusTint) = when {
-                    item.result?.status == "success" -> Icons.Outlined.CheckCircle to Palette.SemanticSuccess
-                    item.result?.status == "failed"  -> Icons.Outlined.ErrorOutline to Palette.SemanticDanger
-                    isPast -> Icons.Outlined.HourglassEmpty to colors.textDisabled
-                    else   -> Icons.Outlined.Schedule to colors.textDisabled
+                    item.result?.status == "success" -> AppIcons.CheckCircle to Palette.SemanticSuccess
+                    item.result?.status == "failed"  -> AppIcons.ErrorOutline to Palette.SemanticDanger
+                    isPast -> AppIcons.HourglassEmpty to colors.textDisabled
+                    else   -> AppIcons.Schedule to colors.textDisabled
                 }
                 Icon(
                     imageVector        = statusIcon,
@@ -1104,7 +1062,7 @@ private fun GrowthTaskItem(
                 // 来源标签行：角色名 + 成长标签
                 Row(
                     verticalAlignment      = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(Spacing.xs),
                 ) {
                     Text(
                         text  = character?.name ?: "未知",
@@ -1130,7 +1088,7 @@ private fun GrowthTaskItem(
 
             // 完成状态图标
             Icon(
-                imageVector        = if (isDone) Icons.Outlined.CheckCircle else Icons.Outlined.RadioButtonUnchecked,
+                imageVector        = if (isDone) AppIcons.CheckCircle else AppIcons.RadioButtonUnchecked,
                 contentDescription = if (isDone) "已完成" else "待完成",
                 modifier           = Modifier.size(18.dp),
                 tint               = if (isDone) Palette.SemanticSuccess else colors.textDisabled,

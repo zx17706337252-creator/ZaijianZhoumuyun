@@ -113,6 +113,7 @@ class BriefingRepository(
                 val projects = projectDao.getActiveProjectsForCharacter(config.id)
                 val entries = entriesByCharacter[config.id].orEmpty()
                 val avgScore = entries.mapNotNull { it.compositeScore }
+                    .filter { it > 0f }
                     .takeIf { it.isNotEmpty() }
                     ?.average()
                     ?.toFloat()
@@ -273,9 +274,20 @@ class BriefingRepository(
                 items += BriefingAttentionItem.Pregnancy(character)
             }
         }
-        interMatrix.filter { it.tension >= tensionThreshold }.forEach { rel ->
-            items += BriefingAttentionItem.Tension(rel.fromId, rel.toId, rel.tension)
-        }
+        // P1-20 修复：buildAttentionList() 接收的是 getInterCharacterMatrix()
+        // 产出的 Map<relKey, RelationshipEntity>，同一对角色天然只保留一条；
+        // 这里接收的却是原始 List，同一对角色若因历史数据（M7 归一化之前）
+        // 同时存在 fromId-toId 和 toId-fromId 两条记录，会被各自判一次
+        // tension，产出两条 Tension item——角标未读数（数这份 List 的结果）
+        // 因此比通知中心实际展示条目（数 Map 的结果）多1，且多出的那条
+        // 因为跟另一条共享同一个 buildItemKey，标不了已读。按 relKey 去重，
+        // 与 buildAttentionList() 的 Map 语义对齐。
+        interMatrix
+            .distinctBy { RelationshipEngine.relKey(it.fromId.toInt(), it.toId.toInt()) }
+            .filter { it.tension >= tensionThreshold }
+            .forEach { rel ->
+                items += BriefingAttentionItem.Tension(rel.fromId, rel.toId, rel.tension)
+            }
         worsened.forEach { m ->
             items += BriefingAttentionItem.RelationWorsened(m.fromId, m.toId, m.description, m.id)
         }

@@ -533,7 +533,7 @@ data class CharacterConfig(
     val avatarCropShelfOffsetX: Float = 0f,
     val avatarCropShelfOffsetY: Float = 0f,
     val avatarCropShelfScale: Float = 1f,
-    /** 是否已解锁（江凡默认 false） */
+    /** 是否已解锁（默认 true，所有角色初始可用） */
     val isUnlocked: Boolean = true,
     /**
      * ★ v3 新增：角色身份配置，Phase 7 Identity Layer 使用。

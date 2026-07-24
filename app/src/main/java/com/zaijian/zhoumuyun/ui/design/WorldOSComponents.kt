@@ -513,7 +513,7 @@ fun WrapChipGroup(
                             .clip(CircleShape)
                             .background(chip.ownerAccent)
                     )
-                    Spacer(Modifier.width(4.dp))
+                    Spacer(Modifier.width(Spacing.xs))
                 }
                 Text(text = chip.label, style = type.caption, color = textColor)
             }
@@ -659,7 +659,7 @@ private fun GridTabCell(
             color = if (isSelected) colors.accent else colors.textSecondary,
         )
         if (item.count != null) {
-            Spacer(Modifier.width(4.dp))
+            Spacer(Modifier.width(Spacing.xs))
             Text(
                 text = item.count.toString(),
                 style = type.labelMono,
@@ -722,7 +722,7 @@ fun BondRibbon(
     val reachedCount = stages.indexOf(stage) + 1
 
     Column(modifier = modifier) {
-        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(Spacing.xs)) {
             if (showLabels) {
                 // 完整版：5 格全画，已达到的实心，未达到的留空边框（精修方案 v1.3 第5.4节）
                 stages.forEach { s ->
@@ -758,7 +758,7 @@ fun BondRibbon(
             }
         }
         if (showLabels) {
-            Spacer(Modifier.height(4.dp))
+            Spacer(Modifier.height(Spacing.xs))
             Text(text = stage.label, style = type.caption, color = colors.textSecondary)
             val hint = suppression?.let { suppressionShortLabel(it) }
             if (hint != null) {
@@ -796,15 +796,15 @@ private fun MoodType.labelWithEmoji(): String = when (this) {
 
 /** 心情对应的语义色（不是角色 accentColor，避免和 L3 身份脊颜色语义冲突，精修方案 v1.3 第5.3节）
  *  批次7 7-2修复：4个与已有 token 重复的色值改为引用 Palette，消除数值级重复。
- *  EXCITED/CURIOUS/REFLECTIVE/TIRED 4个无对应 token 的保留裸色值（Palette 中不存在专属 token）。 */
+ *  P2-41 修复：剩余4个裸色值（EXCITED/CURIOUS/REFLECTIVE/TIRED）收口为 Palette token。 */
 private fun MoodType.candleColor(): Color = when (this) {
-    MoodType.EXCITED -> Color(0xFFFF8A65)    // 暖橙，兴奋
+    MoodType.EXCITED -> Palette.MoodExcited       // 暖橙，兴奋
     MoodType.SATISFIED -> Palette.SemanticReminder  // 暖黄，愉快（与 SemanticReminder 0xFFFFD54F 重复，改为引用）
-    MoodType.CURIOUS -> Color(0xFFBA68C8)    // 紫，好奇
+    MoodType.CURIOUS -> Palette.MoodCurious        // 紫，好奇
     MoodType.FOCUSED -> Palette.TaskActive   // 蓝，专注（与 TaskActive 0xFF5B9CF6 重复，改为引用。原注释"呼应系统 Focused 状态色"指错对象，实际数值对应 TaskActive）
     MoodType.CALM -> Palette.SemanticSafe    // 冷绿，平静（与 SemanticSafe 0xFF81C784 重复，改为引用）
-    MoodType.REFLECTIVE -> Color(0xFF9FA8DA) // 冷紫蓝，沉思
-    MoodType.TIRED -> Color(0xFF90A4AE)      // 灰，疲惫
+    MoodType.REFLECTIVE -> Palette.MoodReflective // 冷紫蓝，沉思
+    MoodType.TIRED -> Palette.MoodTired           // 灰，疲惫
     MoodType.CONCERNED -> Palette.SemanticDanger  // 暖红，担心（与 SemanticDanger 0xFFE57373 重复，改为引用）
 }
 

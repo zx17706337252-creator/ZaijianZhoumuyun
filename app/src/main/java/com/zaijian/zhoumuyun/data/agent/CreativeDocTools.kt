@@ -777,6 +777,7 @@ class MarkdownToDocTool(
     override val name = "markdown_to_doc"
     override val description = "将已有的Markdown文本转换为HTML或PDF文档并导出"
     override val paramKeys = listOf("content", "format", "title")
+    override val usageNotes = "format 可选 html/pdf"
 
     override suspend fun execute(params: Map<String, String>): ToolResult =
         withContext(Dispatchers.IO) {

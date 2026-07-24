@@ -21,6 +21,8 @@ data class BuildStatus(
         isSuccess               -> "✅ 编译成功"
         conclusion == "failure" -> "❌ 编译失败"
         conclusion == "cancelled" -> "🚫 已取消"
+        conclusion == "skipped" -> "⏭️ 已跳过"
+        conclusion == "neutral" -> "⚪ 中性"
         else                    -> "状态: $status / $conclusion"
     }
 }

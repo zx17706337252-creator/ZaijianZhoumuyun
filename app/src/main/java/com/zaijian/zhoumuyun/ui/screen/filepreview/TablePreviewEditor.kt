@@ -12,6 +12,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.zaijian.zhoumuyun.ui.theme.Spacing
 import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
 
 /**
@@ -47,7 +48,7 @@ internal fun TablePreviewEditor(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
+                .padding(horizontal = Spacing.screenHorizontal, vertical = Spacing.sm),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -57,7 +58,7 @@ internal fun TablePreviewEditor(
                 color = colors.textSecondary,
             )
             if (editable) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
                     TextButton(onClick = {
                         editRows = editRows.toMutableList().apply { add(MutableList(columns.size) { "" }) }
                     }) {
@@ -97,7 +98,7 @@ internal fun TablePreviewEditor(
                         Box(
                             modifier = Modifier
                                 .width(120.dp)
-                                .padding(8.dp),
+                                .padding(Spacing.sm),
                             contentAlignment = Alignment.CenterStart,
                         ) {
                             if (editable) {
@@ -138,7 +139,7 @@ internal fun TablePreviewEditor(
                                 Box(
                                     modifier = Modifier
                                         .width(120.dp)
-                                        .padding(4.dp),
+                                        .padding(Spacing.xs),
                                     contentAlignment = Alignment.CenterStart,
                                 ) {
                                     if (editable) {
@@ -181,7 +182,7 @@ internal fun TablePreviewEditor(
                 onClick = { onSave(editColumns, editRows.map { it.toList() }) },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(16.dp),
+                    .padding(Spacing.md),
             ) {
                 Text("保存")
             }

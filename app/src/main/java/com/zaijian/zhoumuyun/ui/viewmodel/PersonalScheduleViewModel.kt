@@ -64,6 +64,20 @@ data class ScheduleDraft(
     /** 编辑时回显原始下次执行时间，仅用于展示，不直接参与保存逻辑 */
     val originalNextRunAt: Long? = null,
     /**
+     * 同文件-15 修复：编辑时保存任务的原始 repeatIntervalMs（未经预设映射）。
+     *
+     * 问题：Agent 创建的 36h 任务，openEditDraft 时 toRepeatPreset() 会就近吸附
+     * 成 DAILY(24h) 用于 Chip 高亮。若用户没碰重复间隔 Chip 就点保存，
+     * saveDraft 用 repeatPreset.toIntervalMs() 回算得到 24h，36h 被静默改成 24h。
+     *
+     * 修复：草稿单独存一份 originalIntervalMs（原始值，不经过预设映射）。
+     * 只要用户没手动点过 Chip（presetManuallyChanged=false），保存时就用原始值；
+     * 用户主动选了别的预设后，才用预设值覆盖。
+     */
+    val originalIntervalMs: Long? = null,
+    /** 同文件-15 修复：标记用户是否手动点过重复间隔 Chip（区分"自动吸附回显"与"主动选择"） */
+    val presetManuallyChanged: Boolean = false,
+    /**
      * 日程系统批次4新增：日程模式。
      * - TOOL       工具型（mode A，现状）：到点调指定已注册工具
      * - AGENT_TASK 工单型（mode B）：到点把 description 当触发消息让角色自己推理回应
@@ -244,6 +258,9 @@ class PersonalScheduleViewModel(application: Application) : AndroidViewModel(app
             delayHours        = 0.0,
             delayHoursText    = "",
             originalNextRunAt = job.nextRunAt,
+            // 同文件-15 修复：保存原始 repeatIntervalMs，用户没动 Chip 时保存用原值
+            originalIntervalMs = job.repeatIntervalMs,
+            presetManuallyChanged = false,
             mode              = mode,
             description       = job.description ?: "",
             // 日程系统第七节：回显关联项目 ID（null = 独立日程，UI 选择器显示"未关联"）
@@ -305,7 +322,10 @@ class PersonalScheduleViewModel(application: Application) : AndroidViewModel(app
         it?.copy(projectId = v)
     }
 
-    fun onDraftRepeatChange(v: RepeatPreset) = _draft.update { it?.copy(repeatPreset = v) }
+    // 同文件-15 修复：标记用户手动选了预设，saveDraft 时用预设值覆盖 originalIntervalMs
+    fun onDraftRepeatChange(v: RepeatPreset) = _draft.update {
+        it?.copy(repeatPreset = v, presetManuallyChanged = true)
+    }
 
     /**
      * 审查报告问题9修复：原实现签名为 (Double)，UI 层用
@@ -381,20 +401,17 @@ class PersonalScheduleViewModel(application: Application) : AndroidViewModel(app
         // - 工具型（TOOL）：保持原逻辑，description 置 null。
         // 这套映射与 ScheduleCreateTool / ScheduleUpdateTool 的 mode 分叉逻辑严格一致，
         // UI 与 Agent 工具两条写入路径对同一字段的语义保持统一。
-        val toolName: String
-        val description: String?
-        val toolParams: Map<String, String>?
-
-        when (d.mode) {
+        // P2-48 修复：原 when 为语句形式，toolParams 声明为可空类型 Map<String, String>?，
+        // 传给非空参数时依赖编译器智能转换（脆弱）。改为 when 表达式形式，
+        // 编译器能推断出非空联合类型，消除可空声明和不安全 cast。
+        val (toolName, description, toolParams) = when (d.mode) {
             TaskKind.AGENT_TASK -> {
                 val desc = d.description.trim()
                 if (desc.isEmpty()) {
                     _draft.update { it?.copy(descriptionError = "工单型任务必须填写描述") }
                     return
                 }
-                toolName = AgentTaskJobExecutor.SENTINEL
-                description = desc
-                toolParams = emptyMap()
+                Triple(AgentTaskJobExecutor.SENTINEL, desc, emptyMap<String, String>())
             }
             TaskKind.TOOL -> {
                 val tn = d.toolName.trim().ifEmpty { ScheduleDraft.DEFAULT_TOOL_NAME }
@@ -405,15 +422,29 @@ class PersonalScheduleViewModel(application: Application) : AndroidViewModel(app
                     _draft.update { it?.copy(paramsError = "参数格式不正确，请使用 key=\"value\" 的格式") }
                     return
                 }
-                toolName = tn
-                description = null
-                toolParams = parsed
+                Triple(tn, null as String?, parsed)
             }
         }
 
-        val repeatIntervalMs = d.repeatPreset.toIntervalMs()
-        val nextRunAt = System.currentTimeMillis() +
-            (d.delayHours * 60 * 60 * 1000L).toLong()
+        // 同文件-15 修复：编辑模式下若用户没手动点过重复间隔 Chip，保存原始
+        // repeatIntervalMs（如 Agent 建的 36h 任务不会被就近吸附成 24h）。
+        // 只有用户主动选了预设 Chip 后，才用预设值覆盖。新建模式 always 用预设值。
+        val repeatIntervalMs = if (d.id != null && !d.presetManuallyChanged && d.originalIntervalMs != null) {
+            d.originalIntervalMs
+        } else {
+            d.repeatPreset.toIntervalMs()
+        }
+        // 同文件-12 修复：编辑模式下（d.id != null）若用户没有改动延迟小时数
+        // 输入框（delayHoursText 为空，openEditDraft 回显时就是空串），说明用户
+        // 无意重新调度，应保留原始 nextRunAt；此前无条件用
+        // now + delayHours(默认0.0) 计算，导致编辑时任务原定的执行时间被
+        // 悄悄丢弃、变成立即触发。新建时（d.id == null）delayHoursText 也可能
+        // 为空（用户没填延迟，默认立即执行），这是预期行为，不受影响。
+        val nextRunAt = if (d.id != null && d.delayHoursText.isBlank() && d.originalNextRunAt != null) {
+            d.originalNextRunAt
+        } else {
+            System.currentTimeMillis() + (d.delayHours * 60 * 60 * 1000L).toLong()
+        }
 
         viewModelScope.launch {
             try {
@@ -445,7 +476,7 @@ class PersonalScheduleViewModel(application: Application) : AndroidViewModel(app
                         id               = d.id,
                         title            = title,
                         toolName         = toolName,
-                        toolParamsJson   = JSONObject(toolParams as Map<*, *>).toString(),
+                        toolParamsJson   = JSONObject(toolParams).toString(),
                         repeatIntervalMs = repeatIntervalMs,
                         nextRunAt        = nextRunAt,
                         description      = description,
@@ -468,8 +499,19 @@ class PersonalScheduleViewModel(application: Application) : AndroidViewModel(app
     fun deleteJob(jobId: String) {
         // L-P0-4 修复：使用 deleteJobWithFullSync 替代 deleteJob，
         // 补齐日历事件删除和 WorkManager 取消调度
+        // P2-18 修复：传入当前角色 ID 做归属校验，防止删除其他角色的日程
         viewModelScope.launch {
-            scheduleRepository.deleteJobWithFullSync(jobId, userId = null, characterId = null)
+            try {
+                scheduleRepository.deleteJobWithFullSync(
+                    jobId,
+                    userId = null,
+                    characterId = currentCharacterId.takeIf { it >= 0 },
+                )
+            } catch (e: SecurityException) {
+                _uiState.update { it.copy(error = "无权删除此日程") }
+            } catch (e: IllegalArgumentException) {
+                _uiState.update { it.copy(error = "日程不存在或已被删除") }
+            }
         }
     }
 

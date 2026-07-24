@@ -125,7 +125,9 @@ class CalendarSyncHelper(private val context: Context) {
                 repeatIntervalMs?.let { ms ->
                     val rrule = buildRRule(ms)
                     if (rrule.isNotEmpty()) put(CalendarContract.Events.RRULE, rrule)
-                } ?: put(CalendarContract.Events.RRULE, "")  // 改为一次性：清除 RRULE
+                } ?: putNull(CalendarContract.Events.RRULE)  // 改为一次性：清除 RRULE（同文件-14 修复：
+                // 部分厂商日历实现将空字符串视为无效值而忽略，保留旧 RRULE，
+                // 导致重复规则未被正确清除；用 putNull 才是明确的"清空该列"语义）
             }
 
             val uri = CalendarContract.Events.CONTENT_URI

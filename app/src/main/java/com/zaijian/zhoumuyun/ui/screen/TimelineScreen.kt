@@ -5,13 +5,9 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
@@ -27,14 +23,14 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle // P1-11-2
 import com.zaijian.zhoumuyun.data.db.entity.EventType
 import com.zaijian.zhoumuyun.data.db.entity.WorldEventEntity
+import com.zaijian.zhoumuyun.ui.component.DetailTopBar
 import com.zaijian.zhoumuyun.ui.design.WorldCard
 import com.zaijian.zhoumuyun.ui.theme.Palette
 import com.zaijian.zhoumuyun.ui.theme.Spacing
 import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
 import com.zaijian.zhoumuyun.ui.viewmodel.TimelineViewModel
+import com.zaijian.zhoumuyun.util.TimeFormatUtils
 import com.zaijian.zhoumuyun.util.ZLog
-import java.text.SimpleDateFormat
-import java.util.*
 
 @Composable
 fun TimelineScreen(
@@ -54,20 +50,13 @@ fun TimelineScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(colors.bgBase)
-            .statusBarsPadding()
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = Spacing.sm, vertical = Spacing.xs),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            IconButton(onClick = onBack) {
-                Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "返回")
-            }
-            Spacer(Modifier.width(Spacing.xs))
-            Text("我们的故事", style = type.titleBold, color = colors.textPrimary)
-        }
+        // 窗口4：统一为 DetailTopBar（原内联 Row 字号用 titleBold(20sp) 偏大、缺 topBarHeight）
+        DetailTopBar(
+            title    = "我们的故事",
+            onBack   = onBack,
+            headerBg = colors.bgBase,
+        )
 
         if (uiState.isLoading) {
             // P3-51 修复：加载态用纯文本改为 CircularProgressIndicator
@@ -117,7 +106,7 @@ fun TimelineScreen(
             //  因为 content lambda 是 LazyListScope 构建器上下文而非 @Composable 上下文）
             val grouped = remember(uiState.events) {
                 uiState.events.groupBy { event ->
-                    SimpleDateFormat("yyyy年MM月dd日", Locale.CHINESE).format(Date(event.createdAt))
+                    TimeFormatUtils.formatChineseFullDate(event.createdAt)
                 }
             }
             LazyColumn(
@@ -145,12 +134,32 @@ fun TimelineScreen(
 @Composable
 private fun TimelineEventCard(event: WorldEventEntity, colors: com.zaijian.zhoumuyun.ui.theme.AppColors) {
     val type = ZaijianTheme.typography
+    // P1-33 修复：eventColor / eventIcon 原先只覆盖了 15 个 EventType 中的 9/9 个，
+    // TASK_FAILED/TASK_CANCELLED/PROJECT_MILESTONE/MEMORY_UPDATED/PRESENCE_CHANGED/
+    // CHARACTER_DISCUSSION/WORLD_SIMULATION/SYSTEM 这 8 个类型落入 else 分支，
+    // 使用统一的 textSecondary / "📌" 兜底——与 eventTypeLabel()（已覆盖全部 15 个）
+    // 不一致，导致时间线上这些事件有中文标签但颜色/图标缺失区分度。
+    // 现逐一补齐，复用已有 Palette / AppColors 语义色，不新增 token：
+    //   失败/取消 → taskFailed / textSecondary（与任务卡片同语义）
+    //   里程碑    → VelvetSoft（仪式性强调色，稀缺时刻专用）
+    //   记忆更新  → TimelineMemory（与创建同色系）
+    //   状态变化  → Focused（蓝灰，与 PresenceState 语义一致）
+    //   角色讨论  → SemanticEmotion（粉，角色互动情感色）
+    //   世界事件  → SemanticInfo（信息蓝，世界级事件）
+    //   系统      → SemanticNeutral（中性灰）
     val eventColor = when (event.type) {
         EventType.MESSAGE.name -> colors.accent
         EventType.RELATIONSHIP_CHANGED.name -> Palette.TimelineRelationship
         EventType.TASK_CREATED.name, EventType.TASK_COMPLETED.name -> colors.taskDone
+        EventType.TASK_FAILED.name -> colors.taskFailed
+        EventType.TASK_CANCELLED.name -> colors.textSecondary
         EventType.PROJECT_CREATED.name, EventType.PROJECT_UPDATED.name -> colors.taskActive
-        EventType.MEMORY_CREATED.name -> Palette.TimelineMemory
+        EventType.PROJECT_MILESTONE.name -> Palette.VelvetSoft
+        EventType.MEMORY_CREATED.name, EventType.MEMORY_UPDATED.name -> Palette.TimelineMemory
+        EventType.PRESENCE_CHANGED.name -> Palette.Focused
+        EventType.CHARACTER_DISCUSSION.name -> Palette.SemanticEmotion
+        EventType.WORLD_SIMULATION.name -> Palette.SemanticInfo
+        EventType.SYSTEM.name -> Palette.SemanticNeutral
         else -> colors.textSecondary
     }
     val eventIcon = when (event.type) {
@@ -158,16 +167,21 @@ private fun TimelineEventCard(event: WorldEventEntity, colors: com.zaijian.zhoum
         EventType.RELATIONSHIP_CHANGED.name -> "💝"
         EventType.TASK_CREATED.name -> "📋"
         EventType.TASK_COMPLETED.name -> "✅"
+        EventType.TASK_FAILED.name -> "❌"
         EventType.TASK_CANCELLED.name -> "🚫"
         EventType.PROJECT_CREATED.name -> "📁"
         EventType.PROJECT_UPDATED.name -> "🔄"
-        EventType.MEMORY_CREATED.name -> "🧠"
+        EventType.PROJECT_MILESTONE.name -> "🏆"
+        EventType.MEMORY_CREATED.name, EventType.MEMORY_UPDATED.name -> "🧠"
         EventType.PRESENCE_CHANGED.name -> "🔵"
+        EventType.CHARACTER_DISCUSSION.name -> "🗣️"
+        EventType.WORLD_SIMULATION.name -> "🌍"
+        EventType.SYSTEM.name -> "⚙️"
         else -> "📌"
     }
     // P3-52 修复：SimpleDateFormat 在 items 内重复创建，提升到 remember
     val timeStr = remember(event.createdAt) {
-        SimpleDateFormat("HH:mm", Locale.CHINESE).format(Date(event.createdAt))
+        TimeFormatUtils.formatTime(event.createdAt)
     }
 
     Row(

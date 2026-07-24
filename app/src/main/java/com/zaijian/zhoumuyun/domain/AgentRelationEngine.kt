@@ -44,6 +44,11 @@ private const val MAX_GATE3_BYPASS = 10
 
 private val MS_PER_DAY = 24L * 60 * 60 * 1000
 
+// 枚举-01 修复：stage 现在以 String（AgentRelationStage.name）存储在 DB 中，
+// 读取时用 firstOrNull 兜底而非 valueOf()，防止 DB 中出现未定义枚举值时崩溃。
+private fun AgentRelationEntity.parsedStage(): AgentRelationStage =
+    AgentRelationStage.entries.firstOrNull { it.name == stage } ?: AgentRelationStage.STAGE_1_INITIAL
+
 // ── 门3 关键词：STAGE_1 → STAGE_2（陌生→亲密，检测依赖/亲近信号）────
 private val SIGNAL_WORDS_S1_TO_S2 = listOf(
     "陪我", "不走", "一直", "想你", "需要你", "在一起", "抱抱",
@@ -105,7 +110,7 @@ class AgentRelationEngine(
             }
 
         // 已是最终阶段
-        if (entity.stage == AgentRelationStage.STAGE_3_SEEKING) {
+        if (entity.parsedStage() == AgentRelationStage.STAGE_3_SEEKING) {
             agentRelationDao.incrementInteraction(daughterId)
             return@withLock StageTransitionResult.NoChange
         }
@@ -121,7 +126,7 @@ class AgentRelationEngine(
         val combined = (userText + " " + assistantText).lowercase()
 
         // P1-6-7 修复：when 分支改用 freshEntity.stage，避免并发升阶后用旧快照走错分支
-        when (freshEntity.stage) {
+        when (freshEntity.parsedStage()) {
             AgentRelationStage.STAGE_1_INITIAL ->
                 evaluateUpgrade(
                     daughterId     = daughterId,
@@ -191,7 +196,7 @@ class AgentRelationEngine(
         gate3BypassCounter.remove(daughterId)
         agentRelationDao.updateStage(
             daughterId = daughterId,
-            stage      = targetStage,
+            stage      = targetStage.name,
             now        = System.currentTimeMillis(),
         )
         ZLog.i(TAG, "daughterId=$daughterId 升阶 → $targetStage（第 $newCount 次，第 $elapsedDays 天）")
@@ -230,7 +235,7 @@ class AgentRelationEngine(
             null
         }
 
-        return when (entity.stage) {
+        return when (entity.parsedStage()) {
             AgentRelationStage.STAGE_1_INITIAL  -> buildStage1Block(entity, elapsedDays, userName, identity)
             AgentRelationStage.STAGE_2_BONDING  -> buildStage2Block(entity, elapsedDays, userName, identity)
             AgentRelationStage.STAGE_3_SEEKING  -> buildStage3Block(entity, elapsedDays, userName, identity)

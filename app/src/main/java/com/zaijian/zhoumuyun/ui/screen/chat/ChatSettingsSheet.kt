@@ -14,15 +14,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.AccountCircle
-import androidx.compose.material.icons.outlined.Check
-import androidx.compose.material.icons.outlined.DeleteSweep
-import androidx.compose.material.icons.outlined.Download
-import androidx.compose.material.icons.outlined.Event
-import androidx.compose.material.icons.outlined.FolderOpen
-import androidx.compose.material.icons.outlined.KeyboardArrowDown
-import androidx.compose.material.icons.outlined.Wallpaper
 import androidx.compose.ui.unit.dp
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -50,6 +41,7 @@ import com.zaijian.zhoumuyun.ui.theme.Spacing
 import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
 
 import com.zaijian.zhoumuyun.ui.viewmodel.KnowledgeInjectMode
+import com.zaijian.zhoumuyun.ui.design.AppIcons
 
 
 
@@ -145,7 +137,7 @@ internal fun ChatSettingsSheet(
                 horizontalArrangement      = Arrangement.spacedBy(Spacing.md),
             ) {
                 com.zaijian.zhoumuyun.ui.design.IconBadge(
-                    icon               = Icons.Outlined.AccountCircle,
+                    icon               = AppIcons.AccountCircle,
                     contentDescription = null,
                     tint               = accentColor,
                     background         = accentColor.copy(alpha = 0.12f),
@@ -180,7 +172,7 @@ internal fun ChatSettingsSheet(
                 horizontalArrangement      = Arrangement.spacedBy(Spacing.md),
             ) {
                 com.zaijian.zhoumuyun.ui.design.IconBadge(
-                    icon               = Icons.Outlined.Event,
+                    icon               = AppIcons.Event,
                     contentDescription = null,
                     tint               = accentColor,
                     background         = accentColor.copy(alpha = 0.12f),
@@ -213,7 +205,7 @@ internal fun ChatSettingsSheet(
                 horizontalArrangement = Arrangement.spacedBy(Spacing.md),
             ) {
                 com.zaijian.zhoumuyun.ui.design.IconBadge(
-                    icon               = Icons.Outlined.FolderOpen,
+                    icon               = AppIcons.FolderOpen,
                     contentDescription = null,
                     tint               = accentColor,
                     background         = accentColor.copy(alpha = 0.12f),
@@ -245,7 +237,7 @@ internal fun ChatSettingsSheet(
                 horizontalArrangement = Arrangement.spacedBy(Spacing.md),
             ) {
                 com.zaijian.zhoumuyun.ui.design.IconBadge(
-                    icon               = Icons.Outlined.Wallpaper,
+                    icon               = AppIcons.Wallpaper,
                     contentDescription = null,
                     tint               = accentColor,
                     background         = accentColor.copy(alpha = 0.12f),
@@ -287,7 +279,7 @@ internal fun ChatSettingsSheet(
                 horizontalArrangement = Arrangement.spacedBy(Spacing.md),
             ) {
                 com.zaijian.zhoumuyun.ui.design.IconBadge(
-                    icon               = Icons.Outlined.Download,
+                    icon               = AppIcons.Download,
                     contentDescription = null,
                     tint               = accentColor,
                     background         = accentColor.copy(alpha = 0.12f),
@@ -315,7 +307,7 @@ internal fun ChatSettingsSheet(
                 horizontalArrangement = Arrangement.spacedBy(Spacing.md),
             ) {
                 com.zaijian.zhoumuyun.ui.design.IconBadge(
-                    icon               = Icons.Outlined.DeleteSweep,
+                    icon               = AppIcons.DeleteSweep,
                     contentDescription = null,
                     tint               = Palette.SemanticDanger,
                     background         = Palette.SemanticDanger.copy(alpha = 0.10f),
@@ -374,7 +366,7 @@ internal fun ChatSettingsSheet(
                     horizontalArrangement = Arrangement.spacedBy(Spacing.md),
                 ) {
                     com.zaijian.zhoumuyun.ui.design.IconBadge(
-                        icon               = Icons.Outlined.FolderOpen,
+                        icon               = AppIcons.FolderOpen,
                         contentDescription = null,
                         tint               = accentColor,
                         background         = accentColor.copy(alpha = 0.12f),
@@ -390,7 +382,7 @@ internal fun ChatSettingsSheet(
                         )
                     }
                     Icon(
-                        imageVector        = Icons.Outlined.KeyboardArrowDown,
+                        imageVector        = AppIcons.KeyboardArrowDown,
                         contentDescription = null,
                         tint               = colors.textDisabled,
                         modifier           = Modifier.size(18.dp),
@@ -412,7 +404,7 @@ internal fun ChatSettingsSheet(
                             },
                             trailingIcon = if (currentProjectId == null) ({
                                 Icon(
-                                    imageVector = Icons.Outlined.Check,
+                                    imageVector = AppIcons.Check,
                                     contentDescription = null,
                                     tint = colors.accent,
                                     modifier = Modifier.size(16.dp),
@@ -436,7 +428,7 @@ internal fun ChatSettingsSheet(
                                 },
                                 trailingIcon = if (project.id == currentProjectId) ({
                                     Icon(
-                                        imageVector = Icons.Outlined.Check,
+                                        imageVector = AppIcons.Check,
                                         contentDescription = null,
                                         tint = colors.accent,
                                         modifier = Modifier.size(16.dp),

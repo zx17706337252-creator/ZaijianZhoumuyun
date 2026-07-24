@@ -60,6 +60,9 @@ class ScheduleUpdateTool(
     private val projectRepository: ProjectRepository? = null,
     private val calendarSync: CalendarSyncHelper? = null,
     private val context: android.content.Context? = null,
+    // 跨角色越权修复：与 ScheduleDeleteTool/ScheduleGetTool 同款——原实现完全
+    // 没有 characterId 概念，任何角色都能改动其他角色名下的定时任务。
+    private val characterIdProvider: () -> Int = { -1 },
 ) : AgentTool {
 
     override val name = "schedule_update"
@@ -77,10 +80,32 @@ class ScheduleUpdateTool(
             return ToolResult(name, false, "", error = "id 参数不能为空")
         }
 
+        val charId = characterIdProvider()
+        if (charId < 0) {
+            return ToolResult(name, false, "", error = "角色未初始化")
+        }
+
+        // 修复：原实现把"查询/计算新字段/DB写入(updateJob)"和"日历+WorkManager同步"
+        // 全部包在同一层 try-catch 里，与 ScheduleCreateTool/ScheduleDeleteTool
+        // "DB写入用独立try-catch、和同步逻辑物理隔离"的写法不一致——当前代码路径下
+        // 结果一样（因为 updateJob 之后到 return 之间没有会抛出的代码），但这是靠
+        // "现在没人在中间加代码"维持的隐性约定：后续如果有人在 updateJob 和 return
+        // 之间插入逻辑并忘记单独包裹，异常会被外层 catch 吞掉，变成
+        // "success=false + 更新失败" 而不是"DB已落库+同步警告"，与 Create/Delete
+        // 的容错语义不一致。现改为：查询与计算新字段这段仍用 try-catch 包裹（这段
+        // 本身可能因数据不一致等原因抛异常，失败即整体失败是合理的）；updateJob
+        // 单独用 try-catch 包裹并在此处直接返回结果，与同步步骤物理隔离，跟
+        // ScheduleCreateTool.createJob 的隔离方式对齐。
         return try {
             // 先查出原任务
             val existing = scheduleRepository.getJob(id)
                 ?: return ToolResult(name, false, "", error = "找不到任务 ID: $id")
+
+            // 跨角色越权修复：existing.characterId 与当前角色不一致时按"找不到"处理，
+            // 防止角色A的会话改动角色B名下的定时任务，也不暴露该 id 属于其他角色。
+            if (existing.characterId != charId) {
+                return ToolResult(name, false, "", error = "找不到任务 ID: $id")
+            }
 
             // 批次2：按 mode 三分支计算 (newToolName, newDescription)。
             // 实现方案第六节6.6 给出的分叉逻辑，逐字落地：
@@ -202,8 +227,7 @@ class ScheduleUpdateTool(
                 existing.nextRunAt
             }
 
-            scheduleRepository.updateJob(
-                id               = id,
+            PendingUpdate(
                 title            = newTitle,
                 toolName         = newToolName,
                 toolParamsJson   = newToolParamsJson,
@@ -212,37 +236,85 @@ class ScheduleUpdateTool(
                 description      = newDescription,
                 projectId        = newProjectId,
             )
-
-            // 同步更新系统日历事件（权限未授予时静默跳过）
-            calendarSync?.updateEvent(
-                jobId            = id,
-                title            = newTitle,
-                nextRunAt        = newNextRunAt,
-                repeatIntervalMs = newRepeatIntervalMs,
-            )
-
-            // 取消旧 WorkRequest，重新按新时间入队
-            context?.let {
-                WorkManagerScheduler.cancel(it, id)
-                val delayMs = (newNextRunAt - System.currentTimeMillis()).coerceAtLeast(0L)
-                WorkManagerScheduler.enqueue(it, id, delayMs)
+        } catch (e: Exception) {
+            return ToolResult(name, false, "", error = "更新失败：${e.message}")
+        }.let { p ->
+            // updateJob 单独隔离：与 ScheduleCreateTool.createJob 同款——DB 写入
+            // 失败即整体失败并直接返回，不与后面的日历/WorkManager 同步步骤共用
+            // 同一层 try-catch，避免未来有人在这两步之间加代码时忘记单独包裹导致
+            // 异常被外层 catch 吞掉、错误地报成"更新失败"而掩盖"其实已经落库"的事实。
+            try {
+                scheduleRepository.updateJob(
+                    id               = id,
+                    title            = p.title,
+                    toolName         = p.toolName,
+                    toolParamsJson   = p.toolParamsJson,
+                    repeatIntervalMs = p.repeatIntervalMs,
+                    nextRunAt        = p.nextRunAt,
+                    description      = p.description,
+                    projectId        = p.projectId,
+                )
+            } catch (e: Exception) {
+                return ToolResult(name, false, "", error = "更新失败：${e.message}")
             }
 
-            val repeatDesc = if (newRepeatIntervalMs != null) {
-                val hours = newRepeatIntervalMs / TimeUnit.HOURS.toMillis(1).toDouble()
+            // 同步更新系统日历事件（权限未授予时静默跳过）
+            // P1-21 修复：同步步骤独立异常隔离——updateJob 已落库，
+            // 日历/WorkManager 失败不应导致整体返回失败（否则 LLM 重试产生重复更新）。
+            var syncWarning = ""
+            try {
+                calendarSync?.updateEvent(
+                    jobId            = id,
+                    title            = p.title,
+                    nextRunAt        = p.nextRunAt,
+                    repeatIntervalMs = p.repeatIntervalMs,
+                )
+            } catch (e: Exception) {
+                android.util.Log.w("ScheduleUpdateTool", "Calendar sync failed for job $id", e)
+                syncWarning = "（日历同步失败，不影响任务）"
+            }
+            try {
+                // 取消旧 WorkRequest，重新按新时间入队
+                context?.let {
+                    WorkManagerScheduler.cancel(it, id)
+                    val delayMs = (p.nextRunAt - System.currentTimeMillis()).coerceAtLeast(0L)
+                    WorkManagerScheduler.enqueue(it, id, delayMs)
+                }
+            } catch (e: Exception) {
+                android.util.Log.w("ScheduleUpdateTool", "WorkManager reschedule failed for job $id", e)
+                syncWarning = if (syncWarning.isEmpty()) "（后台调度更新失败，任务仍会按计划执行）"
+                              else "$syncWarning，后台调度更新失败"
+            }
+
+            val repeatDesc = if (p.repeatIntervalMs != null) {
+                val hours = p.repeatIntervalMs / TimeUnit.HOURS.toMillis(1).toDouble()
                 "每 $hours 小时执行一次"
             } else "仅执行一次"
 
-            val modeDesc = if (newToolName == AgentTaskJobExecutor.SENTINEL) "工单型" else "工具型"
+            val modeDesc = if (p.toolName == AgentTaskJobExecutor.SENTINEL) "工单型" else "工具型"
 
             ToolResult(
                 toolName = name,
                 success  = true,
-                content  = "已更新${modeDesc}定时任务「$newTitle」，$repeatDesc",
+                content  = "已更新${modeDesc}定时任务「${p.title}」，$repeatDesc$syncWarning",
                 userHint = "正在更新任务…",
             )
-        } catch (e: Exception) {
-            ToolResult(name, false, "", error = "更新失败：${e.message}")
         }
     }
+
+    /**
+     * 修复引入的中间承载类型：把"查询原任务+按 mode 计算新字段"这一步的产出
+     * 收拢成一个不可变数据对象，作为 try-catch（可能失败，失败即整体失败）与
+     * updateJob 单独 try-catch（DB 写入，与同步步骤物理隔离）之间的边界，
+     * 避免用嵌套 Pair/Triple 传递 7 个字段导致可读性下降。
+     */
+    private data class PendingUpdate(
+        val title: String,
+        val toolName: String,
+        val toolParamsJson: String,
+        val repeatIntervalMs: Long?,
+        val nextRunAt: Long,
+        val description: String?,
+        val projectId: String?,
+    )
 }

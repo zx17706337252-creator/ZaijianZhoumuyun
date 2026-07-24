@@ -97,7 +97,7 @@ class CiCdStartTool(
         val repoName   = params["repo_name"]?.trim() ?: ""
 
         return try {
-            val repo = WorkflowRepository(db, workflowJobDao, workflowStepResultDao)
+            val repo = WorkflowRepository(db, workflowJobDao, workflowStepResultDao, context)
             val goal = buildString {
                 append("CI/CD: ")
                 if (createRepo) append("创建仓库 + ")

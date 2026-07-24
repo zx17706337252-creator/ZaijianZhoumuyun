@@ -19,11 +19,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material.icons.outlined.MoreVert
-import androidx.compose.material.icons.outlined.Work
-import androidx.compose.material.icons.outlined.Favorite
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.zaijian.zhoumuyun.data.model.ChatMode
@@ -47,6 +42,7 @@ import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
 
 
 import com.zaijian.zhoumuyun.domain.MoodType
+import com.zaijian.zhoumuyun.ui.design.AppIcons
 
 
 // ─────────────────────────────────────────────────────────────
@@ -145,7 +141,7 @@ internal fun ChatHeader(
                         .size(backButtonWidth),
                 ) {
                     Icon(
-                        imageVector        = Icons.AutoMirrored.Outlined.ArrowBack,
+                        imageVector        = AppIcons.ArrowBack,
                         contentDescription = "返回",
                         tint               = colors.textPrimary,
                         modifier           = Modifier.size(24.dp),
@@ -204,14 +200,14 @@ internal fun ChatHeader(
                 ) {
                     ModeChip(
                         label    = "工作",
-                        icon     = Icons.Outlined.Work,
+                        icon     = AppIcons.Work,
                         selected = chatMode == ChatMode.WORK,
                         accent   = accentColor,
                         onClick  = { onChatModeChange(ChatMode.WORK) },
                     )
                     ModeChip(
                         label    = "陪伴",
-                        icon     = Icons.Outlined.Favorite,
+                        icon     = AppIcons.Favorite,
                         selected = chatMode == ChatMode.COMPANION,
                         accent   = accentColor,
                         onClick  = { onChatModeChange(ChatMode.COMPANION) },
@@ -224,7 +220,7 @@ internal fun ChatHeader(
                     modifier = Modifier.align(Alignment.CenterVertically),
                 ) {
                     Icon(
-                        imageVector        = Icons.Outlined.MoreVert,
+                        imageVector        = AppIcons.MoreVert,
                         contentDescription = "更多",
                         tint               = colors.textSecondary,
                         modifier           = Modifier.size(24.dp),
@@ -246,7 +242,7 @@ internal fun ChatHeader(
                             end    = Spacing.sm,
                             bottom = Spacing.xs,
                         ),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(Spacing.xs),
                     verticalArrangement = Arrangement.spacedBy(2.dp),
                 ) {
                     if (relStageLabel != null) {
@@ -335,7 +331,7 @@ private fun ChatRelCapsule(text: String, color: Color) {
         modifier = Modifier
             .clip(RoundedCornerShape(10.dp))
             .background(color.copy(alpha = 0.10f))
-            .padding(horizontal = 8.dp, vertical = 2.dp),
+            .padding(horizontal = Spacing.sm, vertical = 2.dp),
     ) {
         Text(
             text     = text,

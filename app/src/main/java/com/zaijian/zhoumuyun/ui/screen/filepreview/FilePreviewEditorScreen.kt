@@ -5,11 +5,6 @@ import android.content.Intent
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.outlined.MoreVert
-import androidx.compose.material.icons.outlined.OpenInNew
-import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -19,10 +14,14 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import com.zaijian.zhoumuyun.data.agent.FilePreviewParser
+import com.zaijian.zhoumuyun.ui.theme.Spacing
 import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
 import com.zaijian.zhoumuyun.ui.viewmodel.FilePreviewViewModel
 import java.io.File
 import java.net.URLEncoder
+import com.zaijian.zhoumuyun.ui.component.DetailTopBar
+import com.zaijian.zhoumuyun.ui.design.AppIcons
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 /**
  * 统一文件预览编辑页（v1.48 应用内预览编辑）。
@@ -51,8 +50,7 @@ fun FilePreviewEditorScreen(
     val colors = ZaijianTheme.colors
     val type = ZaijianTheme.typography
     val context = LocalContext.current
-    val uiState by viewModel.uiState.collectAsState()
-    val refreshSignal by viewModel.refreshSignal.collectAsState()
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
 
     var showMenu by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
@@ -83,18 +81,13 @@ fun FilePreviewEditorScreen(
         when (val s = uiState) {
             is FilePreviewViewModel.UiState.Saved -> {
                 snackbarHostState.showSnackbar(s.message)
+                viewModel.clearStatus()
             }
             is FilePreviewViewModel.UiState.Error -> {
                 snackbarHostState.showSnackbar(s.message)
+                viewModel.clearStatus()
             }
             else -> {}
-        }
-    }
-
-    // 通知文件库刷新（保存成功后）
-    LaunchedEffect(refreshSignal) {
-        if (refreshSignal > 0) {
-            // 文件库 ViewModel 会自行监听 vault 目录变化，这里无需额外通知
         }
     }
 
@@ -110,24 +103,15 @@ fun FilePreviewEditorScreen(
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = {
-                    Text(
-                        text = fileName,
-                        style = type.titleBold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
-                    }
-                },
+            // E2 P2 一致性修正：Material3 TopAppBar → DetailTopBar，与其余详情页统一
+            DetailTopBar(
+                title    = fileName,
+                onBack   = onBack,
+                headerBg = colors.bgBase,
                 actions = {
                     // 更多菜单
                     IconButton(onClick = { showMenu = true }) {
-                        Icon(Icons.Outlined.MoreVert, contentDescription = "更多")
+                        Icon(AppIcons.MoreVert, contentDescription = "更多")
                     }
                     DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
                         // 导出到 Downloads
@@ -145,7 +129,7 @@ fun FilePreviewEditorScreen(
                                     showMenu = false
                                     viewModel.exportToDownloads(filePath, File(filePath).name)
                                 },
-                                leadingIcon = { Icon(Icons.Outlined.Download, contentDescription = null) },
+                                leadingIcon = { Icon(AppIcons.Download, contentDescription = null) },
                             )
                             // 用其他应用打开（兜底）
                             DropdownMenuItem(
@@ -168,16 +152,11 @@ fun FilePreviewEditorScreen(
                                         com.zaijian.zhoumuyun.util.ZLog.e("FilePreview", "外部打开失败", e)
                                     }
                                 },
-                                leadingIcon = { Icon(Icons.Outlined.OpenInNew, contentDescription = null) },
+                                leadingIcon = { Icon(AppIcons.OpenInNew, contentDescription = null) },
                             )
                         }
                     }
                 },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = colors.surface,
-                    titleContentColor = colors.textPrimary,
-                    navigationIconContentColor = colors.textPrimary,
-                ),
             )
         },
         snackbarHost = { SnackbarHost(snackbarHostState) },
@@ -257,7 +236,7 @@ fun FilePreviewEditorScreen(
                         modifier = Modifier
                             .fillMaxSize()
                             .verticalScroll(rememberScrollState())
-                            .padding(24.dp),
+                            .padding(Spacing.lg),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center,
                     ) {
@@ -270,8 +249,8 @@ fun FilePreviewEditorScreen(
                 }
 
                 is FilePreviewViewModel.UiState.Saved -> {
-                    // Saved 状态短暂显示后自动回到 Loaded（ViewModel 已重新加载）
-                    // 这里简单显示空，等待 LaunchedEffect 处理 snackbar 后状态更新
+                    // 死代码-09 修复后：上方 LaunchedEffect 展示完 snackbar 会立即调用
+                    // viewModel.clearStatus() 恢复到 Loaded，这里短暂显示空即可。
                 }
             }
         }
@@ -293,7 +272,7 @@ private fun UnsupportedView(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(24.dp),
+            .padding(Spacing.lg),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
@@ -302,17 +281,17 @@ private fun UnsupportedView(
             style = type.body,
             color = colors.textSecondary,
         )
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(Spacing.sm))
         Text(
             text = fileName,
             style = type.label,
             color = colors.textDisabled,
         )
-        Spacer(Modifier.height(24.dp))
+        Spacer(Modifier.height(Spacing.lg))
         Button(onClick = onExport, modifier = Modifier.fillMaxWidth()) {
             Text("导出到下载目录")
         }
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(Spacing.sm))
         OutlinedButton(onClick = onOpenExternal, modifier = Modifier.fillMaxWidth()) {
             Text("用其他应用打开")
         }
@@ -326,8 +305,11 @@ private fun UnsupportedView(
  *
  * 用静态 Map + consume 模式：预览页加载后消费一次即清除，避免内存泄漏。
  */
+// P2-20 修复：改用 ConcurrentHashMap 保证线程安全，AtomicLong 生成唯一序号
+// 避免 cache.size 在 consume 后回退导致 key 碰撞。
 object PreviewMemoryCache {
-    private val cache = mutableMapOf<String, MemoryItem>()
+    private val cache = java.util.concurrent.ConcurrentHashMap<String, MemoryItem>()
+    private val idCounter = java.util.concurrent.atomic.AtomicLong(0)
 
     sealed class MemoryItem {
         data class MemoryText(val text: String, val isMarkdown: Boolean) : MemoryItem()
@@ -336,7 +318,7 @@ object PreviewMemoryCache {
 
     /** 存入并返回 tempKey。 */
     fun put(item: MemoryItem): String {
-        val key = "mem_${System.currentTimeMillis()}_${cache.size}"
+        val key = "mem_${System.currentTimeMillis()}_${idCounter.incrementAndGet()}"
         cache[key] = item
         return key
     }

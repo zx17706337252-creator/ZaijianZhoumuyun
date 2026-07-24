@@ -9,6 +9,7 @@ import com.zaijian.zhoumuyun.data.db.entity.MemoryEntity
 import com.zaijian.zhoumuyun.data.db.entity.WorldEventEntity
 import com.zaijian.zhoumuyun.data.repository.EventRepository
 import com.zaijian.zhoumuyun.data.repository.MemoryRepository
+import com.zaijian.zhoumuyun.util.ChineseTokenizer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -186,27 +187,20 @@ class MemoryEngine(
     // ─────────────────────────────────────────────────────────
 
     /**
-     * 从记忆内容提取关键词（供 FTS4 检索用）。
+     * 从记忆内容提取关键词（供 FTS4 检索 + L2 标签索引用）。
      *
-     * 策略：从内容中均匀采样——每隔 content.length/10 个字符取一个 4 字符子串，最多取 10 个。
+     * E1 审计报告任务1 修复：原实现按内容长度等距采样 4 字符子串
+     *（content.substring(i, i+4)，步长=长度/10），产出的"关键词"是原文
+     * 任意位置的 4 字符切片，与真实词语边界无关，FTS 前缀匹配几乎无法命中。
+     * 改为委托 [ChineseTokenizer] 做真正的中文分词——与查询侧
+     *（MemoryRepository.buildFtsQuery / searchRelevantWithRouting）共用
+     * 同一分词器，保证"写时怎么切、查时就怎么切"。
      *
-     * 原实现从 i=0 起逐字符生成所有 2~6 字子串，存在两个问题：
-     * 1. O(n²) 复杂度，长文本（如圆桌/任务摘要）下耗时明显；
-     * 2. take(10) 后关键词全部集中在文本开头，覆盖不到中后段的事实。
-     * 改为按等距步长采样后，关键词均匀覆盖全文，且复杂度降为 O(1) 级别（最多 10 次取子串）。
+     * 返回空格分隔的真实词（如"工作 压力 加班 失眠"），写入 keywords 字段后
+     * 同步进 FTS4 虚拟表，空格分隔使 unicode61 把每个词索引为独立 token，
+     * 前缀匹配（word*）才能命中。
      */
-    private fun extractKeywords(content: String): String {
-        if (content.length < 4) return content.trim()
-        // 步长 = 内容长度 / 10，保证整段内容被等分为约 10 段，每段取一个采样点
-        val step = (content.length / 10).coerceAtLeast(1)
-        val keywords = mutableListOf<String>()
-        var i = 0
-        while (i <= content.length - 4 && keywords.size < 10) {
-            keywords.add(content.substring(i, i + 4))
-            i += step
-        }
-        return keywords.joinToString(" ")
-    }
+    private fun extractKeywords(content: String): String = ChineseTokenizer.tokenizeJoined(content)
 }
 
 // ─────────────────────────────────────────────────────────────

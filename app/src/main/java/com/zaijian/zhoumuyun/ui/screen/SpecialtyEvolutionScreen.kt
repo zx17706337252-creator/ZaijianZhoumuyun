@@ -10,10 +10,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material.icons.outlined.*
 import com.zaijian.zhoumuyun.data.model.DefaultCharacters
+import com.zaijian.zhoumuyun.ui.component.DetailTopBar
 import com.zaijian.zhoumuyun.ui.design.WorldCard
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -32,14 +30,14 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.zaijian.zhoumuyun.data.db.entity.SpecialtyProfileEntity
 import com.zaijian.zhoumuyun.data.db.entity.SystemSuggestionEntity
 import com.zaijian.zhoumuyun.ui.theme.*
+import com.zaijian.zhoumuyun.util.TimeFormatUtils
 import com.zaijian.zhoumuyun.util.ZLog
 import com.zaijian.zhoumuyun.ui.viewmodel.SimpleSavedStateViewModelFactory
 import com.zaijian.zhoumuyun.ui.viewmodel.SpecialtyEvolutionViewModel
 import androidx.activity.compose.BackHandler
 import androidx.lifecycle.compose.collectAsStateWithLifecycle // P1-11-2
 import kotlinx.coroutines.launch
-import java.text.SimpleDateFormat
-import java.util.*
+import com.zaijian.zhoumuyun.ui.design.AppIcons
 
 // ─────────────────────────────────────────────────────────────
 //  SpecialtyEvolutionScreen（P6 专长进化系统）
@@ -105,7 +103,7 @@ fun SpecialtyEvolutionScreen(
                     contentColor = colors.bgBase,
                     shape = CircleShape,
                 ) {
-                    Icon(Icons.Outlined.Add, contentDescription = "新建专长方向")
+                    Icon(AppIcons.Add, contentDescription = "新建专长方向")
                 }
             }
         },
@@ -116,30 +114,12 @@ fun SpecialtyEvolutionScreen(
                 .padding(paddingValues),
         ) {
             // ── 顶部栏 ─────────────────────────────────────────
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .statusBarsPadding()
-                    .height(Spacing.topBarHeight)
-                    .padding(horizontal = Spacing.screenHorizontal),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                IconButton(onClick = {
-                    if (selectedId != null) viewModel.selectProfile(null) else onBack()
-                }) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Outlined.ArrowBack,
-                        contentDescription = "返回",
-                        tint = colors.textPrimary,
-                    )
-                }
-                Spacer(Modifier.width(Spacing.sm))
-                Text(
-                    text = if (selectedId == null) "专长养成" else "专长档案",
-                    style = type.titleBold.copy(fontWeight = FontWeight.Bold),
-                    color = colors.textPrimary,
-                )
-            }
+            // D-2 统一顶栏：内联 Row → DetailTopBar
+            DetailTopBar(
+                title    = if (selectedId == null) "专长养成" else "专长档案",
+                onBack   = { if (selectedId != null) viewModel.selectProfile(null) else onBack() },
+                headerBg = colors.bgBase,
+            )
 
             if (selectedId == null) {
                 SpecialtyListContent(
@@ -204,7 +184,7 @@ private fun SpecialtyListContent(
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Icon(
-                    Icons.Outlined.AutoAwesome,
+                    AppIcons.AutoAwesome,
                     contentDescription = null,
                     tint = colors.textDisabled,
                     modifier = Modifier.size(48.dp),
@@ -280,7 +260,7 @@ private fun SpecialtyCard(
                 )
                 if (profile.promotedToIdentity) {
                     Icon(
-                        Icons.Outlined.Favorite,
+                        AppIcons.Favorite,
                         contentDescription = "已有特征晋升为本能",
                         tint = colors.accent,
                         modifier = Modifier.size(16.dp),
@@ -306,7 +286,7 @@ private fun SpecialtyCard(
                 Spacer(Modifier.height(Spacing.xs))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(
-                        Icons.Outlined.ErrorOutline,
+                        AppIcons.ErrorOutline,
                         contentDescription = null,
                         tint = Palette.SemanticDanger,  // P3-53 修复
                         modifier = Modifier.size(14.dp),
@@ -335,7 +315,7 @@ private fun SpecialtyCard(
                 Spacer(Modifier.weight(1f))
                 IconButton(onClick = onLongPress, modifier = Modifier.size(32.dp).minimumInteractiveComponentSize()) {
                     Icon(
-                        Icons.Outlined.DeleteOutline,
+                        AppIcons.DeleteOutline,
                         contentDescription = "删除",
                         tint = colors.textDisabled,
                         modifier = Modifier.size(18.dp),
@@ -408,8 +388,6 @@ private fun CreateSpecialtyDialog(
 // ─────────────────────────────────────────────────────────────
 //  专长详情：方案 + 风格说明书 + 修炼历程，三区块
 // ─────────────────────────────────────────────────────────────
-
-private val dateFormatter = SimpleDateFormat("MM-dd HH:mm", Locale.getDefault())
 
 @Composable
 private fun SpecialtyDetailContent(
@@ -542,7 +520,7 @@ private fun SpecialtyDetailContent(
                 Text("修炼历程", style = type.label, color = colors.textSecondary)
                 Spacer(Modifier.weight(1f))
                 Icon(
-                    Icons.Outlined.ExpandMore,
+                    AppIcons.ExpandMore,
                     contentDescription = null,
                     tint = colors.textDisabled,
                     modifier = Modifier.rotate(if (recordsExpanded) 180f else 0f),
@@ -569,7 +547,7 @@ private fun SpecialtyDetailContent(
                 modifier = Modifier.fillMaxWidth(),
                 border = BorderStroke(0.5.dp, colors.accent.copy(alpha = 0.4f)),
             ) {
-                Icon(Icons.Outlined.EmojiEvents, contentDescription = null, tint = colors.accent)
+                Icon(AppIcons.EmojiEvents, contentDescription = null, tint = colors.accent)
                 Spacer(Modifier.width(Spacing.xs))
                 Text("发起一轮竞赛", color = colors.accent)
             }
@@ -709,12 +687,12 @@ private fun SuggestionCard(
 
     val (displayText, icon) = when {
         suggestion.content.startsWith("CANDIDATE_CONFIRM::") ->
-            suggestion.content.removePrefix("CANDIDATE_CONFIRM::") to Icons.Outlined.Lightbulb
+            suggestion.content.removePrefix("CANDIDATE_CONFIRM::") to AppIcons.Lightbulb
         suggestion.content.startsWith("PROMOTION_REQUEST::") ->
-            suggestion.content.removePrefix("PROMOTION_REQUEST::") to Icons.Outlined.Favorite
+            suggestion.content.removePrefix("PROMOTION_REQUEST::") to AppIcons.Favorite
         isCompFeedback ->
-            suggestion.content.removePrefix("COMPETITION_FEEDBACK::") to Icons.Outlined.EmojiEvents
-        else -> suggestion.content to Icons.Outlined.TipsAndUpdates
+            suggestion.content.removePrefix("COMPETITION_FEEDBACK::") to AppIcons.EmojiEvents
+        else -> suggestion.content to AppIcons.TipsAndUpdates
     }
 
     // COMPETITION_FEEDBACK 背景/边框加重，与候选确认类建议形成层次区分

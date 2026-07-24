@@ -254,6 +254,12 @@ class RoundtableViewModel(app: Application) : AndroidViewModel(app) {
     private val daughterCharacterRepo get() = container.daughterCharacterRepo
     private val roundtableMessageDao get() = container.roundtableMessageRepo
     private val identityDao get() = container.identityRepo
+    // Window C 技能系统补做：圆桌两条发言路径（常规回复 + 自发插话）都需要
+    // 按当前发言角色读取其私有技能目录，同容器共享实例，不单独 new。
+    private val skillRepo get() = container.skillRepo
+    // E0 分层收口：圆桌心迹面板的多角色合并时间线，原由 RoundtableScreen
+    // 直接持有 AppContainer.instance.agentActivityRepo，现收敛到 ViewModel。
+    private val agentActivityRepo get() = container.agentActivityRepo
     private var currentRoundtableId: String? = null
 
     // ── 圆桌背景图 ────────────────────────────────────────────
@@ -280,7 +286,6 @@ class RoundtableViewModel(app: Application) : AndroidViewModel(app) {
     private val botReplyGenerator = RoundtableBotReplyGenerator(
         _uiState                = _uiState,
         memoryRepo              = memoryRepo,
-        memoryEngine            = memoryEngine,
         relationshipEngine      = relationshipEngine,
         pregnancyRepo           = pregnancyRepo,
         characterStateRepo      = characterStateRepo,
@@ -292,6 +297,7 @@ class RoundtableViewModel(app: Application) : AndroidViewModel(app) {
         learningGoalDao         = learningGoalDao,
         roundtableMessageDao    = roundtableMessageDao,
         eventRepo               = eventRepo,
+        skillRepo               = skillRepo,
         getCurrentRoundtableId  = { currentRoundtableId },
         isInterruptedRef        = { isInterrupted },
         viewModelScope          = viewModelScope,
@@ -323,7 +329,6 @@ class RoundtableViewModel(app: Application) : AndroidViewModel(app) {
     private val idleManager = RoundtableIdleManager(
         _uiState              = _uiState,
         memoryRepo            = memoryRepo,
-        memoryEngine          = memoryEngine,
         relationshipEngine    = relationshipEngine,
         pregnancyRepo         = pregnancyRepo,
         characterStateRepo    = characterStateRepo,
@@ -331,6 +336,7 @@ class RoundtableViewModel(app: Application) : AndroidViewModel(app) {
         presenceEngine        = presenceEngine,
         identityDao           = identityDao,
         roundtableMessageDao  = roundtableMessageDao,
+        skillRepo             = skillRepo,
         prefs                 = prefs,
         viewModelScope        = viewModelScope,
         getCurrentRoundtableId = { currentRoundtableId },
@@ -395,6 +401,18 @@ class RoundtableViewModel(app: Application) : AndroidViewModel(app) {
     // ──────────────────────────────────────────────────────────
     //  成员初始化
     // ──────────────────────────────────────────────────────────
+
+    /**
+     * 观察多个角色的合并心迹时间线（E0 分层收口）。
+     *
+     * 原 RoundtableScreen 直接持有 AppContainer.instance.agentActivityRepo
+     * 调 observeTimelineForCharacters()，现收敛到 ViewModel；UI 侧只订阅本方法
+     * 返回的 Flow（E0 coupling_scan 违规点 #2 的修复落地）。
+     */
+    fun observeTimelineForCharacters(
+        characterIds: List<Int>,
+    ): kotlinx.coroutines.flow.Flow<List<com.zaijian.zhoumuyun.data.repository.AgentActivityTimelineItem>> =
+        agentActivityRepo.observeTimelineForCharacters(characterIds)
 
     fun setMembers(characterIds: List<Int>) {
         viewModelScope.launch {
@@ -486,6 +504,12 @@ class RoundtableViewModel(app: Application) : AndroidViewModel(app) {
                 // v66（1.7 P3）：同理，多文件字段也要在这一侧补上，否则同样的
                 // "新消息能看到、重新加载后消失"问题会在多文件卡片上重演一遍。
                 exportedFilesJson = e.exportedFilesJson,
+                // P1-15 修复：v67 表格直传 W4 接入时只顾上了 toEntity（内存→DB）
+                // 单向映射，忘了在这一侧（DB→内存）补上，reversed 出的正是
+                // exportedFileJson 当年踩过的同一个坑——生成时 TableCard 正常
+                // 显示，重新打开圆桌页面重新加载历史消息后，本条 RoundtableMessage
+                // 的 tableDataJson 恒为构造函数默认值 null，表格卡片"消失"。
+                tableDataJson = e.tableDataJson,
             )
         }
         val maxTurn = messages.maxOf { it.turnIndex }

@@ -6,7 +6,6 @@ import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Update
 import com.zaijian.zhoumuyun.data.db.entity.AgentRelationEntity
-import com.zaijian.zhoumuyun.data.model.AgentRelationStage
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -37,7 +36,7 @@ interface AgentRelationDao {
 
     /** 升阶（D5 触发条件满足时调用） */
     @Query("UPDATE agent_relation SET stage = :stage, lastStageUpAt = :now WHERE daughterId = :daughterId")
-    suspend fun updateStage(daughterId: Int, stage: AgentRelationStage, now: Long = System.currentTimeMillis())
+    suspend fun updateStage(daughterId: Int, stage: String, now: Long = System.currentTimeMillis())
 
     // 批次3 3-1修复：女儿生成回滚时清理 agent_relation 孤儿行
     @Query("DELETE FROM agent_relation WHERE daughterId = :daughterId")

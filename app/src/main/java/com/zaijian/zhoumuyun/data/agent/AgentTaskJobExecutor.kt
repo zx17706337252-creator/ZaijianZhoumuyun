@@ -14,6 +14,9 @@ import com.zaijian.zhoumuyun.data.provider.ProviderManager
 import com.zaijian.zhoumuyun.data.repository.DaughterCharacterRepository
 import com.zaijian.zhoumuyun.data.repository.IdentityRepository
 import com.zaijian.zhoumuyun.data.repository.MessageRepository
+import com.zaijian.zhoumuyun.data.repository.AgentActivityRepository
+import com.zaijian.zhoumuyun.data.repository.SkillRepository
+import com.zaijian.zhoumuyun.data.repository.UserProfileRepository
 import com.zaijian.zhoumuyun.domain.ChatTagParser
 import com.zaijian.zhoumuyun.util.ZLog
 import java.util.UUID
@@ -98,6 +101,11 @@ object AgentTaskJobExecutor {
         val messageRepo  = MessageRepository(db.messageDao())
         val identityRepo = IdentityRepository(db.characterIdentityDao())
         val daughterRepo = DaughterCharacterRepository(db = db, dao = db.daughterCharacterDao())
+        // Window C 补做任务：工单路径补接 Skill Layer。与私聊路径语义等价——
+        // job.characterId 明确，Agent 在后台执行实际工作时应能复用自有技能。
+        // 范式对齐 ChatMessageOrchestrator.kt:213（SkillRegistry.buildSkillCatalogBlock），
+        // 此处 execute() 已在 Dispatchers.IO 协程内（Worker 上下文），suspend 调用安全。
+        val skillRepo = SkillRepository(db.skillDao())
 
         // 角色配置查询：复用 ChatViewModel.kt 第665-671 行的既有写法（已核实）
         //   - 1-9 号母亲角色在 DefaultCharacters 编译期常量里
@@ -134,10 +142,25 @@ object AgentTaskJobExecutor {
         // buildSystemPrompt 只传必填项 + toolDescriptionBlock
         // （方案5.4已核实：只有 character / identityEntity 必填，其余10+参数全有默认值，
         //  工单场景不需要孕期/关系快照等重上下文，留空即可）
+        // Window C 补做任务：新增 skillCatalogBlock——§3 第一级目录注入，让 Agent 在
+        // 工单模式下也能感知并按需 skill_expand 展开自有技能。无技能时返回空串，
+        // buildSystemPrompt 内部自动跳过 Skill Layer，行为与既有工单一致。
+        val skillCatalogBlock = SkillRegistry.buildSkillCatalogBlock(
+            characterId = job.characterId,
+            repo = skillRepo,
+        )
+        // 「称呼」功能性缺陷修复：此前工单路径未传 userName，恒为默认值"你"。
+        // 本执行器本就是"Worker 内临时组装依赖、跑完即弃"模式（见类头注释），
+        // 与 messageRepo/identityRepo/daughterRepo/skillRepo 同一处理方式，
+        // 用收到的 context 直接构造，不复用 ViewModel 侧的容器单例。
+        val userProfileRepo = UserProfileRepository(context)
+
         val systemPrompt = PromptOrchestrator.buildSystemPrompt(
             character            = characterConfig,
             identityEntity       = identityRepo.getById(job.characterId),
+            userName             = userProfileRepo.getUserName(),
             toolDescriptionBlock = AgentToolRegistry.buildToolDescriptionBlock(),
+            skillCatalogBlock    = skillCatalogBlock,
         )
 
         // stream=false：Worker 后台执行不需要打字机效果，整段返回更稳。
@@ -147,13 +170,21 @@ object AgentTaskJobExecutor {
         // 3. 走完整推理 + 工具调用（复用 ToolCallInterceptor，不重新实现）
         //    streamWithTools 内部：流式接收 LLM 输出 → 解析 <tool:xxx/> → 执行工具
         //    → 工具结果喂给 LLM 做第二轮 → 返回最终文本。角色自己判断要不要调工具。
+        //    B-1 fix：传入 activityContext，使工作流路径的工具失败降级
+        //    也能写心迹事件 + 终态写入记忆系统（与其他三条主路径对齐）。
+        val activityContext = ToolCallInterceptor.ActivityContext(
+            characterId = job.characterId,
+            sessionRef  = job.id,
+            sceneType   = AgentActivityRepository.SceneType.WORKFLOW,
+        )
         val fullReply = StringBuilder()
         try {
             ToolCallInterceptor.streamWithTools(
-                provider      = provider,
-                messages      = history + LLMMessage("user", triggerText),
-                systemPrompt  = systemPrompt,
-                config        = config,
+                provider         = provider,
+                messages         = history + LLMMessage("user", triggerText),
+                systemPrompt     = systemPrompt,
+                config           = config,
+                activityContext  = activityContext,
             ).collect { event ->
                 if (event is StreamEvent.TextDelta) fullReply.append(event.text)
             }

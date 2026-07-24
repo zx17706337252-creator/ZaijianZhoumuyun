@@ -8,9 +8,10 @@ import com.zaijian.zhoumuyun.data.model.DefaultCharacters
 import com.zaijian.zhoumuyun.data.provider.LLMConfig
 import com.zaijian.zhoumuyun.data.provider.LLMMessage
 import com.zaijian.zhoumuyun.data.provider.ProviderManager
+import com.zaijian.zhoumuyun.data.provider.chatSyncWithRetry
+import com.zaijian.zhoumuyun.util.TimeFormatUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.util.Calendar
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 
@@ -59,7 +60,7 @@ class ProjectDailyPlannerTool(
 
         try {
             // ① 去重：今天是否已规划过
-            val todayStart = startOfToday()
+            val todayStart = TimeFormatUtils.startOfDay()
             val existing = taskDao.getByCharacterProjectAndSource(
                 characterId = characterId,
                 projectId   = projectId,
@@ -67,7 +68,10 @@ class ProjectDailyPlannerTool(
                 after       = todayStart,
             )
             if (existing.isNotEmpty()) {
-                return@withContext ToolResult(name, true, content = "今日已规划，跳过。")
+                // 同文件-08 修复：原文案"今日已规划，跳过。"会被 ScheduledJobWorker
+                // 当作通知正文推送给用户，用户看到会困惑"跳过"指什么。改为中性描述，
+                // 即使意外被推送也不会误导。
+                return@withContext ToolResult(name, true, content = "今日的成长任务已生成过，无需重复规划。")
             }
 
             // ② 拼上下文
@@ -109,7 +113,7 @@ class ProjectDailyPlannerTool(
                 temperature = 0.7f,
                 stream      = false,
             )
-            val response = provider.chatSync(
+            val response = provider.chatSyncWithRetry(
                 messages     = listOf(LLMMessage(role = "user", content = prompt)),
                 systemPrompt = "",
                 config       = config,
@@ -118,7 +122,7 @@ class ProjectDailyPlannerTool(
             // ④ 解析每行为一条Task
             val lines = response.trim().lines()
                 .map { it.trim() }
-                .filter { it.isNotBlank() && it.length > 2 }
+                .filter { it.isNotBlank() && it.length >= 2 }
                 .take(4)
 
             if (lines.isEmpty()) {
@@ -156,13 +160,5 @@ class ProjectDailyPlannerTool(
 
     companion object {
         const val SOURCE = "project_growth"
-
-        /** 今天零点的时间戳（毫秒） */
-        fun startOfToday(): Long = Calendar.getInstance().apply {
-            set(Calendar.HOUR_OF_DAY, 0)
-            set(Calendar.MINUTE, 0)
-            set(Calendar.SECOND, 0)
-            set(Calendar.MILLISECOND, 0)
-        }.timeInMillis
     }
 }

@@ -12,35 +12,17 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material.icons.outlined.Code
-import androidx.compose.material.icons.outlined.Delete
-import androidx.compose.material.icons.outlined.Description
-import androidx.compose.material.icons.outlined.Download
-import androidx.compose.material.icons.outlined.Edit
-import androidx.compose.material.icons.outlined.ExpandMore
-import androidx.compose.material.icons.outlined.Folder
-import androidx.compose.material.icons.outlined.FolderOpen
-import androidx.compose.material.icons.outlined.PictureAsPdf
-import androidx.compose.material.icons.outlined.Share
-import androidx.compose.material.icons.outlined.TableChart
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.minimumInteractiveComponentSize
@@ -58,6 +40,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.zaijian.zhoumuyun.ui.component.DetailTopBar
+import com.zaijian.zhoumuyun.ui.component.EmptyStateView
+import com.zaijian.zhoumuyun.ui.design.AppIcons
 import com.zaijian.zhoumuyun.ui.design.IconBadge
 import com.zaijian.zhoumuyun.ui.design.WorldCard
 import com.zaijian.zhoumuyun.ui.theme.Palette
@@ -112,7 +97,12 @@ fun FileVaultScreen(
 
     Box(Modifier.fillMaxSize().background(colors.bgBase)) {
         Column(Modifier.fillMaxSize()) {
-            VaultHeader(onBack = onBack)
+            // 窗口4补充：统一为 DetailTopBar
+            DetailTopBar(
+                title    = "文件库",
+                onBack   = onBack,
+                headerBg = colors.bgBase,
+            )
 
             Spacer(Modifier.height(Spacing.sm))
 
@@ -121,7 +111,13 @@ fun FileVaultScreen(
                     CircularProgressIndicator(color = colors.accent)
                 }
             } else if (flatNodes.isEmpty()) {
-                EmptyVaultHint()
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    EmptyStateView(
+                        icon     = AppIcons.FolderOpen,
+                        title    = "还没有文件",
+                        subtitle = "让角色用 file_export 工具生成文件后会出现在这里",
+                    )
+                }
             } else {
                 LazyColumn(
                     modifier       = Modifier.fillMaxSize(),
@@ -154,55 +150,6 @@ fun FileVaultScreen(
                     item { Spacer(Modifier.navigationBarsPadding()) }
                 }
             }
-        }
-
-        // ── 预览对话框 ──
-        uiState.previewTarget?.let { target ->
-            AlertDialog(
-                onDismissRequest = viewModel::closePreview,
-                title = { Text(target.name, style = type.titleBold, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                text = {
-                    Box(
-                        Modifier
-                            .fillMaxWidth()
-                            .heightIn(max = 420.dp)
-                            .verticalScroll(rememberScrollState()),
-                    ) {
-                        if (uiState.previewLoading) {
-                            CircularProgressIndicator(color = colors.accent, modifier = Modifier.size(20.dp))
-                        } else {
-                            Text(
-                                text  = uiState.previewContent ?: "（无法读取内容）",
-                                style = type.body,
-                                color = colors.textPrimary,
-                            )
-                        }
-                    }
-                },
-                confirmButton = {
-                    TextButton(onClick = viewModel::closePreview) { Text("关闭") }
-                },
-            )
-        }
-
-        // ── 编辑对话框 ──
-        uiState.editTarget?.let { target ->
-            AlertDialog(
-                onDismissRequest = viewModel::cancelEdit,
-                title = { Text("编辑·${target.name}", style = type.titleBold, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                text = {
-                    OutlinedTextField(
-                        value    = uiState.editContent,
-                        onValueChange = viewModel::updateEditContent,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(max = 420.dp),
-                        textStyle = type.body,
-                    )
-                },
-                confirmButton = { TextButton(onClick = viewModel::saveEdit) { Text("保存") } },
-                dismissButton = { TextButton(onClick = viewModel::cancelEdit) { Text("取消") } },
-            )
         }
 
         // ── 删除确认 ──
@@ -263,39 +210,6 @@ private fun flattenTree(roots: List<VaultNode>, expanded: Set<String>): List<Fla
 }
 
 // ─────────────────────────────────────────────────────────────
-//  顶栏
-// ─────────────────────────────────────────────────────────────
-
-@Composable
-private fun VaultHeader(onBack: () -> Unit) {
-    val colors = ZaijianTheme.colors
-    val type   = ZaijianTheme.typography
-
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .statusBarsPadding()
-            .padding(horizontal = Spacing.sm, vertical = Spacing.xs),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        IconButton(onClick = onBack) {
-            Icon(
-                imageVector        = Icons.AutoMirrored.Outlined.ArrowBack,
-                contentDescription = "返回",
-                tint               = colors.textPrimary,
-            )
-        }
-        Spacer(Modifier.width(Spacing.xs))
-        Text(
-            text       = "文件库",
-            style      = type.titleBold,
-            color      = colors.textPrimary,
-            fontWeight = FontWeight.SemiBold,
-        )
-    }
-}
-
-// ─────────────────────────────────────────────────────────────
 //  文件夹行
 // ─────────────────────────────────────────────────────────────
 
@@ -320,7 +234,7 @@ private fun VaultFolderRow(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Icon(
-                imageVector = if (isExpanded) Icons.Outlined.FolderOpen else Icons.Outlined.Folder,
+                imageVector = if (isExpanded) AppIcons.FolderOpen else AppIcons.Folder,
                 contentDescription = null,
                 tint = colors.accent,
                 modifier = Modifier.size(22.dp),
@@ -342,14 +256,14 @@ private fun VaultFolderRow(
                 )
             }
             Icon(
-                imageVector = Icons.Outlined.ExpandMore,
+                imageVector = AppIcons.ExpandMore,
                 contentDescription = if (isExpanded) "折叠" else "展开",
                 tint = colors.textSecondary,
                 modifier = Modifier.size(20.dp),
             )
             IconButton(onClick = onDelete, modifier = Modifier.size(36.dp).minimumInteractiveComponentSize()) {
                 Icon(
-                    imageVector = Icons.Outlined.Delete,
+                    imageVector = AppIcons.Delete,
                     contentDescription = "删除文件夹",
                     tint = Palette.TaskFailed,
                     modifier = Modifier.size(18.dp),
@@ -412,54 +326,26 @@ private fun VaultFileRow(
             }
             if (canEditText) {
                 IconButton(onClick = onEdit, modifier = Modifier.size(36.dp).minimumInteractiveComponentSize()) {
-                    Icon(Icons.Outlined.Edit, "编辑", tint = colors.textSecondary, modifier = Modifier.size(18.dp))
+                    Icon(AppIcons.Edit, "编辑", tint = colors.textSecondary, modifier = Modifier.size(18.dp))
                 }
             }
             IconButton(onClick = onShare, modifier = Modifier.size(36.dp).minimumInteractiveComponentSize()) {
-                Icon(Icons.Outlined.Share, "分享", tint = colors.textSecondary, modifier = Modifier.size(18.dp))
+                Icon(AppIcons.Share, "分享", tint = colors.textSecondary, modifier = Modifier.size(18.dp))
             }
             IconButton(onClick = onExport, modifier = Modifier.size(36.dp).minimumInteractiveComponentSize()) {
-                Icon(Icons.Outlined.Download, "导出", tint = colors.textSecondary, modifier = Modifier.size(18.dp))
+                Icon(AppIcons.Download, "导出", tint = colors.textSecondary, modifier = Modifier.size(18.dp))
             }
             IconButton(onClick = onDelete, modifier = Modifier.size(36.dp).minimumInteractiveComponentSize()) {
-                Icon(Icons.Outlined.Delete, "删除", tint = Palette.TaskFailed, modifier = Modifier.size(18.dp))
+                Icon(AppIcons.Delete, "删除", tint = Palette.TaskFailed, modifier = Modifier.size(18.dp))
             }
         }
     }
 }
 
 // ─────────────────────────────────────────────────────────────
-//  空状态
+//  空状态：已收口至统一组件 EmptyStateView（D-3 P3 "touch it, fix it"）。
+//  原 EmptyVaultHint 内联实现删除，调用处直接使用 EmptyStateView。
 // ─────────────────────────────────────────────────────────────
-
-@Composable
-private fun EmptyVaultHint() {
-    val colors = ZaijianTheme.colors
-    val type   = ZaijianTheme.typography
-
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(top = 80.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Top,
-    ) {
-        Icon(
-            imageVector        = Icons.Outlined.FolderOpen,
-            contentDescription = null,
-            tint               = colors.textSecondary.copy(alpha = 0.4f),
-            modifier           = Modifier.size(56.dp),
-        )
-        Spacer(Modifier.height(Spacing.sm))
-        Text(text = "还没有文件", style = type.body, color = colors.textSecondary)
-        Spacer(Modifier.height(Spacing.xs))
-        Text(
-            text  = "让角色用 file_export 工具生成文件后会出现在这里",
-            style = type.caption,
-            color = colors.textSecondary.copy(alpha = 0.6f),
-        )
-    }
-}
 
 // ─────────────────────────────────────────────────────────────
 //  辅助
@@ -468,11 +354,11 @@ private fun EmptyVaultHint() {
 private val TEXT_EDITABLE_EXT = setOf("md", "txt", "html", "htm", "json", "xml", "csv", "log", "yml", "yaml")
 
 private fun fileIcon(ext: String) = when (ext.lowercase()) {
-    "xlsx", "csv"                  -> Icons.Outlined.TableChart
-    "pdf"                          -> Icons.Outlined.PictureAsPdf
-    "md", "txt", "html", "json", "xml", "log", "yml", "yaml" -> Icons.Outlined.Code
-    "zip"                          -> Icons.Outlined.Folder
-    else                           -> Icons.Outlined.Description
+    "xlsx", "csv"                  -> AppIcons.TableChart
+    "pdf"                          -> AppIcons.PictureAsPdf
+    "md", "txt", "html", "json", "xml", "log", "yml", "yaml" -> AppIcons.Code
+    "zip"                          -> AppIcons.Folder
+    else                           -> AppIcons.Description
 }
 
 private fun shareFile(context: android.content.Context, file: java.io.File) {

@@ -11,13 +11,6 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material.icons.automirrored.outlined.ArrowForward
-import androidx.compose.material.icons.outlined.CalendarMonth
-import androidx.compose.material.icons.outlined.Delete
-import androidx.compose.material.icons.outlined.FilterList
-import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -35,6 +28,8 @@ import com.zaijian.zhoumuyun.data.agent.AgentTaskJobExecutor
 import com.zaijian.zhoumuyun.data.db.entity.ScheduledJobEntity
 import com.zaijian.zhoumuyun.data.model.CharacterConfig
 import com.zaijian.zhoumuyun.ui.theme.*
+import com.zaijian.zhoumuyun.ui.component.DetailTopBar
+import com.zaijian.zhoumuyun.ui.component.EmptyStateView
 import com.zaijian.zhoumuyun.ui.component.ScheduleRepeatChip
 import com.zaijian.zhoumuyun.ui.component.ScheduleCardShell
 import com.zaijian.zhoumuyun.ui.component.ScheduleDeleteButton
@@ -46,6 +41,7 @@ import com.zaijian.zhoumuyun.ui.viewmodel.ScheduleTimeSlot
 import com.zaijian.zhoumuyun.ui.viewmodel.repeatLabel
 import kotlinx.coroutines.launch
 import java.util.Calendar
+import com.zaijian.zhoumuyun.ui.design.AppIcons
 
 // ─────────────────────────────────────────────────────────────
 //  GlobalScheduleScreen  —  全局日程视图（Stage A+B）
@@ -114,11 +110,62 @@ fun GlobalScheduleScreen(
             .background(colors.bgBase),
     ) {
         // ── 顶栏 ─────────────────────────────────────────────
-        ScheduleTopBar(
-            dayOffset = uiState.dayOffset,
-            onPrev    = { viewModel.setDayOffset(uiState.dayOffset - 1) },
-            onNext    = { viewModel.setDayOffset(uiState.dayOffset + 1) },
-            onToday   = { viewModel.setDayOffset(0) },
+        // D-2 统一顶栏：ScheduleTopBar → DetailTopBar（日期导航移入 actions）
+        val dateLabel = remember(uiState.dayOffset) {
+            when (uiState.dayOffset) {
+                -1   -> "昨天"
+                0    -> "今天"
+                1    -> "明天"
+                else -> {
+                    val cal = Calendar.getInstance().apply {
+                        add(Calendar.DAY_OF_YEAR, uiState.dayOffset)
+                    }
+                    val m = cal.get(Calendar.MONTH) + 1
+                    val d = cal.get(Calendar.DAY_OF_MONTH)
+                    val w = when (cal.get(Calendar.DAY_OF_WEEK)) {
+                        Calendar.SUNDAY    -> "日"
+                        Calendar.MONDAY    -> "一"
+                        Calendar.TUESDAY   -> "二"
+                        Calendar.WEDNESDAY -> "三"
+                        Calendar.THURSDAY  -> "四"
+                        Calendar.FRIDAY    -> "五"
+                        Calendar.SATURDAY  -> "六"
+                        else               -> ""
+                    }
+                    "${m}月${d}日 $w"
+                }
+            }
+        }
+        DetailTopBar(
+            title    = "日程",
+            subtitle = dateLabel,
+            onBack   = onBack,
+            headerBg = colors.bgBase,
+            actions  = {
+                IconButton(onClick = { viewModel.setDayOffset(uiState.dayOffset - 1) }) {
+                    Icon(
+                        imageVector        = AppIcons.ArrowBack,
+                        contentDescription = "前一天",
+                        tint               = colors.textSecondary,
+                    )
+                }
+                if (uiState.dayOffset != 0) {
+                    IconButton(onClick = { viewModel.setDayOffset(0) }) {
+                        Icon(
+                            imageVector        = AppIcons.CalendarMonth,
+                            contentDescription = "回今天",
+                            tint               = colors.textSecondary,
+                        )
+                    }
+                }
+                IconButton(onClick = { viewModel.setDayOffset(uiState.dayOffset + 1) }) {
+                    Icon(
+                        imageVector        = AppIcons.ArrowForward,
+                        contentDescription = "后一天",
+                        tint               = colors.textSecondary,
+                    )
+                }
+            },
         )
 
         // ── 角色筛选器 ────────────────────────────────────────
@@ -138,7 +185,7 @@ fun GlobalScheduleScreen(
         // P3-13 修复：展示操作失败的错误信息，用户操作失败时不再无感知
         if (uiState.error != null) {
             Snackbar(
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                modifier = Modifier.padding(horizontal = Spacing.md, vertical = Spacing.sm),
                 action = {
                     TextButton(onClick = { viewModel.clearError() }) {
                         Text("关闭", color = Color.White)
@@ -154,120 +201,23 @@ fun GlobalScheduleScreen(
                 CircularProgressIndicator(color = colors.accent)
             }
         } else if (uiState.timeSlots.isEmpty()) {
-            ScheduleEmptyState(dayOffset = uiState.dayOffset)
+            val dayText = when (uiState.dayOffset) {
+                -1   -> "昨天"
+                0    -> "今天"
+                1    -> "明天"
+                else -> "这一天"
+            }
+            EmptyStateView(
+                icon     = AppIcons.CalendarMonth,
+                title    = "${dayText}没有日程",
+                subtitle = "角色可通过 schedule_create 工具添加",
+            )
         } else {
             TimelineContent(
                 slots            = uiState.timeSlots,
                 projectTitleMap  = projectTitleMap,
                 onDeleteJob = { jobToDelete = it },
                 onToggle    = { scope.launch { viewModel.toggleEnabled(it) } },
-            )
-        }
-    }
-}
-
-// ─────────────────────────────────────────────────────────────
-//  顶栏：日期导航
-// ─────────────────────────────────────────────────────────────
-
-@Composable
-private fun ScheduleTopBar(
-    dayOffset: Int,
-    onPrev: () -> Unit,
-    onNext: () -> Unit,
-    onToday: () -> Unit,
-) {
-    val colors = ZaijianTheme.colors
-    val type   = ZaijianTheme.typography
-
-    val dateLabel = remember(dayOffset) {
-        when (dayOffset) {
-            -1   -> "昨天"
-            0    -> "今天"
-            1    -> "明天"
-            else -> {
-                val cal = Calendar.getInstance().apply {
-                    add(Calendar.DAY_OF_YEAR, dayOffset)
-                }
-                val m = cal.get(Calendar.MONTH) + 1
-                val d = cal.get(Calendar.DAY_OF_MONTH)
-                val w = when (cal.get(Calendar.DAY_OF_WEEK)) {
-                    Calendar.MONDAY    -> "周一"
-                    Calendar.TUESDAY   -> "周二"
-                    Calendar.WEDNESDAY -> "周三"
-                    Calendar.THURSDAY  -> "周四"
-                    Calendar.FRIDAY    -> "周五"
-                    Calendar.SATURDAY  -> "周六"
-                    else               -> "周日"
-                }
-                "${m}月${d}日 $w"
-            }
-        }
-    }
-
-    Row(
-        modifier          = Modifier
-            .fillMaxWidth()
-            .statusBarsPadding()
-            .height(Spacing.topBarHeight)
-            .padding(horizontal = Spacing.screenHorizontal),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        // 日期导航左按钮
-        // P3-33 修复：触摸目标 < 48dp，移除 IconButton 的 size 限制，让 minimumInteractiveComponentSize 生效
-        IconButton(onClick = onPrev) {
-            Icon(
-                imageVector        = Icons.AutoMirrored.Outlined.ArrowBack,
-                contentDescription = "前一天",
-                tint               = colors.textSecondary,
-                modifier           = Modifier.size(18.dp),
-            )
-        }
-
-        // 日期标签（居中，点击回今天）
-        Box(
-            modifier          = Modifier.weight(1f),
-            contentAlignment  = Alignment.Center,
-        ) {
-            Row(
-                verticalAlignment     = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                modifier              = Modifier.clickable(
-                    indication            = null,
-                    interactionSource     = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
-                    onClick               = onToday,
-                ),
-            ) {
-                Icon(
-                    imageVector        = Icons.Outlined.CalendarMonth,
-                    contentDescription = null,
-                    tint               = if (dayOffset == 0) colors.accent else colors.textSecondary,
-                    modifier           = Modifier.size(16.dp),
-                )
-                Text(
-                    text  = dateLabel,
-                    style = type.navTitle,
-                    color = if (dayOffset == 0) colors.accent else colors.textPrimary,
-                )
-                // 当不在今天时显示"回今天"提示
-                if (dayOffset != 0) {
-                    Text(
-                        text  = "回今天",
-                        style = type.label, // type.label 本身即 11sp，原 .copy(fontSize=11.sp) 为伪接入
-                        color = colors.accent,
-                    )
-                }
-            }
-        }
-
-        // 日期导航右按钮
-        // P3-33 修复：触摸目标 < 48dp，移除 IconButton 的 size 限制，让 minimumInteractiveComponentSize 生效
-        IconButton(onClick = onNext) {
-            Icon(
-                imageVector        = Icons.AutoMirrored.Outlined.ArrowForward,
-                contentDescription = "后一天",
-                tint               = colors.textSecondary,
-                modifier           = Modifier.size(18.dp),
             )
         }
     }
@@ -333,13 +283,13 @@ private fun CharacterFilterRow(
                     contentAlignment  = Alignment.Center,
                 ) {
                     Icon(
-                        imageVector        = Icons.Outlined.FilterList,
+                        imageVector        = AppIcons.FilterList,
                         contentDescription = "全部",
                         tint               = if (isAllSelected) colors.accent else colors.textSecondary,
                         modifier           = Modifier.size(20.dp),
                     )
                 }
-                Spacer(Modifier.height(4.dp))
+                Spacer(Modifier.height(Spacing.xs))
                 Text(
                     text  = "全部",
                     style = type.label, // 伪接入修复：type.label 本身即 11sp
@@ -380,7 +330,7 @@ private fun CharacterFilterRow(
                     color    = selectedChar.accentColor,
                     modifier = Modifier.padding(
                         horizontal = Spacing.screenHorizontal,
-                        vertical   = 4.dp,
+                        vertical   = Spacing.xs,
                     ),
                 )
             }
@@ -459,9 +409,9 @@ private fun TimeSlotRow(
             modifier            = Modifier
                 .weight(1f)
                 .padding(bottom = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            slot.items.forEach { item ->
+            verticalArrangement = Arrangement.spacedBy(Spacing.sm),
+            ) {
+                slot.items.forEach { item ->
                 ScheduleJobCard(
                     item             = item,
                     projectTitleMap  = projectTitleMap,
@@ -569,7 +519,7 @@ private fun ScheduleJobCard(
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Icon(
-                                imageVector        = Icons.Outlined.FolderOpen,
+                                imageVector        = AppIcons.FolderOpen,
                                 contentDescription = null,
                                 modifier           = Modifier.size(12.dp),
                                 tint               = if (isDisabled) colors.textDisabled else accentColor.copy(alpha = 0.7f),
@@ -634,45 +584,3 @@ private fun CharacterMiniAvatar(
     }
 }
 
-// ─────────────────────────────────────────────────────────────
-//  空状态
-// ─────────────────────────────────────────────────────────────
-
-@Composable
-private fun ScheduleEmptyState(dayOffset: Int) {
-    val colors = ZaijianTheme.colors
-    val type   = ZaijianTheme.typography
-
-    val dayText = when (dayOffset) {
-        -1   -> "昨天"
-        0    -> "今天"
-        1    -> "明天"
-        else -> "这一天"
-    }
-
-    Box(
-        modifier         = Modifier.fillMaxSize(),
-        contentAlignment = Alignment.Center,
-    ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Icon(
-                imageVector        = Icons.Outlined.CalendarMonth,
-                contentDescription = null,
-                tint               = colors.textDisabled,
-                modifier           = Modifier.size(48.dp),
-            )
-            Spacer(Modifier.height(12.dp))
-            Text(
-                text  = "${dayText}没有日程",
-                style = type.cardTitle,
-                color = colors.textSecondary,
-            )
-            Spacer(Modifier.height(6.dp))
-            Text(
-                text  = "角色可通过 schedule_create 工具添加",
-                style = type.label,
-                color = colors.textDisabled,
-            )
-        }
-    }
-}

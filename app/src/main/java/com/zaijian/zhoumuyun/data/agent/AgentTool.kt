@@ -248,4 +248,38 @@ object AgentToolRegistry {
             append("工具执行后，结果会自动回注到对话中，你无需解释工具的存在。")
         }.trimEnd()
     }
+
+    /**
+     * 构建「降级决策」专用的工具描述块（Window B-1 fix2）。
+     *
+     * 与 [buildToolDescriptionBlock] 的差异：
+     * - 包含 [AgentTool.usageNotes]（参数使用约束/常见坑），帮助 LLM 在换工具时
+     *   做出更合理的决策（原版不包含 usageNotes）。
+     * - 去掉教学前缀（降级决策是纯功能判断，不需要"如何调用工具"的教学）。
+     * - 额外标注失败工具，让 LLM 知道当前换工具决策的上下文。
+     *
+     * @param excludeNames    需排除的工具名
+     * @param failedToolName  刚刚失败的工具名（标注为"已失败，请换其他工具或换参数重试"）
+     */
+    fun buildDegradeDecisionToolBlock(
+        excludeNames: Set<String> = emptySet(),
+        failedToolName: String? = null,
+    ): String {
+        val visibleTools = tools.values
+            .filter { it.name !in excludeNames }
+            .sortedBy { it.name }
+        if (visibleTools.isEmpty()) return "（无可用工具）"
+        return buildString {
+            visibleTools.forEach { tool ->
+                val paramDesc = tool.paramKeys.joinToString(" ") { key -> "$key=\"...\"" }
+                val desc = tool.description.ifBlank { "（无描述）" }
+                val failedTag = if (tool.name == failedToolName) " ⚠️已失败" else ""
+                appendLine("- ${tool.name}$failedTag（$desc）: $paramDesc")
+                // Window B-1 fix2：注入 usageNotes，帮助 LLM 做换工具/换参数决策
+                tool.usageNotes?.takeIf { it.isNotBlank() }?.let { notes ->
+                    appendLine("  用法备注: ${notes.take(300)}")
+                }
+            }
+        }.trimEnd()
+    }
 }

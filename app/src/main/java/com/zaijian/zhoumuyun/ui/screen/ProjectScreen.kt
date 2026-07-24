@@ -15,7 +15,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -23,22 +22,10 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.FolderOpen
-import androidx.compose.material.icons.outlined.CheckBox
-import androidx.compose.material.icons.outlined.CheckBoxOutlineBlank
-import androidx.compose.material.icons.outlined.Circle
-import androidx.compose.material.icons.outlined.History
-import androidx.compose.material.icons.outlined.Spa
-import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.material3.OutlinedTextField
@@ -69,6 +56,8 @@ import com.zaijian.zhoumuyun.data.db.entity.ProjectMilestoneEntity
 import com.zaijian.zhoumuyun.data.db.entity.TaskEntity
 import com.zaijian.zhoumuyun.data.db.entity.TaskStatus
 import com.zaijian.zhoumuyun.data.model.DefaultCharacters
+import com.zaijian.zhoumuyun.ui.component.DetailTopBar
+import com.zaijian.zhoumuyun.ui.component.EmptyStateView
 import com.zaijian.zhoumuyun.ui.design.WorldCard
 import com.zaijian.zhoumuyun.ui.theme.AppTheme
 import com.zaijian.zhoumuyun.ui.theme.GlassOpacity
@@ -78,6 +67,7 @@ import com.zaijian.zhoumuyun.ui.theme.Spacing
 import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
 import com.zaijian.zhoumuyun.ui.viewmodel.DayGrowthSummary
 import com.zaijian.zhoumuyun.ui.viewmodel.ProjectViewModel
+import com.zaijian.zhoumuyun.ui.design.AppIcons
 
 // ─────────────────────────────────────────────────────────────
 //  Project List Screen
@@ -107,26 +97,12 @@ fun ProjectScreen(
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
 
-            // ── 顶栏 ────────────────────────────────────────
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .statusBarsPadding()
-                    .padding(horizontal = Spacing.screenHorizontal, vertical = Spacing.md),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                IconButton(onClick = onBack) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回", tint = colors.onBackground)
-                }
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    text = "项目",
-                    color = colors.onBackground,
-                    fontSize = 20.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.weight(1f),
-                )
-            }
+            // ── 顶栏（窗口4补充：统一为 DetailTopBar）────────────────
+            DetailTopBar(
+                title    = "项目",
+                onBack   = onBack,
+                headerBg = colors.bgBase,
+            )
 
             // ── 项目列表 ─────────────────────────────────────
             // G2.5 修复：加载中显示 loading 指示器，只有确认加载完成且列表
@@ -158,7 +134,6 @@ fun ProjectScreen(
                         ProjectCard(
                             project = project,
                             onClick = { onNavigateToDetail(project.id) },
-                            onComplete = { viewModel.completeProject(project.id) },
                         )
                     }
                 }
@@ -174,7 +149,7 @@ fun ProjectScreen(
                 .padding(Spacing.lg),
             containerColor = colors.primary,
         ) {
-            Icon(Icons.Default.Add, contentDescription = "新建项目", tint = Color.White)
+            Icon(AppIcons.AddFilled, contentDescription = "新建项目", tint = Color.White)
         }
     }
 
@@ -200,7 +175,6 @@ fun ProjectScreen(
 private fun ProjectCard(
     project: ProjectEntity,
     onClick: () -> Unit,
-    onComplete: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val colors = ZaijianTheme.colors
@@ -222,12 +196,12 @@ private fun ProjectCard(
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(
-                        imageVector = Icons.Default.FolderOpen,
+                        imageVector = AppIcons.FolderOpenFilled,
                         contentDescription = null,
                         tint = colors.primary.copy(alpha = 0.8f),
                         modifier = Modifier.size(18.dp),
                     )
-                    Spacer(Modifier.width(8.dp))
+                    Spacer(Modifier.width(Spacing.sm))
                     Text(
                         text = project.title,
                         color = colors.onBackground,
@@ -264,9 +238,9 @@ private fun ProjectStatusChip(status: String) {
     }
     Box(
         modifier = Modifier
-            .clip(RoundedCornerShape(20.dp))
+            .clip(RoundedCornerShape(Radius.md))
             .background(color.copy(alpha = 0.15f))
-            .padding(horizontal = 8.dp, vertical = 3.dp),
+            .padding(horizontal = Spacing.sm, vertical = 3.dp),
     ) {
         Text(text = label, color = color, fontSize = 11.sp, fontWeight = FontWeight.Medium)
     }
@@ -274,28 +248,13 @@ private fun ProjectStatusChip(status: String) {
 
 @Composable
 private fun EmptyProjectsHint(modifier: Modifier = Modifier) {
-    val colors = ZaijianTheme.colors
+    // D-3 P3：空状态收口至统一组件 EmptyStateView
     Box(modifier = modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Icon(
-                Icons.Default.FolderOpen,
-                contentDescription = null,
-                tint = colors.onBackground.copy(alpha = 0.2f),
-                modifier = Modifier.size(48.dp),
-            )
-            Spacer(Modifier.height(12.dp))
-            Text(
-                text = "还没有项目",
-                color = colors.onBackground.copy(alpha = 0.35f),
-                fontSize = 15.sp,
-            )
-            Spacer(Modifier.height(4.dp))
-            Text(
-                text = "点击右下角 + 创建第一个",
-                color = colors.onBackground.copy(alpha = 0.2f),
-                fontSize = 13.sp,
-            )
-        }
+        EmptyStateView(
+            icon     = AppIcons.FolderOpenFilled,
+            title    = "还没有项目",
+            subtitle = "点击右下角 + 创建第一个",
+        )
     }
 }
 
@@ -311,7 +270,7 @@ private fun LoadFailedHint(message: String, modifier: Modifier = Modifier) {
     Box(modifier = modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Icon(
-                Icons.Default.FolderOpen,
+                AppIcons.FolderOpenFilled,
                 contentDescription = null,
                 tint = Palette.SemanticDanger.copy(alpha = 0.4f),
                 modifier = Modifier.size(48.dp),
@@ -323,13 +282,13 @@ private fun LoadFailedHint(message: String, modifier: Modifier = Modifier) {
                 fontSize = 15.sp,
                 fontWeight = FontWeight.Medium,
             )
-            Spacer(Modifier.height(4.dp))
+            Spacer(Modifier.height(Spacing.xs))
             Text(
                 text = message,
                 color = colors.onBackground.copy(alpha = 0.35f),
                 fontSize = 13.sp,
             )
-            Spacer(Modifier.height(4.dp))
+            Spacer(Modifier.height(Spacing.xs))
             Text(
                 text = "请返回重试",
                 color = colors.onBackground.copy(alpha = 0.2f),

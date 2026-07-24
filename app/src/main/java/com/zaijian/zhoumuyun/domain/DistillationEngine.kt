@@ -174,10 +174,15 @@ class DistillationEngine(
         }
 
         // ── 4. 读取近期高分 Session 作为 LLM 上下文 ──────────
-        val recentSessions = evaluationSessionDao.getScoredByGoal(
-            goalId = goalId,
-            limit  = SESSIONS_FOR_CONTEXT,
-        ).filter { (it.compositeScore ?: 0f) >= HIGH_SCORE_THRESHOLD }
+        // P1-27 修复：原 getScoredByGoal 只取最近 N 条 SCORED Session 再内存 filter
+        // compositeScore ≥ threshold，当高分 Session 不在最近 N 条时会被截断，
+        // 导致蒸馏上下文为空、静默失效。改用 SQL 层直接过滤的 getHighScoreByGoal，
+        // 保证取到的是最近 N 条高分 Session，不受低分 Session 占位影响。
+        val recentSessions = evaluationSessionDao.getHighScoreByGoal(
+            goalId    = goalId,
+            threshold = HIGH_SCORE_THRESHOLD,
+            limit     = SESSIONS_FOR_CONTEXT,
+        )
 
         if (recentSessions.isEmpty()) {
             return@withContext DistillResult(triggered = false, reason = "无高分 Session 可用")

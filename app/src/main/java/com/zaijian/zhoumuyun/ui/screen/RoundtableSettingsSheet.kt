@@ -48,17 +48,6 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material.icons.outlined.Add
-import androidx.compose.material.icons.outlined.AutoMode
-import androidx.compose.material.icons.outlined.Check
-import androidx.compose.material.icons.outlined.Close
-import androidx.compose.material.icons.outlined.Send
-import androidx.compose.material.icons.outlined.Settings
-import androidx.compose.material.icons.outlined.SmartToy
-import androidx.compose.material.icons.outlined.Speed
-import androidx.compose.material.icons.outlined.Person
 import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -124,6 +113,7 @@ import com.zaijian.zhoumuyun.ui.viewmodel.ScheduleMode
 import com.zaijian.zhoumuyun.util.TimeFormatUtils
 import kotlinx.coroutines.launch
 import androidx.compose.runtime.snapshotFlow
+import com.zaijian.zhoumuyun.ui.design.AppIcons
 
 
 // ─────────────────────────────────────────────────────────────
@@ -186,7 +176,7 @@ internal fun RoundtableSettingsSheet(
             )
             IconButton(onClick = onClose) {
                 Icon(
-                    imageVector        = Icons.Outlined.Close,
+                    imageVector        = AppIcons.Close,
                     contentDescription = "关闭",
                     tint               = colors.textSecondary,
                     modifier           = Modifier.size(22.dp),
@@ -353,21 +343,21 @@ internal fun RoundtableSettingsSheet(
         )
 
         ScheduleModeOption(
-            icon        = Icons.Outlined.AutoMode,
+            icon        = AppIcons.AutoMode,
             title       = "自动",
             subtitle    = "短消息启发式 · 长消息 AI 调度",
             selected    = scheduleMode == ScheduleMode.AUTO,
             onClick     = { onModeChange(ScheduleMode.AUTO) },
         )
         ScheduleModeOption(
-            icon        = Icons.Outlined.Speed,
+            icon        = AppIcons.Speed,
             title       = "启发式",
             subtitle    = "基于规则调度，零 API 消耗",
             selected    = scheduleMode == ScheduleMode.HEURISTIC,
             onClick     = { onModeChange(ScheduleMode.HEURISTIC) },
         )
         ScheduleModeOption(
-            icon        = Icons.Outlined.SmartToy,
+            icon        = AppIcons.SmartToy,
             title       = "AI 调度",
             subtitle    = "每轮额外一次 API 调用，最自然",
             selected    = scheduleMode == ScheduleMode.AI_ONLY,
@@ -379,6 +369,10 @@ internal fun RoundtableSettingsSheet(
 }
 
 
+// P2-14：LOCKED 目前无调用方传入，但 MemberSettingsRow 的 when 分支已处理
+// 此状态（禁用点击+透明背景+勾选图标），属于防御性预留——未来若需要"成员
+// 被锁定不可移除"的 UI 状态可直接复用，无需再改枚举和渲染逻辑。
+@Suppress("unused")
 private enum class MemberAction { ADD, REMOVE, LOCKED }
 
 
@@ -415,7 +409,7 @@ private fun MemberSettingsRow(
                 .alpha(contentAlpha)
                 .clip(CircleShape)
                 .background(bot.accentColor.copy(alpha = 0.3f)),
-            error              = rememberVectorPainter(Icons.Outlined.Person),
+            error              = rememberVectorPainter(AppIcons.Person),
         )
         // 名字
         Text(
@@ -448,9 +442,9 @@ private fun MemberSettingsRow(
             ) {
             Icon(
                 imageVector = when (action) {
-                    MemberAction.ADD    -> Icons.Outlined.Add
-                    MemberAction.REMOVE -> Icons.Outlined.Close
-                    MemberAction.LOCKED -> Icons.Outlined.Check
+                    MemberAction.ADD    -> AppIcons.Add
+                    MemberAction.REMOVE -> AppIcons.Close
+                    MemberAction.LOCKED -> AppIcons.Check
                 },
                 contentDescription = action.name,
                 tint               = actionTint,
@@ -512,7 +506,7 @@ private fun ScheduleModeOption(
         }
         if (selected) {
             Icon(
-                imageVector        = Icons.Outlined.Check,
+                imageVector        = AppIcons.Check,
                 contentDescription = "已选择",
                 tint               = colors.accent,
                 modifier           = Modifier.size(18.dp),

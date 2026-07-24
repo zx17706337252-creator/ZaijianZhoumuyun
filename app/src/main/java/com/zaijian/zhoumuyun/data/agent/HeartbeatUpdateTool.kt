@@ -34,6 +34,7 @@ class HeartbeatUpdateTool(
     override val name = "heartbeat_update"
     override val description = "修改心跳自检清单中单条条目的勾选状态或文字"
     override val paramKeys = listOf("index", "action", "text")
+    override val usageNotes = "action 可选 check(勾选)/uncheck(取消勾选)/rename(重命名)，重命名时需同时传 text 参数"
 
     override suspend fun execute(params: Map<String, String>): ToolResult =
         withContext(Dispatchers.IO) {

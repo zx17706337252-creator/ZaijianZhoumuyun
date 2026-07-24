@@ -88,7 +88,7 @@ fun BriefingCharacterCard(entry: BriefingCharacterEntry, modifier: Modifier = Mo
 
                     // 关系刻度：完整五格 + 阶段文字（交接文档排版示意图 ▮▮▯▯▯ 陌生）
                     BondRibbon(
-                        stage       = BondStage.valueOf(entry.relation?.stage ?: "STRANGER"),
+                        stage       = BondStage.entries.firstOrNull { it.name == entry.relation?.stage } ?: BondStage.STRANGER,
                         accentColor = accent,
                         showLabels  = true,
                         suppression = entry.relation?.suppression,

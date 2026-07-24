@@ -128,6 +128,15 @@ object Palette {
 
     // ── P3-55 修复：成长指标绿色，统一主题常量，替代散落各处的 Color(0xFF7BAE7F) ──
     val GrowthGreen = Color(0xFF7BAE7F)
+
+    // ── P2-41 修复：MoodType 蜡烛色 token（原硬编码在 WorldOSComponents.candleColor）──
+    val MoodExcited    = Color(0xFFFF8A65)    // 暖橙，兴奋
+    val MoodCurious    = Color(0xFFBA68C8)    // 紫，好奇
+    val MoodReflective = Color(0xFF9FA8DA)    // 冷紫蓝，沉思
+    val MoodTired      = Color(0xFF90A4AE)    // 灰，疲惫
+
+    // ── P2-44 修复：暗色模式 borderSubtle token（原硬编码在 DarkColors）──
+    val BorderSubtleDark = Color(0x15FFFFFF)
 }
 
 @Immutable
@@ -165,7 +174,7 @@ data class AppColors(
 val LightColors = AppColors(
     bgBase        = Palette.Cream,
     bgCard        = Palette.Parchment,
-    bgElevated    = Color(0xFFFEFCF8),
+    bgElevated    = Palette.ParchmentGlow,
     border        = Palette.Border,
     borderSubtle  = Palette.Border.copy(alpha = 0.6f),
     textPrimary   = Palette.Ink900,
@@ -189,7 +198,7 @@ val DarkColors = AppColors(
     bgCard        = Palette.NightCard,
     bgElevated    = Palette.NightElevated,
     border        = Palette.NightBorder,
-    borderSubtle  = Color(0x15FFFFFF),
+    borderSubtle  = Palette.BorderSubtleDark,
     textPrimary   = Palette.NightText,
     textSecondary = Palette.NightTextSub,
     textDisabled  = Palette.Ink600,

@@ -11,9 +11,6 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.CheckCircle
-import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
@@ -24,10 +21,11 @@ import androidx.compose.ui.unit.dp
 import com.zaijian.zhoumuyun.ui.theme.Spacing
 import com.zaijian.zhoumuyun.ui.theme.Palette
 import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
+import com.zaijian.zhoumuyun.ui.design.AppIcons
 
 // ─────────────────────────────────────────────────────────────
-//  MansionHeader  — 公馆顶部毛玻璃 Header
-//  设计规范 §10  [Header] 毛玻璃，56dp
+//  MansionHeader  — 公馆顶部 Header（实色背景，44dp）
+//  窗口4修正：旧注释写"毛玻璃 56dp"与实际实现不符（实际为实色背景 44dp）
 // ─────────────────────────────────────────────────────────────
 
 @Composable
@@ -68,7 +66,7 @@ fun MansionHeader(
             // M12 修复：去掉 size(40.dp) 覆盖，让 IconButton 使用默认 48×48dp 最小触控区。
             IconButton(onClick = onTaskCenterClick) {
                 Icon(
-                    imageVector        = Icons.Outlined.CheckCircle,
+                    imageVector        = AppIcons.CheckCircle,
                     contentDescription = "任务中心",
                     tint               = colors.textSecondary,
                     modifier           = Modifier.size(22.dp),
@@ -87,7 +85,7 @@ fun MansionHeader(
                 // M12 修复：去掉 size(40.dp) 覆盖，让 IconButton 使用默认 48×48dp 最小触控区。
                 IconButton(onClick = onNotificationClick) {
                     Icon(
-                        imageVector        = Icons.Outlined.Notifications,
+                        imageVector        = AppIcons.Notifications,
                         contentDescription = "通知",
                         tint               = colors.textSecondary,
                         modifier           = Modifier.size(22.dp),

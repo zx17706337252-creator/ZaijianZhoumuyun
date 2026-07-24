@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!-- 窗口2 6.2修复：accent 与 Palette.Gold(#C4A46A) 同步；bg_base 已与 Palette.Night(#12100A) 一致 -->
     <color name="bg_base">#12100A</color>
     <color name="bg_card">#1C1E2A</color>
-    <color name="accent">#8A9FB5</color>
+    <color name="accent">#C4A46A</color>
 </resources>

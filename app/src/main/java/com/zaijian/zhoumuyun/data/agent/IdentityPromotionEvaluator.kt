@@ -57,32 +57,6 @@ object IdentityPromotionEvaluator {
         stableTraitMutexes.computeIfAbsent(profileId) { Mutex() }
 
     /**
-     * 竞赛结算时对赢家调用一次：向 stableTraitTracker 注入一次额外的稳定确认。
-     *
-     * 作用：在正常的"每次第2→3层合并完成后调用 evaluate()"之外，给赢家的
-     * 被认可手法额外记一次稳定计数，相当于"赢一次比赛=该手法的稳定性又被确认了
-     * 一轮"（执行方案第6节·赢家反哺）。
-     *
-     * 已知限制（与类文档注释末尾相同）：
-     *   - 这个计数是内存级的；进程重启后归零。
-     *   - [trait] 字符串来自裁判 `judgeReasoning` 文本，与 `evaluate()` 在
-     *     `findStableTraits` 里用 LLM 提取的稳定特征描述措辞可能不完全一致，
-     *     导致两套 key 互不命中。对晋升判定没有副作用（不会误触发），
-     *     只是加速效果在 key 不一致时不生效——这是可接受的 v1 精度损失，
-     *     与类文档注释里描述的"v1 简化处理"同一级别。
-     *
-     * @param profileId SpecialtyProfileEntity.id
-     * @param trait     被认可的具体手法描述（取自 judgeReasoning 前段）
-     */
-    suspend fun boostStability(profileId: String, trait: String) {
-        if (trait.isBlank()) return
-        getStableTraitMutex(profileId).withLock {
-            val tracker = stableTraitTracker.getOrPut(profileId) { mutableMapOf() }
-            tracker[trait] = (tracker[trait] ?: 0) + 1
-        }
-    }
-
-    /**
      * 在每次第2→3层合并完成后调用，检查是否有特征满足晋升条件。
      * 满足时生成圆桌播报请用户确认，不自动执行晋升写入。
      */

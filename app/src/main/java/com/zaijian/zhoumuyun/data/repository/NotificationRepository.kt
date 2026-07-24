@@ -88,8 +88,21 @@ class NotificationRepository(
             "never_contacted:${item.character.id}"
         is BriefingAttentionItem.Pregnancy ->
             "pregnancy:${item.character.id}"
-        is BriefingAttentionItem.Tension ->
-            "tension:${item.fromId}-${item.toId}"
+        is BriefingAttentionItem.Tension -> {
+            // P1-23 修复：BriefingRepository 两条产出路径里 Tension 的
+            // fromId/toId 顺序不保证一致——buildAttentionList() 走的是
+            // Map<relKey, RelationshipEntity>.values（顺序取决于底层存储，
+            // 通常已按 relKey 归一化的 fromId/toId），buildAttentionListLight()
+            // 现在虽已按 relKey 去重（见 P1-20 修复），但去重时保留的是
+            // interMatrix 原始 List 里先出现的那条，其 fromId/toId 顺序未必
+            // 和另一条路径一致。原先直接用 fromId-toId 拼 key，会导致同一对
+            // 角色的同一条 Tension 在两次打开（分别走了不同产出路径）之间
+            // 得到不同的 itemKey，已读状态跟着漂移（标记已读后下次又变回
+            // 未读）。这里排序后再拼接，保证 itemKey 只取决于角色对本身，
+            // 与 fromId/toId 具体顺序无关。
+            val (a, b) = if (item.fromId <= item.toId) item.fromId to item.toId else item.toId to item.fromId
+            "tension:$a-$b"
+        }
         is BriefingAttentionItem.RelationWorsened ->
             // milestoneId 而非 fromId-toId：同一对角色在同一窗口内可能发生
             // 多次独立恶化事件，用角色对拼 key 会让两条不同事件共享同一个
@@ -114,12 +127,20 @@ class NotificationRepository(
      * 清理孤儿已读记录。传入本次"需要关注"区块实际产出的全部 itemKey，
      * 不在其中的旧已读记录会被删除。
      *
-     * 注意：stillValidKeys 为空列表（即本次没有任何需要关注的条目）时，
-     * DAO 层的 NOT IN 空集合会删除全表已读记录——这正是期望行为
-     * （所有问题都已解决，已读表清空是对的），不是 bug，调用方不需要
-     * 对空列表做特判。
+     * P1-26 修复：stillValidKeys 为空列表（即本次没有任何需要关注的条目）
+     * 时期望的行为确实是清空全表已读记录（所有问题都已解决，已读表清空
+     * 是对的）——但这里不能依赖 SQL `NOT IN ()` 空集合本身来达成这个效果：
+     * Room 把 `:stillValidKeys` 展开成 `NOT IN (?)` 还是 `NOT IN ()` /
+     * 该写法在空列表时具体如何求值，属于底层 SQLite 绑定实现细节，不同
+     * 版本表现不一定一致，不应该让"清空全表"这个业务预期隐式依赖它。
+     * 显式判空并调用本来就存在但此前从未被调用过的 deleteAll()，行为
+     * 明确写在调用方，不再依赖 NOT IN 对空列表的具体求值方式。
      */
     suspend fun pruneStaleReadState(stillValidKeys: List<String>) {
-        readStateDao.deleteNotIn(stillValidKeys)
+        if (stillValidKeys.isEmpty()) {
+            readStateDao.deleteAll()
+        } else {
+            readStateDao.deleteNotIn(stillValidKeys)
+        }
     }
 }

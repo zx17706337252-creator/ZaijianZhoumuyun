@@ -8,8 +8,11 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.zaijian.zhoumuyun.data.agent.FilePreviewParser
+import com.zaijian.zhoumuyun.data.agent.resolveVaultPath
+import com.zaijian.zhoumuyun.data.agent.VaultPathResolution
 import com.zaijian.zhoumuyun.data.agent.writeVaultText
 import com.zaijian.zhoumuyun.ui.screen.filepreview.PreviewContent
+import com.zaijian.zhoumuyun.util.TimeFormatUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -18,9 +21,6 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 /**
  * 文件预览编辑页 ViewModel（v1.48 应用内预览编辑）。
@@ -51,9 +51,14 @@ class FilePreviewViewModel(
     private val _uiState = MutableStateFlow<UiState>(UiState.Loading)
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
 
-    /** 保存成功后通知文件库刷新的信号。 */
-    private val _refreshSignal = MutableStateFlow(0)
-    val refreshSignal: StateFlow<Int> = _refreshSignal.asStateFlow()
+    /** 最近一次进入 Loaded 状态时的内容，供 [clearStatus] 从 Saved/Error 恢复时使用。 */
+    private var lastLoadedContent: PreviewContent? = null
+
+    /** 统一设置 Loaded 状态，同时记录 [lastLoadedContent] 供后续恢复使用。 */
+    private fun setLoaded(content: PreviewContent) {
+        lastLoadedContent = content
+        _uiState.value = UiState.Loaded(content)
+    }
 
     // ── 加载 ─────────────────────────────────────────────────
 
@@ -62,22 +67,32 @@ class FilePreviewViewModel(
         _uiState.value = UiState.Loading
         viewModelScope.launch {
             val content = withContext(Dispatchers.IO) {
+                // P2-47 修复：收口到 resolveVaultPath 权限校验，
+                // 防止通过导航参数访问无权访问的 vault 路径。
+                val resolution = resolveVaultPath(getApplication(), path)
+                val file = when (resolution) {
+                    is VaultPathResolution.Denied -> {
+                        _uiState.value = UiState.Error("无权访问：${resolution.reason}")
+                        return@withContext null
+                    }
+                    is VaultPathResolution.Allowed -> resolution.file
+                }
                 runCatching {
-                    FilePreviewParser.parse(File(path))
+                    FilePreviewParser.parse(file)
                 }.getOrElse {
                     _uiState.value = UiState.Error("加载失败：${it.message?.take(80)}")
                     return@withContext null
                 }
             }
             if (content != null) {
-                _uiState.value = UiState.Loaded(content)
+                setLoaded(content)
             }
         }
     }
 
     /** 从内存文本加载（暂存模式，对话框气泡点击全屏查看）。 */
     fun loadFromMemory(text: String, isMarkdown: Boolean) {
-        _uiState.value = UiState.Loaded(
+        setLoaded(
             PreviewContent.Textual(
                 text = text,
                 isMarkdown = isMarkdown,
@@ -88,7 +103,7 @@ class FilePreviewViewModel(
 
     /** 从表格数据加载（暂存模式，对话框表格点击全屏查看）。 */
     fun loadFromTable(columns: List<String>, rows: List<List<String>>) {
-        _uiState.value = UiState.Loaded(
+        setLoaded(
             PreviewContent.Tabular(
                 columns = columns,
                 rows = rows,
@@ -108,15 +123,24 @@ class FilePreviewViewModel(
             val result = withContext(Dispatchers.IO) {
                 try {
                     if (current.sourceFilePath != null) {
+                        // P2-47 修复：收口到 resolveVaultPath 权限校验
+                        val resolution = resolveVaultPath(getApplication(), current.sourceFilePath)
+                        val saveFile = when (resolution) {
+                            is VaultPathResolution.Denied -> {
+                                com.zaijian.zhoumuyun.util.ZLog.w("FilePreview", "保存被拒：${resolution.reason}")
+                                return@withContext null
+                            }
+                            is VaultPathResolution.Allowed -> resolution.file
+                        }
                         // 覆盖写回原文件（UTF-8）
-                        File(current.sourceFilePath).writeText(newText, Charsets.UTF_8)
+                        saveFile.writeText(newText, Charsets.UTF_8)
                         "已保存"
                     } else {
                         // 暂存模式：另存为新文件到 vault
                         val context = getApplication<Application>()
                         val isMd = current.isMarkdown
                         val ext = if (isMd) "md" else "txt"
-                        val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
+                        val stamp = TimeFormatUtils.formatFileStamp(System.currentTimeMillis())
                         val humanName = "文本_${stamp}.$ext"
                         val mimeType = if (isMd) "text/markdown" else "text/plain"
                         writeVaultText(context, humanName, newText, mimeType)
@@ -128,21 +152,19 @@ class FilePreviewViewModel(
                 }
             }
             if (result != null) {
+                // 同文件-09 修复：此前这里紧接着调用 loadFromPath()/setLoaded()，
+                // 与刚设置的 UiState.Saved 在同一协程内无挂起点地连续 emit，
+                // StateFlow 会合并中间值，UI 侧的 collectAsStateWithLifecycle
+                // 还没来得及观察到 Saved 就被覆盖，用户看不到"已保存"提示。
+                // 现改为只更新 lastLoadedContent（供 clearStatus() 后续恢复用），
+                // 不在此处触发状态切换——真正的 Saved→Loaded 由 Screen 侧
+                // LaunchedEffect(uiState) 展示完 snackbar 后调用 clearStatus() 完成。
+                lastLoadedContent = PreviewContent.Textual(
+                    text = newText,
+                    isMarkdown = current.isMarkdown,
+                    sourceFilePath = current.sourceFilePath,  // 保持原有模式（文件/暂存）不变
+                )
                 _uiState.value = UiState.Saved(result)
-                _refreshSignal.value += 1
-                if (current.sourceFilePath != null) {
-                    // 文件模式：重新加载已保存的内容
-                    loadFromPath(current.sourceFilePath)
-                } else {
-                    // 暂存模式：保存后更新为 Loaded（用编辑后的文本，标记为已保存到文件库）
-                    _uiState.value = UiState.Loaded(
-                        PreviewContent.Textual(
-                            text = newText,
-                            isMarkdown = current.isMarkdown,
-                            sourceFilePath = null,  // 保持暂存模式（已另存为新文件）
-                        )
-                    )
-                }
             } else {
                 _uiState.value = UiState.Error("保存失败，请重试")
             }
@@ -159,12 +181,21 @@ class FilePreviewViewModel(
                 try {
                     val csvText = FilePreviewParser.toCsv(columns, rows)
                     if (current.sourceFilePath != null) {
-                        File(current.sourceFilePath).writeText(csvText, Charsets.UTF_8)
+                        // P2-47 修复：收口到 resolveVaultPath 权限校验
+                        val resolution = resolveVaultPath(getApplication(), current.sourceFilePath)
+                        val saveFile = when (resolution) {
+                            is VaultPathResolution.Denied -> {
+                                com.zaijian.zhoumuyun.util.ZLog.w("FilePreview", "保存被拒：${resolution.reason}")
+                                return@withContext null
+                            }
+                            is VaultPathResolution.Allowed -> resolution.file
+                        }
+                        saveFile.writeText(csvText, Charsets.UTF_8)
                         "已保存"
                     } else {
                         // 暂存模式：另存为新 csv
                         val context = getApplication<Application>()
-                        val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
+                        val stamp = TimeFormatUtils.formatFileStamp(System.currentTimeMillis())
                         val humanName = "表格_${stamp}.csv"
                         writeVaultText(context, humanName, csvText, "text/csv")
                         "已另存为 $humanName"
@@ -175,21 +206,14 @@ class FilePreviewViewModel(
                 }
             }
             if (result != null) {
+                // 同文件-09 修复：同 saveText，不再立即覆盖 Saved 状态。
+                lastLoadedContent = PreviewContent.Tabular(
+                    columns = columns,
+                    rows = rows,
+                    editable = true,
+                    sourceFilePath = current.sourceFilePath,
+                )
                 _uiState.value = UiState.Saved(result)
-                _refreshSignal.value += 1
-                if (current.sourceFilePath != null) {
-                    loadFromPath(current.sourceFilePath)
-                } else {
-                    // 暂存模式：保存后更新为 Loaded
-                    _uiState.value = UiState.Loaded(
-                        PreviewContent.Tabular(
-                            columns = columns,
-                            rows = rows,
-                            editable = true,
-                            sourceFilePath = null,
-                        )
-                    )
-                }
             } else {
                 _uiState.value = UiState.Error("保存失败，请重试")
             }
@@ -204,11 +228,20 @@ class FilePreviewViewModel(
             val result = withContext(Dispatchers.IO) {
                 try {
                     if (current.sourceFilePath != null) {
-                        File(current.sourceFilePath).writeText(source, Charsets.UTF_8)
+                        // P2-47 修复：收口到 resolveVaultPath 权限校验
+                        val resolution = resolveVaultPath(getApplication(), current.sourceFilePath)
+                        val saveFile = when (resolution) {
+                            is VaultPathResolution.Denied -> {
+                                com.zaijian.zhoumuyun.util.ZLog.w("FilePreview", "保存被拒：${resolution.reason}")
+                                return@withContext null
+                            }
+                            is VaultPathResolution.Allowed -> resolution.file
+                        }
+                        saveFile.writeText(source, Charsets.UTF_8)
                         "已保存"
                     } else {
                         val context = getApplication<Application>()
-                        val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
+                        val stamp = TimeFormatUtils.formatFileStamp(System.currentTimeMillis())
                         val humanName = "网页_${stamp}.html"
                         writeVaultText(context, humanName, source, "text/html")
                         "已另存为 $humanName"
@@ -219,19 +252,12 @@ class FilePreviewViewModel(
                 }
             }
             if (result != null) {
+                // 同文件-09 修复：同 saveText，不再立即覆盖 Saved 状态。
+                lastLoadedContent = PreviewContent.Html(
+                    source = source,
+                    sourceFilePath = current.sourceFilePath,
+                )
                 _uiState.value = UiState.Saved(result)
-                _refreshSignal.value += 1
-                if (current.sourceFilePath != null) {
-                    loadFromPath(current.sourceFilePath)
-                } else {
-                    // 暂存模式：保存后更新为 Loaded
-                    _uiState.value = UiState.Loaded(
-                        PreviewContent.Html(
-                            source = source,
-                            sourceFilePath = null,
-                        )
-                    )
-                }
             } else {
                 _uiState.value = UiState.Error("保存失败，请重试")
             }
@@ -246,7 +272,15 @@ class FilePreviewViewModel(
             val result = withContext(Dispatchers.IO) {
                 try {
                     val context = getApplication<Application>()
-                    val srcFile = File(filePath)
+                    // P2-47 修复：收口到 resolveVaultPath 权限校验
+                    val resolution = resolveVaultPath(context, filePath)
+                    val srcFile = when (resolution) {
+                        is VaultPathResolution.Denied -> {
+                            _uiState.value = UiState.Error("无权导出：${resolution.reason}")
+                            return@withContext null
+                        }
+                        is VaultPathResolution.Allowed -> resolution.file
+                    }
                     if (!srcFile.exists()) return@withContext null
 
                     val ext = fileName.substringAfterLast(".", "")
@@ -290,10 +324,21 @@ class FilePreviewViewModel(
         }
     }
 
-    /** 清除 Saved/Error 状态回到 Loaded。 */
+    /**
+     * 清除 Saved/Error 状态回到 Loaded。
+     *
+     * 死代码-09 修复（阶段2·批次1）：原实现为空函数，注释声称"UI层用
+     * LaunchedEffect 消费 Saved 后自动清除"，但 Screen 侧从未实现这一步——
+     * 除文件模式保存后会经 [loadFromPath] 重新加载外，[exportToDownloads]
+     * 导出成功后 uiState 停在 Saved 永不恢复，编辑区永久空白（同文件-10）。
+     * 现补齐实现：若当前处于 Saved/Error 且存在可恢复的 [lastLoadedContent]，
+     * 则恢复为 Loaded；否则保持不变（例如初次加载失败，没有可回退的内容）。
+     */
     fun clearStatus() {
-        // 从 Saved/Error 回到 Loaded 需要重新取 content——简单实现：不动 uiState，
-        // UI 层用 LaunchedEffect 消费 Saved 后自动清除 snackbar 即可
+        val content = lastLoadedContent
+        if (content != null && (_uiState.value is UiState.Saved || _uiState.value is UiState.Error)) {
+            _uiState.value = UiState.Loaded(content)
+        }
     }
 
     companion object {

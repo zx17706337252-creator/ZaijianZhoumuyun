@@ -55,9 +55,9 @@ import java.util.zip.ZipOutputStream
  * 避免路径穿越校验逻辑在多个 Tool 文件中重复实现、标准不一致。
  */
 internal fun hasPathTraversal(path: String): Boolean {
-    if (path.contains("../") || path.contains("..\\")) return true
-    // 额外拦截：单独的 ".." 段（如路径整体就是 ".." 或以 ".." 收尾、无尾随斜杠时，
-    // 上面两个 contains 检查不到，按分隔符拆段后逐段比对补齐）
+    // P2-19 修复：原 path.contains("../") 对含 "..." 的合法路径误报
+    // （如 "a/.../b" 子串匹配命中 "../"）。
+    // 改为按路径分隔符拆段后逐段比较，只对真正的 ".." 段报 true。
     val segments = path.split("/", "\\")
     return segments.any { it == ".." }
 }
@@ -335,6 +335,7 @@ class FolderDeleteTool(
     override val name = "folder_delete"
     override val description = "删除文件夹，默认非空拒绝删除，recursive=true才递归删除且不可恢复"
     override val paramKeys = listOf("path", "recursive")
+    override val usageNotes = "recursive 只接受 true 或 false；非空目录须传 true 才递归删除"
 
     override suspend fun execute(params: Map<String, String>): ToolResult = withContext(Dispatchers.IO) {
         val path = params["path"]?.trim()
@@ -493,6 +494,7 @@ class FileEditTool(
     override val name = "file_edit"
     override val description = "编辑已存在文件的内容（整体覆盖/追加/查找替换三种模式）"
     override val paramKeys = listOf("path", "mode", "content", "find")
+    override val usageNotes = "mode 可选值：overwrite(整体覆盖)/append(追加)/replace(查找替换)，默认 overwrite；replace 模式需额外传 find 参数指定被替换的文本"
 
     private companion object {
         const val MAX_CONTENT_CHARS = 50_000
@@ -806,6 +808,7 @@ class FileOrganizeTool(
     override val name = "file_organize"
     override val description = "把目录下的文件按名称/日期/大小排序并添加序号前缀整理"
     override val paramKeys = listOf("path", "order", "direction")
+    override val usageNotes = "order 可选 name/date/size；direction 可选 asc/desc"
 
     private val orderPrefixRegex = Regex("^\\d+[_\\-.]\\s*")
 

@@ -89,13 +89,20 @@ class NotificationViewModel(application: Application) : AndroidViewModel(applica
                 notificationRepo.buildItemKey(it) in readKeysSnapshot
             }.toSet()
 
-            _uiState.value = NotificationUiState(
-                isLoading       = false,
-                attentionItems  = data.attentionItems,
-                goodNewsItems   = goodNews,
-                readItems       = readItemsSnapshot,
-                daughterNameMap = loadDaughterNameMap(data.attentionItems),
-            )
+            // P0修复：改用 update {} 避免与并发的 markItemRead() 互相覆盖。
+            // 原先直接 _uiState.value = NotificationUiState(...) 会整体替换状态，
+            // 若 markItemRead() 在 load() 读取已读表之后、赋值之前完成了写入，
+            // 那条已读标记会在内存态中被直接丢弃（DB 里有，UI 不显示）。
+            val daughterNames = loadDaughterNameMap(data.attentionItems)
+            _uiState.update {
+                NotificationUiState(
+                    isLoading       = false,
+                    attentionItems  = data.attentionItems,
+                    goodNewsItems   = goodNews,
+                    readItems       = readItemsSnapshot,
+                    daughterNameMap = daughterNames,
+                )
+            }
 
             // 孤儿已读数据清理：用本次"需要关注"区块产出的全部 itemKey 做基准。
             notificationRepo.pruneStaleReadState(
@@ -128,6 +135,21 @@ class NotificationViewModel(application: Application) : AndroidViewModel(applica
         viewModelScope.launch {
             notificationRepo.markRead(item)
             _uiState.update { it.copy(readItems = it.readItems + item) }
+        }
+    }
+
+    /**
+     * 一键标记全部"需要关注"条目为已读。
+     * 逐条调用 markRead 而非批量插入——NotificationReadStateDao 的 markRead
+     * 是 INSERT OR REPLACE，逐条调用保证每条都正确写入，且与 markItemRead
+     * 走同一代码路径，维护一致性。
+     */
+    fun markAllRead() {
+        viewModelScope.launch {
+            val unread = _uiState.value.attentionItems.filter { it !in _uiState.value.readItems }
+            if (unread.isEmpty()) return@launch
+            unread.forEach { notificationRepo.markRead(it) }
+            _uiState.update { it.copy(readItems = it.readItems + unread) }
         }
     }
 

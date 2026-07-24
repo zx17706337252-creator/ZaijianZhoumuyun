@@ -50,6 +50,7 @@ import com.zaijian.zhoumuyun.data.model.dotColor
 import com.zaijian.zhoumuyun.ui.theme.AppTheme
 import com.zaijian.zhoumuyun.ui.theme.Palette
 import com.zaijian.zhoumuyun.ui.theme.RingWidth
+import com.zaijian.zhoumuyun.ui.theme.Spacing
 import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
 import com.zaijian.zhoumuyun.ui.theme.appSpring
 import com.zaijian.zhoumuyun.ui.theme.presenceGlow
@@ -191,7 +192,7 @@ fun BookCard(
                     .align(Alignment.TopCenter)
                     .offset(y = ovalHeight + 4.dp)
                     .wrapContentWidth(unbounded = true)
-                    .padding(horizontal = 4.dp),
+                    .padding(horizontal = Spacing.xs),
             )
 
         } else {
@@ -263,7 +264,7 @@ fun BookCard(
                     statusType = presence.statusType,
                     modifier   = Modifier
                         .align(Alignment.TopEnd)
-                        .padding(top = 4.dp, end = 2.dp),
+                    .padding(top = Spacing.xs, end = 2.dp),
                 )
             }
 
@@ -278,7 +279,7 @@ fun BookCard(
                 Box(
                     modifier = Modifier
                         .align(Alignment.TopStart)
-                        .padding(top = 4.dp, start = 2.dp)
+                        .padding(top = Spacing.xs, start = 2.dp)
                         .size(8.dp)
                         .clip(CircleShape)
                         .background(cycleColor),

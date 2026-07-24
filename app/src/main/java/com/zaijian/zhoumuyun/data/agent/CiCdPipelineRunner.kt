@@ -22,6 +22,9 @@ sealed class CiCdResult {
     data class Failed(val reason: String) : CiCdResult()
 }
 
+/** P2-45：CI/CD 流水线步骤数超出 maxSteps 上限时抛出。 */
+class CiCdStepLimitExceededException(message: String) : RuntimeException(message)
+
 object CiCdPipelineRunner {
 
     private const val POLL_INTERVAL_MS = 15_000L
@@ -37,7 +40,13 @@ object CiCdPipelineRunner {
         workflowJobDao: WorkflowJobDao,
         workflowStepResultDao: WorkflowStepResultDao,
     ): CiCdResult {
-        val repo = WorkflowRepository(db, workflowJobDao, workflowStepResultDao)
+        val repo = WorkflowRepository(db, workflowJobDao, workflowStepResultDao, context)
+
+        // P2-45 修复：接入 WorkflowJobEntity 的 maxSteps/deadlineAt 限制，
+        // 不再仅依赖本地轮询上限。run() 开头读取 job 实体，后续每步检查。
+        val jobEntity = workflowJobDao.findById(jobId)
+        val maxSteps = jobEntity?.maxSteps ?: 8
+        val deadlineAt = jobEntity?.deadlineAt ?: (System.currentTimeMillis() + 30 * 60 * 1000L)
 
         // P1-5-3 修复：原来 currentStep 永远从 0 开始，进程被杀后 WorkManager
         // 重新拉起 Worker 会从头重跑所有步骤，导致重复提交代码 / 重复创建仓库 /
@@ -49,10 +58,22 @@ object CiCdPipelineRunner {
         val maxRecordedStep = history.maxOfOrNull { it.stepIndex } ?: -1
         var currentStep = maxRecordedStep + 1
 
-        fun stepIndex() = currentStep++
+        // P2-45：步骤计数器超出 maxSteps 时终止
+        fun stepIndex(): Int {
+            if (currentStep >= maxSteps) {
+                throw CiCdStepLimitExceededException("步骤数 ($currentStep) 已达上限 ($maxSteps)")
+            }
+            return currentStep++
+        }
         fun alreadyDone(toolName: String) = toolName in completedTools
 
         try {
+            // P2-45：检查 deadlineAt 是否已过期
+            if (System.currentTimeMillis() > deadlineAt) {
+                repo.markFailed(jobId, "任务已超过截止时间 (deadlineAt=$deadlineAt)")
+                return CiCdResult.Failed("任务已超过截止时间")
+            }
+
             // 步骤 0：创建仓库（可选）
             if (params.createRepo && params.repoName.isNotBlank() && !alreadyDone("create_github_repo")) {
                 val step = stepIndex()
@@ -77,8 +98,13 @@ object CiCdPipelineRunner {
                     "files_json" to params.filesJson,
                     "branch"     to params.branch,
                 ))
+                // P2-46 修复：原 files_count 用字面量 "..." 占位，
+                // 改为解析 filesJson 获取真实文件数量。
+                val filesCount = try {
+                    org.json.JSONArray(params.filesJson).length()
+                } catch (_: Exception) { 0 }
                 repo.recordStep(jobId, commitStep, "git_commit_push",
-                    """{"message":"${params.commitMessage}","branch":"${params.branch}","files_count":"..."}""",
+                    """{"message":"${params.commitMessage}","branch":"${params.branch}","files_count":$filesCount}""",
                     commitResult.success, commitResult.content, commitResult.error, null,
                     System.currentTimeMillis(), System.currentTimeMillis())
                 if (!commitResult.success) {
@@ -143,16 +169,25 @@ object CiCdPipelineRunner {
             val statusTool = BuildStatusCheckTool(githubConfigStore)
             var pollCount = 0
             var lastStatusResult: ToolResult? = null
-            var pollOutcome: String? = null  // "success" | "failed" | "timeout"
+            var pollOutcome: String? = null  // "success" | "failed" | "timeout" | "deadline_exceeded"
             while (pollCount < MAX_POLL_COUNT) {
                 delay(POLL_INTERVAL_MS)
                 pollCount++
+                // P2-45 修复（返工）：轮询循环最长可达 15 分钟（60×15s），期间必须
+                // 持续检查 deadlineAt。原实现只在 run() 开头检查了一次，若任务
+                // deadlineAt 被设得较紧、恰好在轮询阶段中途到期，旧代码会一直
+                // 轮询到自然结束才退出，无法提前中止。现在每轮都检查。
+                if (System.currentTimeMillis() > deadlineAt) {
+                    pollOutcome = "deadline_exceeded"
+                    break
+                }
                 val statusResult = statusTool.execute(mapOf("run_id" to runId))
                 lastStatusResult = statusResult
                 val status = statusResult.content ?: ""
 
                 if (status.contains("编译成功")) { pollOutcome = "success"; break }
                 if (status.contains("编译失败") || status.contains("已取消")) { pollOutcome = "failed"; break }
+                if (status.contains("已跳过") || status.contains("中性")) { pollOutcome = "failed"; break }
             }
             val pollStep = stepIndex()
             repo.recordStep(jobId, pollStep, "build_status_check",
@@ -163,6 +198,11 @@ object CiCdPipelineRunner {
             if (pollOutcome == "failed") {
                 repo.markFailed(jobId, "编译失败")
                 return CiCdResult.Failed("编译失败")
+            }
+            // P2-45：deadlineAt 在轮询期间到期，提前中止并标记失败
+            if (pollOutcome == "deadline_exceeded") {
+                repo.markFailed(jobId, "任务超过截止时间（编译轮询第 $pollCount 轮时到期）")
+                return CiCdResult.Failed("任务超过截止时间")
             }
             if (pollOutcome != "success") {
                 repo.markFailed(jobId, "编译超时（已等待 ${MAX_POLL_COUNT * POLL_INTERVAL_MS / 1000} 秒）")

@@ -7,15 +7,14 @@ package com.zaijian.zhoumuyun.data.model
  *
  * - [WORK]      工作模式：允许工具调用，结构化输出，回复长度不限
  * - [COMPANION] 陪伴模式：禁止工具注入，语气柔化，回复控制在 3-5 句
- * - [NARRATIVE] 旁白模式（Phase 5 zaijian）：COMPANION 的子模式，
- *               由用户发送「[旁白：…]」自动激活，角色以行为/内心独白回应场景描述；
- *               单轮结束后自动退回 COMPANION 模式。
  *
  * 在 ChatViewModel 中通过 [setChatMode] 切换，
  * 切换后 PromptOrchestrator 动态替换 Output Layer（层位 8）。
+ *
+ * P1-08/P1-09/P2-08 拍板：原 NARRATIVE 旁白模式枚举值及其"自动激活/自动退回"
+ * 核心逻辑从未实现（空壳功能），已彻底删除，不再保留枚举值。
  */
 enum class ChatMode {
     WORK,
     COMPANION,
-    NARRATIVE,  // Phase 5（zaijian）：旁白模式，单轮激活，回复后自动退回 COMPANION
 }

@@ -14,6 +14,11 @@ import com.zaijian.zhoumuyun.data.agent.TaskDelegateTool
 import com.zaijian.zhoumuyun.data.agent.VaultCallContextHolder
 import com.zaijian.zhoumuyun.data.agent.MemoryQueryTool
 import com.zaijian.zhoumuyun.data.agent.MemoryWriteTool
+import com.zaijian.zhoumuyun.data.agent.SkillCreateTool
+import com.zaijian.zhoumuyun.data.agent.SkillDeprecateTool
+import com.zaijian.zhoumuyun.data.agent.SkillEditTool
+import com.zaijian.zhoumuyun.data.agent.SkillExpandTool
+import com.zaijian.zhoumuyun.data.agent.SkillFeedbackTool
 import com.zaijian.zhoumuyun.data.agent.PlanSaveTool
 import com.zaijian.zhoumuyun.data.agent.ProjectDailyPlannerTool
 import com.zaijian.zhoumuyun.data.agent.RuleDistillTool
@@ -27,6 +32,9 @@ import com.zaijian.zhoumuyun.data.agent.WorkflowStartTool
 import com.zaijian.zhoumuyun.data.agent.TableExportTool
 import com.zaijian.zhoumuyun.data.agent.ScheduleCreateTool
 import com.zaijian.zhoumuyun.data.agent.ScheduleListTool
+import com.zaijian.zhoumuyun.data.agent.ScheduleDeleteTool
+import com.zaijian.zhoumuyun.data.agent.ScheduleUpdateTool
+import com.zaijian.zhoumuyun.data.agent.ScheduleGetTool
 import com.zaijian.zhoumuyun.data.agent.HeartbeatSetTool
 import com.zaijian.zhoumuyun.data.agent.HeartbeatUpdateTool
 import com.zaijian.zhoumuyun.data.agent.HeartbeatDeleteTool
@@ -47,9 +55,11 @@ import com.zaijian.zhoumuyun.data.repository.AgentPlanRepository
 import com.zaijian.zhoumuyun.data.repository.IdentityRepository
 import com.zaijian.zhoumuyun.data.repository.LearningGoalRepository
 import com.zaijian.zhoumuyun.data.repository.MemoryRepository
+import com.zaijian.zhoumuyun.data.repository.SkillRepository
 import com.zaijian.zhoumuyun.data.repository.MessageRepository
 import com.zaijian.zhoumuyun.data.repository.TaskRepository
 import com.zaijian.zhoumuyun.data.repository.WorkflowRepository
+import com.zaijian.zhoumuyun.data.repository.ProjectRepository
 
 /**
  * 封装 Agent 工具注册逻辑，从 ChatViewModel 中提取。
@@ -72,6 +82,10 @@ class ChatToolRegistrar(
     private val calendarSync: CalendarSyncHelper,
     private val identityRepo: IdentityRepository,
     private val githubConfigStore: GithubConfigDataStore,
+    private val skillRepo: SkillRepository,
+    // 同文件-01/02 修复：ScheduleCreateTool/ScheduleListTool 覆盖注册时需要
+    // 真实 ProjectRepository，否则回落 null 导致 project_id 参数/项目标题关联失效。
+    private val projectRepo: ProjectRepository,
 ) {
     private var toolsRegisteredForCharacterId: Int? = null
 
@@ -142,6 +156,13 @@ class ChatToolRegistrar(
             PlanSaveTool(agentPlanDao = agentPlanRepo, characterId = { currentCharacterId }),
             MemoryWriteTool(memoryRepository = memoryRepo, characterId = { currentCharacterId }),
             MemoryQueryTool(memoryRepo = memoryRepo, characterId = { currentCharacterId }),
+            // Window C 技能系统：5 个 AgentTool，characterId 范式对齐 MemoryWriteTool。
+            // 静态占位（{-1}）已在 ZaijianApp.registerAgentTools() 注册，此处用真实角色覆盖。
+            SkillCreateTool(repo = skillRepo, characterId = { currentCharacterId }),
+            SkillEditTool(repo = skillRepo, characterId = { currentCharacterId }),
+            SkillDeprecateTool(repo = skillRepo, characterId = { currentCharacterId }),
+            SkillExpandTool(repo = skillRepo, characterId = { currentCharacterId }),
+            SkillFeedbackTool(repo = skillRepo, characterId = { currentCharacterId }),
             GoalUpdateTool(goalRepo = learningGoalRepo, characterId = { currentCharacterId }),
             WorkflowStartTool(
                 context = getApplication(),
@@ -178,11 +199,37 @@ class ChatToolRegistrar(
             ScheduleCreateTool(
                 scheduleRepository  = scheduleRepo,
                 characterIdProvider = { currentCharacterId },
+                projectRepository = projectRepo,
                 calendarSync = calendarSync,
                 context = getApplication(),
             ),
             ScheduleListTool(
                 scheduleRepository  = scheduleRepo,
+                characterIdProvider = { currentCharacterId },
+                projectRepository = projectRepo,
+            ),
+            // 同文件-03/04/05 修复：schedule_delete/update/get 此前从未在此处覆盖
+            // 注册，一直停留在 ZaijianApp 的 characterIdProvider={-1} 静态占位上。
+            // 修复时顺带发现这三个工具原本压根没有 characterId 概念（只按任务 id
+            // 操作），已在各自文件内补上 characterIdProvider 构造参数 + 归属校验
+            // （existing.characterId != charId 时按"找不到"处理），此处与
+            // schedule_create/schedule_list 同款用 currentCharacterId 覆盖。
+            ScheduleDeleteTool(
+                scheduleRepository  = scheduleRepo,
+                calendarSync        = calendarSync,
+                context             = getApplication(),
+                characterIdProvider = { currentCharacterId },
+            ),
+            ScheduleUpdateTool(
+                scheduleRepository  = scheduleRepo,
+                projectRepository   = projectRepo,
+                calendarSync        = calendarSync,
+                context             = getApplication(),
+                characterIdProvider = { currentCharacterId },
+            ),
+            ScheduleGetTool(
+                scheduleRepository  = scheduleRepo,
+                projectRepository   = projectRepo,
                 characterIdProvider = { currentCharacterId },
             ),
             HeartbeatSetTool(

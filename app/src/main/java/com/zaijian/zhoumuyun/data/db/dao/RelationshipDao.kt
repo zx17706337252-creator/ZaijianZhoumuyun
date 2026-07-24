@@ -154,7 +154,7 @@ interface RelationshipDao {
      */
     @Query("""
         UPDATE relationship_states
-        SET suppression = MIN(:cap, suppression + :delta),
+        SET suppression = MAX(0, MIN(:cap, suppression + :delta)),
             updatedAt   = :now
         WHERE fromId = :fromId AND toId = :toId
     """)

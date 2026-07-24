@@ -94,6 +94,41 @@ private data class IdentityPromptFields(
 
 object PromptOrchestrator {
 
+    // ── A-4 isCore 预算上限 ──────────────────────────────────
+    //
+    // 原 take(5) 改为按字符预算累加。预算值依据：
+    //   - isCore 记忆产品设计为"稀疏、慎重"（MemoryDao.kt:94 注释），量级天然可控
+    //   - 单条核心记忆平均约 30-60 字符，5 条 ≈ 150-300 字符
+    //   - 预算设为 500 字符，可容纳 8-15 条短记忆或 3-5 条长记忆，
+    //     比固定 5 条更灵活：短记忆多塞几条，长记忆不会被截断
+    //   - 500 字符 ≈ 250-350 token（中文约 1.5 字符/token），占 prompt 比例 <1%
+    /** 核心记忆注入的字符预算上限（个人记忆 + 群体共识共用同一预算值） */
+    private const val CORE_MEMORY_CHAR_BUDGET = 500
+
+    /**
+     * 按字符预算累加核心记忆，替代原来的 take(N)。
+     *
+     * 逐条累加 content 长度，超出 [CORE_MEMORY_CHAR_BUDGET] 时停止。
+     * 保证至少注入第 1 条（即使单条就超预算），避免核心记忆完全丢失。
+     *
+     * @return 筛选后的记忆列表 + 实际使用的字符数
+     */
+    private fun selectByCharBudget(
+        memories: List<MemoryEntity>,
+        budget: Int = CORE_MEMORY_CHAR_BUDGET,
+    ): List<MemoryEntity> {
+        if (memories.isEmpty()) return emptyList()
+        val result = mutableListOf<MemoryEntity>()
+        var used = 0
+        for (m in memories) {
+            val len = m.content.length
+            if (result.isNotEmpty() && used + len > budget) break
+            result.add(m)
+            used += len
+        }
+        return result
+    }
+
     /**
      * 组装 System Prompt。
      *
@@ -216,6 +251,13 @@ object PromptOrchestrator {
         // 注入位置：Memory Layer（层位 4）末尾，Narrative Memory（4.5）之前。
         groupCoreMemories: List<MemoryEntity> = emptyList(),
         groupRelevantMemories: List<MemoryEntity> = emptyList(),
+        // ── Skill Layer（Window C 技能系统）──
+        // 第一级"目录注入"（§3）：当前角色 ACTIVE 技能的 shortDescriptor 列表 + 触发提示。
+        // 由调用点（ChatMessageOrchestrator 等）用 SkillRegistry.buildSkillCatalogBlock()
+        // 生成后传入；无技能或非主对话路径传空串（默认值），此层自动跳过，零开销。
+        // 注入位置：层位 8.7，紧接 Tool Layer（taskBlock 内含工具描述块）之后——
+        // 技能本质是"工具使用模式的组合"，逻辑上离工具最近（§3）。
+        skillCatalogBlock: String = "",
     ): String {
         // ── Identity 字符串字段：一次性构建 IdentityPromptFields（W2 问题3 重构）──
         // 每个字段沿用原有 DB-prioritized 模式：identityEntity 非空优先，否则 fallback
@@ -334,7 +376,12 @@ object PromptOrchestrator {
 
         val stateBlock  = buildStateBlock(presenceActivity, presenceFocus, presenceMood, presenceEnergy, relationshipSnapshot, interCharRelBlock, characterState, character.id, daughterStateLayer, daughterCustomEnums)
         val memoryBlock = buildMemoryBlock(coreMemories, relevantMemories)
-        val groupMemoryBlock = buildGroupMemoryBlock(groupCoreMemories, groupRelevantMemories)
+        // E1 审计报告 §2.5 修复：跨块去重。个人记忆块和群体记忆块各自内部已去重，
+        // 但两块之间没有交叉去重——如果同一条记忆（同一 memory id）因 scope 串场
+        // 或数据异常同时出现在个人检索和群体检索结果中，会在最终 Prompt 里以完全
+        // 相同的文字出现两次。此处收集个人块已用 id 集合，传入群体块做防御性过滤。
+        val personalMemoryIds = (coreMemories + relevantMemories).map { it.id }.toSet()
+        val groupMemoryBlock = buildGroupMemoryBlock(groupCoreMemories, groupRelevantMemories, personalMemoryIds)
         val narrativeBlock = buildNarrativeMemoryBlock(narrativeMemory)
         val memoryGuidelineBlock = buildMemoryGuidelineBlock()
         val worldBlock  = buildCombinedWorldBlock(worldLayerBlock.trim(), groupContextBlock.trim())
@@ -426,6 +473,7 @@ object PromptOrchestrator {
             if (planBlock.isNotEmpty())            { appendLine(); appendLine(); append(planBlock)            } // 6. AgentPlan（不裁）
             if (worldBlock.isNotEmpty())           { appendLine(); appendLine(); append(worldBlock)           } // 7. World（不裁）
             if (taskBlock.isNotEmpty())            { appendLine(); appendLine(); append(taskBlock)            } // 8. Task（不裁）
+            if (skillCatalogBlock.isNotEmpty())    { appendLine(); appendLine(); append(skillCatalogBlock)    } // 8.7 Skill（Window C，紧接 Tool Layer）
             if (d3QuestionPatch.isNotEmpty())      { appendLine(); appendLine(); append(d3QuestionPatch)      } // 8.5
             if (workflowRecapPatch.isNotEmpty())   { appendLine(); appendLine(); append(workflowRecapPatch)   } // 8.6
         }
@@ -991,7 +1039,8 @@ ${nameStr}最近状态有些不同，你注意到了，
         return buildString {
             if (coreMemories.isNotEmpty()) {
                 appendLine("核心记忆（必须记住）：")
-                coreMemories.take(5).forEachIndexed { i, m -> appendLine("${i + 1}. ${m.content}") }
+                // A-4：按字符预算累加，替代原 take(5)
+                selectByCharBudget(coreMemories).forEachIndexed { i, m -> appendLine("${i + 1}. ${m.content}") }
             }
             if (relevantMemories.isNotEmpty()) {
                 if (coreMemories.isNotEmpty()) appendLine()
@@ -1026,24 +1075,35 @@ ${nameStr}最近状态有些不同，你注意到了，
      * 与个人 buildMemoryBlock 平行，但标题不同，语义身份独立：
      * 个人记忆 = 当前角色视角的私人历史；
      * 群体记忆 = 这个圆桌组合共同形成的事实/共识。
+     *
+     * E1 审计报告 §2.5 修复：新增 [excludeIds] 参数做跨块去重。
+     * 个人记忆块已渲染的记忆 id 集合传入此处，群体块在渲染前过滤掉
+     * 已在个人块中出现的记忆，防止同一条记忆在最终 Prompt 中重复两次。
+     * 正常情况下个人检索只返回 PERSONAL scope、群体检索只返回 GROUP scope，
+     * 不会重叠；此参数是防御性兜底，防止 scope 串场或数据异常导致重复。
      */
     private fun buildGroupMemoryBlock(
         groupCoreMemories: List<MemoryEntity>,
         groupRelevantMemories: List<MemoryEntity>,
+        excludeIds: Set<String> = emptySet(),
     ): String {
-        if (groupCoreMemories.isEmpty() && groupRelevantMemories.isEmpty()) return ""
+        // 跨块去重：过滤掉已在个人记忆块中渲染的记忆
+        val filteredCore = groupCoreMemories.filter { it.id !in excludeIds }
+        val filteredRelevant = groupRelevantMemories.filter { it.id !in excludeIds }
+        if (filteredCore.isEmpty() && filteredRelevant.isEmpty()) return ""
 
         return buildString {
             appendLine("[群体记忆（这个圆桌共同经历过的）]")
-            if (groupCoreMemories.isNotEmpty()) {
+            if (filteredCore.isNotEmpty()) {
                 appendLine("核心共识（必须记住）：")
-                groupCoreMemories.take(5).forEachIndexed { i, m -> appendLine("${i + 1}. ${m.content}") }
+                // A-4：按字符预算累加，替代原 take(5)
+                selectByCharBudget(filteredCore).forEachIndexed { i, m -> appendLine("${i + 1}. ${m.content}") }
             }
-            if (groupRelevantMemories.isNotEmpty()) {
-                if (groupCoreMemories.isNotEmpty()) appendLine()
+            if (filteredRelevant.isNotEmpty()) {
+                if (filteredCore.isNotEmpty()) appendLine()
                 appendLine("相关群体记忆：")
-                val coreIds = groupCoreMemories.map { it.id }.toSet()
-                groupRelevantMemories
+                val coreIds = filteredCore.map { it.id }.toSet()
+                filteredRelevant
                     .filter { it.id !in coreIds }
                     .take(8)
                     .forEachIndexed { i, m -> appendLine("${i + 1}. ${m.content}") }
@@ -1060,15 +1120,21 @@ ${nameStr}最近状态有些不同，你注意到了，
      * 记忆使用准则（常驻注入，不依赖是否有记忆数据）。
      *
      * 给 Agent 的"四个记忆工具怎么分工"指引，对应 redesign v1.0 §2.1/2.2
-     * + 补充文档 §6.3。工具 description 讲"单个工具怎么用"，这里讲"整体分工"。
-     * 控制在 150 字以内，避免占用过多 token 预算。
+     * + 补充文档 §6.1/§6.3。工具 description 讲"单个工具怎么用"，这里讲"整体分工"。
+     *
+     * P1-1 修复（Window A 验收待办）：补充文档 §6.1 要求写进 narrative_memory_update
+     * description 的完整阶段日志写法说明，实际被放进了 usageNotes 字段（不注入 prompt）。
+     * 本常驻块此前只有浓缩版，遗漏了三条关键细节：①与 memory_write 的分工边界
+     * （大多数值得记住的内容改写进这里，不单独建条）；②旧阶段压缩策略；③字数上限。
+     * 现将这三条补入，使 LLM 无需依赖 usageNotes 即可获得完整写法指引。控制在
+     * 200 字以内（原 150 字基础上 +50 字用于补全遗漏细节）。
      */
     private fun buildMemoryGuidelineBlock(): String =
         "【记忆使用准则】memory_write 仅写锚点：身份硬事实、有明确时间/行为的承诺、" +
         "关系重大转折、用户要求记住的事；日常情绪/偏好/寒暄改写进 narrative_memory_update " +
         "或 user_impression_update，不单独建条。多数轮次什么都不用记是默认状态。" +
-        "narrative_memory_update 是阶段日志：延续话题扩写最新一条，换话题追加新条目并标时间段，" +
-        "不每轮整段重写。"
+        "narrative_memory_update 是阶段日志（≤1500字）：延续话题扩写最新一条，换话题追加" +
+        "新条目并标时间段，不每轮整段重写；旧阶段随篇幅需要自行压缩成一两句话。"
 
     // ── Identity Layer ───────────────────────────────────────
 
@@ -1293,12 +1359,12 @@ ${nameStr}最近状态有些不同，你注意到了，
      *
      * Phase 30 前为硬编码常量 [OUTPUT_CONSTRAINTS]；
      * Phase 30 起拆为两套约束，由 [ChatMode] 决定使用哪套。
-     * Phase 5（zaijian）新增 NARRATIVE 旁白模式。
+     *
+     * P1-08/P1-09/P2-08：原 NARRATIVE 旁白模式已删除（核心逻辑从未实现）。
      */
     private fun buildOutputBlock(chatMode: ChatMode): String = when (chatMode) {
         ChatMode.WORK      -> WORK_OUTPUT_CONSTRAINTS
         ChatMode.COMPANION -> COMPANION_OUTPUT_CONSTRAINTS
-        ChatMode.NARRATIVE -> NARRATIVE_OUTPUT_CONSTRAINTS
     }
 
     /** 工作模式输出约束：允许工具调用，结构化输出，长度不限。 */
@@ -1324,23 +1390,6 @@ ${nameStr}最近状态有些不同，你注意到了，
 - 角色此刻的心理感受/神态（不通过语言说出口的情绪状态、内心活动，如"心里一动""有些局促""在想对方是不是遇到了什么事"）本身就必须用中文圆括号（　）包裹，独立成句或独立一行，不要和台词混在同一句里，也不要把心理活动直接写成大段自然口吻的正文——这是硬性格式要求，不是可选项。这与上面的 [thinking: ...] 标签是两回事——[thinking: ...] 是不给用户看的内部思考，圆括号内容是要给用户看的戏内心理描写。例如：
 （听到这声呼唤，手上的动作顿了顿，心里泛起一丝疑惑——对方很少无缘无故跑来找我，是不是遇到什么事了）
 在呢，怎么突然想起来找我啦？
-
-回复正文结束后，另起一行输出情绪标记（系统使用，不展示给用户）：[mood:情绪词]
-情绪词取值：平静 / 专注 / 好奇 / 满足 / 担忧 / 兴奋 / 疲惫 / 沉思"""
-
-    /**
-     * 旁白模式输出约束（Phase 5 zaijian）：
-     * 用户发送 [旁白：…] 触发，角色以行为、感受、内心独白回应场景描述，而非纯对话。
-     */
-    private const val NARRATIVE_OUTPUT_CONSTRAINTS = """不要提及你是 AI，不要提及模型名称，不要破坏第四堵墙。
-【旁白模式已激活】
-用户发送的「[旁白：…]」是场景描述，不是对话。
-你应以行为、感受、内心独白回应，而非纯对话。
-角色的动作、神情、心理感受等戏内描写用中文圆括号（　）标注，独立成句或独立一行，不要和台词写在同一句里，例如：
-（心里被这声呼唤轻轻撞了一下）
-妈妈在这儿，这么晚了还不睡，是有什么心事想跟我说吗？
-不强求对话，沉默也是回应。篇幅自由，跟随情境呼吸。
-注意区分两种"内心"：角色的文学性内心独白/心理感受（呈现给用户看的场景描写，正是旁白模式的核心特色，用上面的圆括号格式独立成行呈现）仍然留在正文里；但如果是你在决定"接下来要不要用工具""这句话该怎么回"这类执行层面的思考、或收到的指令原文，必须包在 [thinking: ...] 标签内，不能混进正文。
 
 回复正文结束后，另起一行输出情绪标记（系统使用，不展示给用户）：[mood:情绪词]
 情绪词取值：平静 / 专注 / 好奇 / 满足 / 担忧 / 兴奋 / 疲惫 / 沉思"""

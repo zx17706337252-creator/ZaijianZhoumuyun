@@ -82,6 +82,10 @@ abstract class MemoryDao {
     @Query("SELECT EXISTS(SELECT 1 FROM memories WHERE ftsRowId = :rowId AND id != :excludeId)")
     abstract suspend fun existsByFtsRowId(rowId: Int, excludeId: String): Boolean
 
+    /** Window A-1：按主键查单条记忆（L2 检索路由用）。 */
+    @Query("SELECT * FROM memories WHERE id = :id")
+    abstract suspend fun getById(id: String): MemoryEntity?
+
     // ── 读取：Core Memory（永远注入 Prompt）────────────────────
 
     /**
@@ -103,23 +107,6 @@ abstract class MemoryDao {
         ORDER BY importance DESC, updatedAt DESC
     """)
     abstract fun observeCoreMemories(characterId: Int): Flow<List<MemoryEntity>>
-
-    /**
-     * 获取永恒状态记忆（isEternal = true）。
-     * 用于 Prompt 注入：优先级最高，每次对话必然注入，不受蒸馏窗口限制。
-     *
-     * W3-5/W3-7 修复：加 scope = 'PERSONAL' 过滤。永恒记忆在 Prompt 注入中
-     * 优先级最高、每次对话必然注入，一旦混入 GROUP scope 记忆，角色会在
-     * 私聊里"知道"圆桌讨论的内容，影响面比其他查询更严重。当前
-     * writeEternalMemory() 写入时 scope 默认就是 PERSONAL，这里是防御性
-     * 过滤，为未来可能出现的 GROUP scope 永恒记忆兜底。
-     */
-    @Query("""
-        SELECT * FROM memories
-        WHERE characterId = :characterId AND isEternal = 1 AND scope = 'PERSONAL'
-        ORDER BY createdAt ASC
-    """)
-    abstract suspend fun getEternalMemories(characterId: Int): List<MemoryEntity>
 
     // ── 读取：按 domain 获取（Prompt 分域注入）────────────────
 
@@ -159,26 +146,6 @@ abstract class MemoryDao {
     """)
     abstract fun observeImportant(characterId: Int): Flow<List<MemoryEntity>>
 
-    // 窗口04 新发现2 修复：这两个方法目前全项目零调用点（死代码），但保留
-    // 而非删除——按报告建议，若未来被启用，缺少 scope 过滤会让 GROUP（群
-    // 记忆）也混入"关于用户/关于世界"的查询结果，与本文件其余同类查询
-    // （observeAll/observeImportant等）的 PERSONAL 过滤口径不一致。
-    // 现补齐 scope = 'PERSONAL'，防止未来误用；不改变当前"零调用"的事实，
-    // 也不是本次结构性调整范围（是否删除死代码留给专门的代码清理批次）。
-    @Query("""
-        SELECT * FROM memories
-        WHERE characterId = :characterId AND domain = 'PERSONAL' AND scope = 'PERSONAL'
-        ORDER BY updatedAt DESC
-    """)
-    abstract fun observeAboutUser(characterId: Int): Flow<List<MemoryEntity>>
-
-    @Query("""
-        SELECT * FROM memories
-        WHERE characterId = :characterId AND domain = 'WORLD' AND scope = 'PERSONAL'
-        ORDER BY updatedAt DESC
-    """)
-    abstract fun observeAboutWorld(characterId: Int): Flow<List<MemoryEntity>>
-
     // ── FTS4 全文检索 ─────────────────────────────────────────
 
     /**
@@ -188,7 +155,15 @@ abstract class MemoryDao {
      * 此 rowId 对应 memories 表的 rowid（SQLite 内置行号）。
      * 通过子查询关联两张表。
      *
-     * 注意：FTS4 MATCH 使用简单查询，中文用 TOKENIZER_UNICODE61 分词。
+     * 注意：FTS4 MATCH 使用简单查询，tokenizer 为 TOKENIZER_UNICODE61。
+     *
+     * E1 审计报告任务1 修正：原注释写"中文用 TOKENIZER_UNICODE61 分词"，暗示
+     * 该 tokenizer 会做中文分词。实测（用 fts4aux 虚表直接查看索引出的 token，
+     * 见 E1 kotlin_port.py）证明：unicode61 不对连续中文字符做任何切分，一段
+     * 没有标点/空格的中文会被整体索引成一个 token。中文分词的实际工作由
+     * ChineseTokenizer 在写入侧（keywords 字段空格分隔的真实词）和查询侧
+     *（buildFtsQuery 分词后加 *）完成——空格分隔后 unicode61 才会把每个词
+     * 当作独立 token 索引，前缀匹配（word*）才能命中。
      * 调用方需将查询词用 "*" 包裹以支持前缀匹配（如 "永恒*"）。
      *
      * 待办3：个人全文检索限定 scope=PERSONAL，避免群记忆被单人对话搜出。
@@ -208,11 +183,14 @@ abstract class MemoryDao {
 
     /**
      * 获取圆桌群 Core Memory（scope=GROUP），按 roundtableId 限定范围。
+     *
+     * P2-3 修复（Window A 验收待办）：排序与个人侧 [getCoreMemories] 保持一致，
+     * 改为 importance DESC 优先、updatedAt DESC 次之，确保高重要度群记忆排在前面。
      */
     @Query("""
         SELECT * FROM memories
         WHERE scope = 'GROUP' AND roundtableId = :roundtableId AND isCore = 1
-        ORDER BY updatedAt DESC
+        ORDER BY importance DESC, updatedAt DESC
     """)
     abstract suspend fun getGroupCoreMemories(roundtableId: String): List<MemoryEntity>
 
@@ -255,22 +233,6 @@ abstract class MemoryDao {
     open suspend fun deleteWithFts(memoryId: String, ftsRowId: Int) {
         deleteById(memoryId)
         deleteFtsById(ftsRowId)
-    }
-
-    /**
-     * 过期清理，同时在同一事务内批量清理 FTS 虚拟表中的对应行。
-     * 先收集被删行的 ftsRowId，再批量删除 FTS 行和主表行。
-     */
-    @Transaction
-    open suspend fun deleteExpiredWithFts(characterId: Int, expiryTimestamp: Long) {
-        // 先收集所有将被删除的 ftsRowId
-        val ftsRowIds = getFtsRowIdsForExpired(characterId, expiryTimestamp)
-        // 批量删除 FTS 行
-        if (ftsRowIds.isNotEmpty()) {
-            deleteFtsByIds(ftsRowIds)
-        }
-        // 删除主表行
-        deleteExpired(characterId, expiryTimestamp)
     }
 
     @Query("""
@@ -317,18 +279,31 @@ abstract class MemoryDao {
      * 如果传入 GROUP scope 的记忆做相似度查找，可能匹配到 PERSONAL scope 的
      * 记忆并触发跨 scope 合并（合并后 mergeContent 会用新内容覆盖旧内容，
      * 导致原 scope 的记忆内容被替换）。当前所有走 saveOrMerge 的候选都是
-     * PERSONAL scope（GROUP 记忆走 writeGroupMemory 直接写入不经过此路径），
+     * PERSONAL scope（GROUP 记忆走 MemoryWriteTool → saveOrMerge 写入，
+     * 但 saveOrMerge 内部按 scope 分组查找候选，不会跨 scope 合并），
      * 这里补上过滤条件是为未来"GROUP scope 候选也走 saveOrMerge"的场景兜底。
+     *
+     * P1-2 修复（Window A 验收待办）：新增 [roundtableId] 参数。scope=GROUP 时
+     * 同一角色在不同圆桌写入的群记忆如果关键词相近，findSimilar 可能跨圆桌匹配
+     * 并触发 saveOrMerge 错误合并。传入 roundtableId 后，GROUP 查询额外按
+     * roundtableId 过滤；PERSONAL 查询传 null（SQL 中 `:roundtableId IS NULL`
+     * 短路通过，不影响 PERSONAL 行为）。
      */
     @Query("""
         SELECT * FROM memories
         WHERE characterId = :characterId
           AND scope = :scope
+          AND (:roundtableId IS NULL OR roundtableId = :roundtableId)
           AND (content LIKE '%' || :keyword || '%')
         ORDER BY updatedAt DESC
         LIMIT 5
     """)
-    abstract suspend fun findSimilar(characterId: Int, keyword: String, scope: String): List<MemoryEntity>
+    abstract suspend fun findSimilar(
+        characterId: Int,
+        keyword: String,
+        scope: String,
+        roundtableId: String? = null,
+    ): List<MemoryEntity>
 
     // 窗口04 新发现1 修复：原 SQL 无 scope 过滤，会把该角色作为发言人写入的
     // GROUP（群记忆）也计入"个人记忆数"统计——ProfileViewModel.loadStats()
@@ -468,7 +443,7 @@ abstract class MemoryDao {
      * isCore = 1 或 isEternal = 1 的记忆永不衰减，跳过。
      *
      * W3-5 修复：加 scope = 'PERSONAL' 过滤。GROUP scope 的圆桌群记忆走的是
-     * writeGroupMemory 直接写入（不经过候选评分），衰减策略应该独立于个人
+     * MemoryWriteTool → saveOrMerge 写入（不经过候选评分），衰减策略应该独立于个人
      * 记忆，不应被这个全表扫描一并纳入处理。
      */
     @Query("""

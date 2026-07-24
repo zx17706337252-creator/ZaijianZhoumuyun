@@ -9,6 +9,7 @@ import com.zaijian.zhoumuyun.data.db.entity.TaskEntity
 import com.zaijian.zhoumuyun.data.db.entity.TaskStatus
 import com.zaijian.zhoumuyun.data.db.entity.WorldEventEntity
 import androidx.room.withTransaction
+import com.zaijian.zhoumuyun.util.TimeFormatUtils
 import kotlinx.coroutines.flow.Flow
 import org.json.JSONObject
 import java.util.UUID
@@ -41,7 +42,7 @@ class TaskRepository(
      * P1-A TaskCenterScreen 今日Tab成长任务分组使用。
      */
     fun observeGrowthTasksToday(): Flow<List<TaskEntity>> {
-        val todayStart = startOfToday()
+        val todayStart = TimeFormatUtils.startOfDay()
         return taskDao.observeBySourceAfter(source = "project_growth", after = todayStart)
     }
 
@@ -57,18 +58,6 @@ class TaskRepository(
         after: Long,
     ): Flow<List<TaskEntity>> =
         taskDao.observeByProjectAndSourceAfter(projectId = projectId, source = source, after = after)
-
-    // ── 内部工具 ─────────────────────────────────────────────
-
-    private fun startOfToday(): Long {
-        val cal = java.util.Calendar.getInstance().apply {
-            set(java.util.Calendar.HOUR_OF_DAY, 0)
-            set(java.util.Calendar.MINUTE, 0)
-            set(java.util.Calendar.SECOND, 0)
-            set(java.util.Calendar.MILLISECOND, 0)
-        }
-        return cal.timeInMillis
-    }
 
     // ── 查询 ────────────────────────────────────────────────
 

@@ -47,17 +47,6 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material.icons.outlined.Add
-import androidx.compose.material.icons.outlined.AutoMode
-import androidx.compose.material.icons.outlined.Check
-import androidx.compose.material.icons.outlined.Close
-import androidx.compose.material.icons.outlined.Send
-import androidx.compose.material.icons.outlined.Settings
-import androidx.compose.material.icons.outlined.SmartToy
-import androidx.compose.material.icons.outlined.Speed
-import androidx.compose.material.icons.outlined.Person
 import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -123,6 +112,7 @@ import com.zaijian.zhoumuyun.ui.viewmodel.ScheduleMode
 import com.zaijian.zhoumuyun.util.TimeFormatUtils
 import kotlinx.coroutines.launch
 import androidx.compose.runtime.snapshotFlow
+import com.zaijian.zhoumuyun.ui.design.AppIcons
 
 
 // ─────────────────────────────────────────────────────────────
@@ -218,7 +208,7 @@ internal fun AtMentionPopup(
                         .size(28.dp)
                         .clip(CircleShape)
                         .background(bot.accentColor.copy(alpha = 0.3f)),
-                    error              = rememberVectorPainter(Icons.Outlined.Person),
+                    error              = rememberVectorPainter(AppIcons.Person),
                 )
                 Text(
                     text  = bot.name,

@@ -409,8 +409,8 @@ internal val MIGRATION_39_40 = object : Migration(39, 40) {
 // 错配成了 0 还是某个错误的 rowid，MIGRATION_44_45 都会一律重新赋值为
 // 该行自身真实的 memories.rowid（与同一迁移中按相同顺序回填的 FTS 表
 // rowid 严格对应，见 MIGRATION_44_45 第 179-184 行的 INSERT ... ORDER BY
-// rowid）。MIGRATIONS_41_48 数组（Migrations41to52.kt 末尾）保证了从
-// v41 升级到 v48 的路径必然依次经过 42→43→44→45，不存在跳过
+// rowid）。MIGRATIONS_41_52 数组（Migrations41to52.kt 末尾）保证了从
+// v41 升级到 v52 的路径必然依次经过 42→43→44→45，不存在跳过
 // MIGRATION_44_45 直达更高版本的路径，因此所有历史数据在升级完成后
 // ftsRowId 均已修正。故本 Migration 本身不需要再改动。
 internal val MIGRATION_40_41 = object : Migration(40, 41) {

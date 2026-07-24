@@ -2,6 +2,7 @@ package com.zaijian.zhoumuyun.ui.viewmodel
 
 import android.content.SharedPreferences
 import com.zaijian.zhoumuyun.data.agent.AgentToolRegistry
+import com.zaijian.zhoumuyun.data.agent.SkillRegistry
 import com.zaijian.zhoumuyun.data.agent.StreamEvent
 import com.zaijian.zhoumuyun.data.agent.ToolCallInterceptor
 import com.zaijian.zhoumuyun.data.agent.VaultCallContext
@@ -9,7 +10,6 @@ import com.zaijian.zhoumuyun.data.agent.VaultScope
 import com.zaijian.zhoumuyun.data.agent.withVaultContext
 import com.zaijian.zhoumuyun.data.AppContainer
 import com.zaijian.zhoumuyun.data.db.entity.RoundtableMessageEntity
-import com.zaijian.zhoumuyun.data.memory.MemoryEngine
 import com.zaijian.zhoumuyun.data.model.CharacterConfig
 import com.zaijian.zhoumuyun.data.model.CharacterStateLayer
 import com.zaijian.zhoumuyun.data.model.DaughterCustomEnums
@@ -27,6 +27,7 @@ import com.zaijian.zhoumuyun.data.repository.IdentityRepository
 import com.zaijian.zhoumuyun.data.repository.MemoryRepository
 import com.zaijian.zhoumuyun.data.repository.PregnancyRepository
 import com.zaijian.zhoumuyun.data.repository.RoundtableMessageRepository
+import com.zaijian.zhoumuyun.data.repository.SkillRepository
 import com.zaijian.zhoumuyun.domain.ChatTagParser
 import com.zaijian.zhoumuyun.domain.MoodType
 import com.zaijian.zhoumuyun.domain.PresenceEngine
@@ -54,7 +55,6 @@ import java.util.UUID
 class RoundtableIdleManager(
     private val _uiState: MutableStateFlow<RoundtableUiState>,
     private val memoryRepo: MemoryRepository,
-    private val memoryEngine: MemoryEngine,
     private val relationshipEngine: RelationshipEngine,
     private val pregnancyRepo: PregnancyRepository,
     private val characterStateRepo: CharacterStateRepository,
@@ -62,6 +62,9 @@ class RoundtableIdleManager(
     private val presenceEngine: PresenceEngine,
     private val identityDao: IdentityRepository,
     private val roundtableMessageDao: RoundtableMessageRepository,
+    // Window C 技能系统补做：自发发言路径与常规圆桌回复（RoundtableBotReplyGenerator）
+    // 同等对待，同一个角色不该因为"是自己主动搭话还是被叫到发言"就有不同的技能可见性。
+    private val skillRepo: SkillRepository,
     private val prefs: SharedPreferences,
     private val viewModelScope: CoroutineScope,
     private val getCurrentRoundtableId: () -> String?,
@@ -232,12 +235,23 @@ class RoundtableIdleManager(
         // 共用同一份 ROUNDTABLE_DISABLED_TOOL_NAMES 排除名单，保持行为一致。
         val toolDesc = AgentToolRegistry.buildToolDescriptionBlock(excludeNames = ROUNDTABLE_DISABLED_TOOL_NAMES)
 
+        // Window C 技能系统补做：自发发言同样按 initiator.id 取该角色自己的技能目录，
+        // 和 RoundtableBotReplyGenerator 同一份 SkillRegistry.buildSkillCatalogBlock()。
+        val skillCatalogBlock = SkillRegistry.buildSkillCatalogBlock(
+            characterId = initiator.id,
+            repo = skillRepo,
+        )
+
         val spontaneousSystemPrompt = buildString {
             append(PromptOrchestrator.buildSystemPrompt(
                 character               = initiator,
                 identityEntity          = identityDao.getById(initiator.id),
                 coreMemories            = coreMemories,
                 relevantMemories        = emptyList(),
+                // 「称呼」功能性缺陷修复：此前自发发言路径未传 userName，恒为默认值
+                // "你"。与 AppContainer.instance.agentActivityRepo（本文件 362/382 行）
+                // 同一模式：直接引用容器单例，不新增构造参数。
+                userName                = AppContainer.instance.userProfileRepo.getUserName(),
                 presenceActivity        = presenceSnap?.activity ?: "",
                 presenceFocus           = presenceSnap?.goalTitle ?: "",
                 presenceMood            = presenceSnap?.mood?.name ?: "",
@@ -259,6 +273,7 @@ class RoundtableIdleManager(
                 isRoundtableContext     = true,
                 daughterPresentInScene  = daughterPresentInScene,
                 toolDescriptionBlock    = toolDesc,
+                skillCatalogBlock       = skillCatalogBlock,
             ))
             appendLine()
             appendLine("【自发发言模式】")
@@ -402,68 +417,75 @@ class RoundtableIdleManager(
             throw e  // P1-11-4 修复：CancellationException 必须 rethrow
         } catch (e: Exception) {
             ZLog.w("RoundtableViewModel", "自发发言流式生成中断（msgId=$msgId），已生成长度=${fullReply.length}", e)
-        }
+        } finally {
+            // P0-02 修复：与 RoundtableBotReplyGenerator.generateBotReply 同一根因——
+            // catch(CancellationException) 里的 throw e 会让原本写在 try-catch 之外的
+            // 收尾代码（isStreaming=false、generationStatus=DONE、落库）被整体跳过。
+            // 用户新发消息或点击 interrupt 打断自发发言时，消息会永远卡在
+            // isStreaming=true/GENERATING，UI 残留永久加载指示器的"幽灵消息"。
+            // 挪进 finally 确保无论正常结束、异常、还是被取消，都会执行收尾。
+            //
+            // v1.38 圆桌场景补齐：与 generateBotReply 同一套三层解析（详见该函数内注释），
+            // 自发发言路径此前同样从未接入，同批次一并补齐，避免两条圆桌生成路径
+            // 出现"一条修了一条没修"的行为不一致。
+            val (afterThinking, parsedThinking) = ChatTagParser.stripThinkingTag(fullReply.trimEnd())
+            val (afterPsych, parsedPsych) = ChatTagParser.stripPsychText(afterThinking)
+            val (cleanReply, parsedMood) = ChatTagParser.stripMoodTag(afterPsych)
+            if (parsedMood != null) {
+                presenceEngine.updateMoodFromReply(initiator.id, parsedMood)
+            }
 
-        // v1.38 圆桌场景补齐：与 generateBotReply 同一套三层解析（详见该函数内注释），
-        // 自发发言路径此前同样从未接入，同批次一并补齐，避免两条圆桌生成路径
-        // 出现"一条修了一条没修"的行为不一致。
-        val (afterThinking, parsedThinking) = ChatTagParser.stripThinkingTag(fullReply.trimEnd())
-        val (afterPsych, parsedPsych) = ChatTagParser.stripPsychText(afterThinking)
-        val (cleanReply, parsedMood) = ChatTagParser.stripMoodTag(afterPsych)
-        if (parsedMood != null) {
-            presenceEngine.updateMoodFromReply(initiator.id, parsedMood)
-        }
+            _uiState.update { s ->
+                s.copy(
+                    messages = s.messages.map { msg ->
+                        if (msg.id == msgId) msg.copy(
+                            content      = cleanReply,
+                            thinkingText = parsedThinking,
+                            psychText    = parsedPsych,
+                            isStreaming  = false,
+                            // v66（1.7 P3）：两个字段都写，exportedFileJson 保留兼容旧路径。
+                            exportedFileJson = pendingExportedFiles.lastOrNull(),
+                            exportedFilesJson = packExportedFilesJson(pendingExportedFiles),
+                            // v67（表格直传 W4）：table_export 产出接回 UI 消息（与常规回复路径同款）。
+                            tableDataJson = pendingTablePayloadJson,
+                        ) else msg
+                    }.toImmutableList(),
+                    generationStatus = (s.generationStatus + (initiator.id to BotGenerationStatus.DONE)).toImmutableMap(),
+                )
+            }
 
-        _uiState.update { s ->
-            s.copy(
-                messages = s.messages.map { msg ->
-                    if (msg.id == msgId) msg.copy(
-                        content      = cleanReply,
-                        thinkingText = parsedThinking,
-                        psychText    = parsedPsych,
-                        isStreaming  = false,
-                        // v66（1.7 P3）：两个字段都写，exportedFileJson 保留兼容旧路径。
-                        exportedFileJson = pendingExportedFiles.lastOrNull(),
-                        exportedFilesJson = packExportedFilesJson(pendingExportedFiles),
-                        // v67（表格直传 W4）：table_export 产出接回 UI 消息（与常规回复路径同款）。
-                        tableDataJson = pendingTablePayloadJson,
-                    ) else msg
-                }.toImmutableList(),
-                generationStatus = (s.generationStatus + (initiator.id to BotGenerationStatus.DONE)).toImmutableMap(),
-            )
-        }
-
-        // 落库
-        // W2-4 修复：自发发言落库之前无 try-catch，失败时自发发言内容静默丢失。
-        getCurrentRoundtableId()?.let { rtId ->
-            if (cleanReply.isNotBlank()) {
-                viewModelScope.launch(Dispatchers.IO) {
-                    try {
-                        roundtableMessageDao.insert(
-                            RoundtableMessage(
-                                id           = msgId,
-                                speakerId    = initiator.id.toString(),
-                                speakerName  = initiator.name,
-                                content      = cleanReply,
-                                turnIndex    = turnIdx,
-                                thinkingText = parsedThinking,
-                                psychText    = parsedPsych,
-                                exportedFileJson = pendingExportedFiles.lastOrNull(),
-                                exportedFilesJson = packExportedFilesJson(pendingExportedFiles),
-                                // v67（表格直传 W4）：透传到 toEntity → RoundtableMessageEntity.tableDataJson。
-                                tableDataJson = pendingTablePayloadJson,
-                            ).toEntity(rtId)
-                        )
-                    } catch (e: Exception) {
-                        ZLog.e("RoundtableViewModel", "自发发言落库失败（msgId=$msgId）", e)
-                        _uiState.update { it.copy(error = "消息保存失败，可能会在下次打开时丢失") }
+            // 落库
+            // W2-4 修复：自发发言落库之前无 try-catch，失败时自发发言内容静默丢失。
+            getCurrentRoundtableId()?.let { rtId ->
+                if (cleanReply.isNotBlank()) {
+                    viewModelScope.launch(Dispatchers.IO) {
+                        try {
+                            roundtableMessageDao.insert(
+                                RoundtableMessage(
+                                    id           = msgId,
+                                    speakerId    = initiator.id.toString(),
+                                    speakerName  = initiator.name,
+                                    content      = cleanReply,
+                                    turnIndex    = turnIdx,
+                                    thinkingText = parsedThinking,
+                                    psychText    = parsedPsych,
+                                    exportedFileJson = pendingExportedFiles.lastOrNull(),
+                                    exportedFilesJson = packExportedFilesJson(pendingExportedFiles),
+                                    // v67（表格直传 W4）：透传到 toEntity → RoundtableMessageEntity.tableDataJson。
+                                    tableDataJson = pendingTablePayloadJson,
+                                ).toEntity(rtId)
+                            )
+                        } catch (e: Exception) {
+                            ZLog.e("RoundtableViewModel", "自发发言落库失败（msgId=$msgId）", e)
+                            _uiState.update { it.copy(error = "消息保存失败，可能会在下次打开时丢失") }
+                        }
                     }
                 }
             }
-        }
 
-        // 记忆写入收窄为 Agent 主动工具调用，自发发言路径不再自动提取
-        // 个人/群记忆候选（与 generateBotReply 路径一致）。自发发言不对应
-        // 任何用户 MESSAGE 事件，故此处也无事件写入需要保留。
+            // 记忆写入收窄为 Agent 主动工具调用，自发发言路径不再自动提取
+            // 个人/群记忆候选（与 generateBotReply 路径一致）。自发发言不对应
+            // 任何用户 MESSAGE 事件，故此处也无事件写入需要保留。
+        }
     }
 }

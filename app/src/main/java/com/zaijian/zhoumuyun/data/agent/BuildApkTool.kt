@@ -16,6 +16,7 @@ class BuildApkTool(
     override val name = "build_apk"
     override val description = "触发GitHub远程编译APK（指定分支/构建类型），用于「帮我打个包」"
     override val paramKeys = listOf("branch", "build_type", "commit_sha")
+    override val usageNotes = "build_type 可选 release/debug，默认 debug；commit_sha 为可选的40字符Git提交哈希"
 
     private companion object {
         const val WORKFLOW_FILE = "build.yml"
@@ -181,16 +182,9 @@ class BuildApkTool(
 
     /**
      * 将 GitHub API 返回的 ISO-8601 UTC 时间串解析为 epoch 秒。
-     * 格式固定为 "yyyy-MM-dd'T'HH:mm:ss'Z'"，手动解析避免引入额外依赖。
-     * 解析失败返回 0（视为非常旧，不通过时间窗口校验）。
+     * [重构-01] 收敛到 TimeFormatUtils.parseIso8601UtcToEpochSeconds（Instant.parse 原生支持
+     * 该格式，无需手动指定 pattern/时区），解析失败同样返回 0（视为非常旧，不通过时间窗口校验）。
      */
-    private fun parseIso8601ToEpochSec(iso: String): Long {
-        return try {
-            val sdf = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", java.util.Locale.US)
-            sdf.timeZone = java.util.TimeZone.getTimeZone("UTC")
-            sdf.parse(iso)?.time?.div(1000L) ?: 0L
-        } catch (_: Exception) {
-            0L
-        }
-    }
+    private fun parseIso8601ToEpochSec(iso: String): Long =
+        com.zaijian.zhoumuyun.util.TimeFormatUtils.parseIso8601UtcToEpochSeconds(iso)
 }

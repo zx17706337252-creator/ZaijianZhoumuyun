@@ -1,20 +1,27 @@
 package com.zaijian.zhoumuyun.ui.screen
 
-import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.zaijian.zhoumuyun.data.model.BriefingAttentionItem
+import com.zaijian.zhoumuyun.data.repository.GoodNewsItem
+import com.zaijian.zhoumuyun.ui.component.DetailTopBar
 import com.zaijian.zhoumuyun.ui.screen.notification.NotificationAttentionSection
 import com.zaijian.zhoumuyun.ui.screen.notification.NotificationGoodNewsSection
 import com.zaijian.zhoumuyun.ui.theme.Spacing
@@ -24,6 +31,12 @@ import com.zaijian.zhoumuyun.ui.viewmodel.NotificationViewModel
 // ─────────────────────────────────────────────────────────────
 //  NotificationScreen — 通知中心
 //  通知中心设计方案 全文。
+//
+//  P0修复（E2 批次1）：
+//  1. ON_RESUME 时自动刷新数据——此前 ViewModel 只在 init {} 里 load()
+//     一次，用户标记已读后离开再回来，数据是旧的（已读状态没有刷新）。
+//  2. "好消息"条目可点击跳转角色详情——此前只是纯文本，无法导航。
+//  3. 顶栏增加"全部已读"按钮——批量标记"需要关注"条目为已读。
 // ─────────────────────────────────────────────────────────────
 
 @Composable
@@ -33,21 +46,61 @@ fun NotificationScreen(
     onNavigateToCharacterRelationTab: (characterId: Int) -> Unit,
     // NoContact/NeverContacted/Pregnancy → 直接进聊天
     onNavigateToChat: (characterId: Int) -> Unit,
+    // GoodNews → 角色详情页（默认 Tab）
+    onNavigateToCharacterDetail: (characterId: Int) -> Unit = {},
     viewModel: NotificationViewModel = viewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val colors = ZaijianTheme.colors
 
-    Scaffold(containerColor = colors.bgBase) { innerPadding ->
+    // P0修复1：每次 ON_RESUME 时刷新数据，避免回到通知中心看到的是旧快照。
+    // ViewModel 由 viewModel() 绑定到 NavBackStackEntry，同一 entry 下
+    // 不会重建，init {} 只执行一次。必须用生命周期观察者补上后续刷新。
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                viewModel.refresh()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
+
+    Scaffold(
+        topBar = {
+            DetailTopBar(
+                title    = "通知中心",
+                onBack   = onBack,
+                headerBg = colors.bgBase,
+                actions = {
+                    // P0修复3：全部已读按钮——仅有未读条目时显示
+                    val hasUnread = uiState.attentionItems.any { it !in uiState.readItems }
+                    if (hasUnread && !uiState.isLoading) {
+                        androidx.compose.material3.TextButton(onClick = { viewModel.markAllRead() }) {
+                            Text(
+                                text  = "全部已读",
+                                style = ZaijianTheme.typography.label,
+                                color = colors.accent,
+                            )
+                        }
+                    }
+                },
+            )
+        },
+        containerColor = colors.bgBase,
+    ) { innerPadding ->
         when {
             uiState.isLoading -> {
-                androidx.compose.foundation.layout.Box(
+                Box(
                     modifier = Modifier.fillMaxSize().padding(innerPadding),
                     contentAlignment = Alignment.Center,
                 ) { CircularProgressIndicator() }
             }
             uiState.error != null -> {
-                androidx.compose.foundation.layout.Box(
+                Box(
                     modifier = Modifier.fillMaxSize().padding(innerPadding),
                     contentAlignment = Alignment.Center,
                 ) { Text(uiState.error!!, color = colors.textSecondary) }
@@ -55,15 +108,14 @@ fun NotificationScreen(
             else -> {
                 LazyColumn(
                     modifier = Modifier.fillMaxSize().padding(innerPadding),
-                    contentPadding = androidx.compose.foundation.layout.PaddingValues(Spacing.screenHorizontal),
-                    verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(Spacing.md),
+                    contentPadding = PaddingValues(Spacing.screenHorizontal),
+                    verticalArrangement = Arrangement.spacedBy(Spacing.md),
                 ) {
                     item {
                         NotificationAttentionSection(
                             items           = uiState.attentionItems,
                             readItems       = uiState.readItems,
                             daughterNameMap = uiState.daughterNameMap,
-
                             onItemClick     = { item ->
                                 viewModel.markItemRead(item)
                                 routeAttentionItemClick(
@@ -75,7 +127,15 @@ fun NotificationScreen(
                         )
                     }
                     item {
-                        NotificationGoodNewsSection(items = uiState.goodNewsItems)
+                        NotificationGoodNewsSection(
+                            items = uiState.goodNewsItems,
+                            onItemClick = { item ->
+                                routeGoodNewsItemClick(
+                                    item                      = item,
+                                    onNavigateToCharacterDetail = onNavigateToCharacterDetail,
+                                )
+                            },
+                        )
                     }
                 }
             }
@@ -106,4 +166,20 @@ private fun routeAttentionItemClick(
             item.fromId.toIntOrNull()?.let(onNavigateToCharacterRelationTab)
         }
     }
+}
+
+/**
+ * 好消息点击跳转：统一跳转到角色详情页（默认 Tab）。
+ * MilestoneRepaired → 角色详情页（看关系修复进展）
+ * HighCompetitionScore → 角色详情页（看竞赛评分详情）
+ */
+private fun routeGoodNewsItemClick(
+    item: GoodNewsItem,
+    onNavigateToCharacterDetail: (Int) -> Unit,
+) {
+    val characterId = when (item) {
+        is GoodNewsItem.MilestoneRepaired -> item.entry.character.id
+        is GoodNewsItem.HighCompetitionScore -> item.entry.character.id
+    }
+    onNavigateToCharacterDetail(characterId)
 }

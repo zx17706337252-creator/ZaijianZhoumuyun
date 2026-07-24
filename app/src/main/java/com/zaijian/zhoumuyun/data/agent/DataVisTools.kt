@@ -110,6 +110,7 @@ class CsvAnalyzeTool(private val context: Context) : AgentTool {
     override val name      = "csv_analyze"
     override val description = "对本地CSV文件做统计分析（求和/均值/分组/排序），不依赖第三方库"
     override val paramKeys = listOf("file_path", "operations", "column")
+    override val usageNotes = "operations 格式：sum(列名)/avg(列名)/count/groupby(列名)/sort(列名:asc|desc)，多个操作用分号分隔"
 
     companion object {
         const val MAX_FILE_BYTES = 5 * 1024 * 1024L   // 5 MB
@@ -603,6 +604,7 @@ class TableExportTool(
         "source", "file_path", "filter", "limit",
         "character_id", "date_from", "date_to",
     )
+    override val usageNotes = "source 可选值：csv(从已上传CSV文件)/schedule(从App日程数据)；filter 为筛选条件，格式为 列名=值"
 
     // ⚠️ W2 验收修复：无实例字段承载 payload。原 `toolResultPayload` 共享可变字段已删除，
     // payload 走 ToolResult.tablePayloadJson 返回值（见类 KDoc「设计原则」段说明原因）。
@@ -862,9 +864,12 @@ class TableExportTool(
     ): Pair<TablePayload?, String> {
         val totalRows = rawPayload.rowCountTotal
         val previewRows = rawPayload.rows.take(PREVIEW_ROW_COUNT)
+        // P0-01 修复：≤50 行走 Markdown 路径时不落 tableDataJson，是数据唯一出口，
+        // 必须用全量 rows 构建 Markdown，否则 previewRows 恒为前10行会导致 11~50 行永久丢失。
+        val markdownRows = if (totalRows <= MARKDOWN_THRESHOLD) rawPayload.rows else previewRows
 
         // Markdown 预览（≤50 行全量、>50 行前 10 行）—— 两种路径都用，区别只在 payload 是否落库
-        val markdown = buildMarkdown(rawPayload.title, rawPayload.columns, previewRows, totalRows)
+        val markdown = buildMarkdown(rawPayload.title, rawPayload.columns, markdownRows, totalRows)
 
         return when {
             // ≤50 行：走 Markdown 路径，不落 tableDataJson
@@ -1458,6 +1463,7 @@ class ChartDataTool(
     override val name      = "chart_data"
     override val description = "根据数据描述生成可交互的Chart.js图表（柱状/折线/饼图/雷达图）"
     override val paramKeys = listOf("description", "type", "title")
+    override val usageNotes = "type 可选值：bar(柱状)/line(折线)/pie(饼图)/radar(雷达图)，默认 bar"
 
     override suspend fun execute(params: Map<String, String>): ToolResult =
         withContext(Dispatchers.IO) {
@@ -1638,6 +1644,7 @@ class MindmapGenTool(
     override val name      = "mindmap_gen"
     override val description = "根据中心主题生成思维导图（Markdown树状结构或XMind文件）"
     override val paramKeys = listOf("topic", "depth", "format")
+    override val usageNotes = "format 可选 Markdown/XMind，默认 Markdown"
 
     override suspend fun execute(params: Map<String, String>): ToolResult =
         withContext(Dispatchers.IO) {
@@ -1774,6 +1781,7 @@ class FlowchartGenTool(private val providerFn: () -> LLMProvider?) : AgentTool {
     override val name      = "flowchart_gen"
     override val description = "根据流程描述生成Mermaid图表代码（流程图/时序图/类图/甘特图）"
     override val paramKeys = listOf("description", "type")
+    override val usageNotes = "type 可选值：flowchart(流程图)/sequence(时序图)/class(类图)/gantt(甘特图)，默认 flowchart"
 
     // 每种图类型合法的起始关键词
     private val validStarts = mapOf(

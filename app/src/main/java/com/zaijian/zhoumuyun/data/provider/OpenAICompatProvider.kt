@@ -64,7 +64,9 @@ class OpenAICompatProvider(
                 if (responseCode != HttpURLConnection.HTTP_OK) {
                     val error = conn.errorStream?.bufferedReader()?.readText()
                         ?: "HTTP $responseCode"
-                    close(IllegalStateException("API 错误：$error"))
+                    // P1-03 修复：使用 LLMHttpException 携带 HTTP 状态码，
+                    // 使 chatSyncWithRetry 能区分可重试（429/5xx）和不可重试（4xx）错误。
+                    close(LLMHttpException(responseCode, error))
                     return@withTimeout
                 }
                 // 实时解析 SSE 流，每个 delta 立即 trySend
@@ -171,7 +173,9 @@ class OpenAICompatProvider(
                         val raw = reader.readText()
                         if (raw.length > 500) raw.take(500) + "…[truncated]" else raw
                     } ?: "HTTP $responseCode"
-                    throw IllegalStateException("API 错误：$error")
+                    // P1-03 修复：使用 LLMHttpException 携带 HTTP 状态码，
+                    // 使 chatSyncWithRetry 能区分可重试（429/5xx）和不可重试（4xx）错误。
+                    throw LLMHttpException(responseCode, error)
                 }
                 val responseText = conn.inputStream.bufferedReader().readText()
                 // W13 问题2修复：HTTP 200 但响应体格式异常（反代返回 HTML、网关包装格式

@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">再见周慕云</string>
+    <!-- 窗口2 6.1修复：桌面显示名与品牌名"再见公馆"对齐（包名/数据库类名不在本轮改动范围） -->
+    <string name="app_name">再见公馆</string>
     <string name="nav_home">公馆</string>
     <string name="nav_characters">书架</string>
     <string name="nav_tasks">任务</string>

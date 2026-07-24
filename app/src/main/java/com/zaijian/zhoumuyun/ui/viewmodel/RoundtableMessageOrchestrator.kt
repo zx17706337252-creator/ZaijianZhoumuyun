@@ -282,10 +282,14 @@ $digest
             } catch (e: Exception) {
                 val prev = _uiState.value.error
                 _uiState.update { it.copy(error = if (prev.isNullOrEmpty()) "${bot.name} 回复出了点问题" else "$prev；${bot.name} 回复出了点问题") }
-            }
-
-            _uiState.update { s ->
-                s.copy(generationStatus = (s.generationStatus + (bot.id to BotGenerationStatus.DONE)).toImmutableMap())
+            } finally {
+                // P0-02 修复：原先 generationStatus=DONE 写在 try-catch 之后，
+                // CancellationException rethrow 会跳过这行，导致 Bot 状态指示器
+                // 永远卡在 GENERATING（幽灵消息问题的外层表现）。改用 finally 确保
+                // 无论正常完成、异常、还是被取消，状态都会被推进到 DONE。
+                _uiState.update { s ->
+                    s.copy(generationStatus = (s.generationStatus + (bot.id to BotGenerationStatus.DONE)).toImmutableMap())
+                }
             }
         }
 
@@ -511,7 +515,9 @@ $digest
                             userMessage       = continuePrompt,
                             lastRoundSpeakers = _uiState.value.lastRoundSpeakers,
                         )
-                        val continuePlans = TurnScheduler.scheduleFullMention(continueCtx)
+                        // 续轮调度应遵循用户选择的 scheduleMode，与初始轮（schedulePlans）
+                        // 一致，而非固定走全体@逻辑。
+                        val continuePlans = schedulePlans(continueCtx)
                         if (continuePlans.isEmpty() || isInterruptedRef()) break
 
                         executeRound(
@@ -548,6 +554,21 @@ $digest
                         discussionRound = 0,
                     )
                 }
+                // P1-16 修复：RoundtableIdleManager 的自发互动是"单次计时器触发后
+                // 自我重新武装"的循环——只有 generateSpontaneousReply 成功生成一条
+                // 自发发言后才会调用 startIdleWatch() 重新武装下一轮倒计时（见该
+                // 文件 startIdleWatch 内部 delay 结束的判断分支）。如果计时器到期
+                // 时本轮讨论还没跑完（waitingForUser=false，比如续轮讨论较长、
+                // 单个 Bot 回复较慢），会静默 return 且不再重新武装；此后无论讨论
+                // 正常收敛、被 interrupt() 手动打断、还是抛异常结束，都没有别处
+                // 会主动重启计时器，自发互动会一直停摆到用户下一次发消息为止——
+                // 如果下一轮讨论同样耗时较长，又会再次失效。
+                // 这里是 sendMessage 协程唯一必经的收尾出口（不管从哪条路径退出
+                // 都会走到这个 finally），在这里统一重新武装能覆盖所有退出路径，
+                // 且是"讨论真正转为空闲"这个时间点，比消息刚发出去那一刻更准确。
+                // startIdleWatch() 内部已经会检查 isSpontaneousEnabled，这里不用
+                // 重复判断。
+                startIdleWatch()
             }
         })
     }
@@ -572,5 +593,8 @@ $digest
         exportedFilesJson = exportedFilesJson,
         // v67（表格直传 W4）：同上，透传保持结构对称，用户消息恒为 null。
         tableDataJson = tableDataJson,
+        // 内心独白/心理描写透传（与 MessageEntity 同语义，保持三处 toEntity 结构对称）。
+        thinkingText = thinkingText,
+        psychText    = psychText,
     )
 }

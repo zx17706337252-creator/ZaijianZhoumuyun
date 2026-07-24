@@ -56,9 +56,11 @@ class CharacterPreviewViewModel(application: Application) : AndroidViewModel(app
                 }
                 _recentMemories.value = memories
             } catch (e: Exception) {
-                // P2-30 修复：查询失败时重置 loadedForCharacterId，
-                // 允许下次重试；否则一次失败后该角色永远无法重新加载。
-                loadedForCharacterId = null
+                // P2-32 修复：仅在当前 characterId 仍与发起查询时一致时重置，
+                // 避免快速切换角色时旧查询的异常覆盖新角色的缓存状态。
+                if (loadedForCharacterId == characterId) {
+                    loadedForCharacterId = null
+                }
             }
         }
     }

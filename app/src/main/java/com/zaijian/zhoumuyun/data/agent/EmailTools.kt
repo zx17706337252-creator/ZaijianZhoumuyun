@@ -115,6 +115,9 @@ class EmailSendTool(
             if (to.isNullOrBlank()) {
                 return@withContext ToolResult(name, false, "", "缺少 to 参数（收件人邮箱）")
             }
+            if (!android.util.Patterns.EMAIL_ADDRESS.matcher(to).matches()) {
+                return@withContext ToolResult(name, false, "", "收件人邮箱格式无效：$to")
+            }
             val subject = params["subject"]?.trim() ?: "(无主题)"
             val body = params["body"]?.trim() ?: ""
             if (body.isBlank()) {

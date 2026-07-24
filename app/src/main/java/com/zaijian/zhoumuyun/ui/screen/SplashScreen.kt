@@ -52,6 +52,9 @@ import com.zaijian.zhoumuyun.ui.theme.AppTheme
 import com.zaijian.zhoumuyun.ui.theme.Palette
 import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 
 // ─────────────────────────────────────────────────────────────
 //  SplashScreen  — 启动画面（设计规范 §18 导航架构）
@@ -119,8 +122,25 @@ fun SplashScreen(onFinished: () -> Unit) {
     // 读取用户在「我」Tab → 外观 → 启动页背景图 里设置的配置。
     // config 为 null（用户从未设置过）时，下面完全走原有品牌兜底视觉，
     // 不会因为没设置就空白。
+    //
+    // P2-34 修复：原 collectAsStateWithLifecycle(initialValue = null) 导致第一帧
+    // 永远先画品牌 Logo（null 走兜底分支），DataStore 异步发射后才切到自定义图，
+    // 产生首帧闪烁。改为 setContent 后第一次 composition 时用 runBlocking 同步读
+    // 一次 DataStore 当前值（带 500ms 超时保护，防止 DataStore 异常时卡死 UI），
+    // 以此作为 collectAsStateWithLifecycle 的初始值——第一帧就能拿到正确配置，
+    // 消除闪烁。DataStore 首次读取通常毫秒级，Splash 本身也有 300ms 淡入动画
+    // 缓冲，不会感知到阻塞。后续更新仍通过 Flow 正常流动。
+    val initialConfig = remember {
+        runCatching {
+            runBlocking {
+                withTimeoutOrNull(500L) {
+                    AppContainer.instance.splashBackgroundDataStore.configFlow.first()
+                }
+            }
+        }.getOrNull()
+    }
     val splashBgConfig by AppContainer.instance.splashBackgroundDataStore.configFlow
-        .collectAsStateWithLifecycle(initialValue = null)
+        .collectAsStateWithLifecycle(initialValue = initialConfig)
 
     Box(
         modifier         = Modifier
@@ -145,19 +165,26 @@ fun SplashScreen(onFinished: () -> Unit) {
         contentAlignment = Alignment.Center,
     ) {
         val customBgUri = splashBgConfig?.uri
-        if (customBgUri != null) {
-            // ── 全屏自定义背景图 ─────────────────────────────
-            // 与聊天背景（ChatScreen.kt）/头像裁剪同一套"较大边覆盖容器"
-            // 基准尺寸公式 + graphicsLayer scale/translation，保证裁剪弹窗
-            // 里看到的取景范围跟这里最终渲染效果一致。
-            val bgPainter = rememberAsyncImagePainter(
+        // P1-32 修复：将 painter 创建提到条件判断外，使加载失败时能感知到
+        // Error 状态并回退到品牌兜底视觉（LogoMark + 居中文字），而不是只显示
+        // 空白背景 + 可能不可读的白色文字。
+        val bgPainter = if (customBgUri != null) {
+            rememberAsyncImagePainter(
                 model = ImageRequest.Builder(LocalContext.current)
                     .data(customBgUri)
                     .crossfade(true)
                     .memoryCachePolicy(CachePolicy.ENABLED)
                     .build(),
             )
-            val bgPainterState = bgPainter.state
+        } else null
+        val bgPainterState = bgPainter?.state
+        val imageLoadFailed = bgPainterState is AsyncImagePainter.State.Error
+
+        if (customBgUri != null && !imageLoadFailed) {
+            // ── 全屏自定义背景图 ─────────────────────────────
+            // 与聊天背景（ChatScreen.kt）/头像裁剪同一套"较大边覆盖容器"
+            // 基准尺寸公式 + graphicsLayer scale/translation，保证裁剪弹窗
+            // 里看到的取景范围跟这里最终渲染效果一致。
             val bgIntrinsicSize = (bgPainterState as? AsyncImagePainter.State.Success)
                 ?.painter?.intrinsicSize
             val bgImageAspect = if (bgIntrinsicSize != null &&
@@ -239,7 +266,7 @@ fun SplashScreen(onFinished: () -> Unit) {
                 SplashTitleText(alpha = screenAlpha.value, onImage = true)
             }
         } else {
-            // ── 品牌兜底视觉（原有呼吸光晕圆形 Logo，未设置自定义图时）──
+            // ── 品牌兜底视觉（未设置自定义图，或自定义图加载失败时）──
             Column(
                 modifier              = Modifier
                     .scale(1f)          // anchor for future motion

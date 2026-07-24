@@ -34,16 +34,14 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.rememberModalBottomSheetState
 import com.zaijian.zhoumuyun.data.agent.TablePayload
+import com.zaijian.zhoumuyun.domain.ContentBlockParser
 import com.zaijian.zhoumuyun.ui.design.AppIcons
 import com.zaijian.zhoumuyun.ui.design.WorldCard
 import com.zaijian.zhoumuyun.ui.design.WorldBubble
-import androidx.compose.material.icons.outlined.ExpandMore
-import androidx.compose.material.icons.outlined.Lightbulb
 import androidx.compose.ui.unit.dp
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -68,7 +66,7 @@ import com.zaijian.zhoumuyun.ui.theme.snapSpring
 
 
 import com.zaijian.zhoumuyun.ui.component.BreathingAvatar
-import com.zaijian.zhoumuyun.ui.component.MarkdownText
+import com.zaijian.zhoumuyun.ui.component.ContentBlockRenderer
 import com.zaijian.zhoumuyun.ui.theme.AvatarSize
 import com.zaijian.zhoumuyun.ui.theme.BubbleDimen
 import com.zaijian.zhoumuyun.ui.theme.Palette
@@ -287,10 +285,13 @@ internal fun MessageBubble(
                         borderWidth = 1.dp,
                     ) {
                         Box(modifier = Modifier.padding(horizontal = Spacing.md, vertical = 12.dp)) {
-                            // Phase 21：角色气泡使用 MarkdownText 渲染富文本
+                            // 窗口3：角色气泡使用 ContentBlockRenderer 渲染（块级结构化 + 行内语义标记）
                             // 用户气泡（上方）保持原生 Text，FileExportCard 不受影响
-                            MarkdownText(
-                                markdown  = message.content,
+                            val contentBlocks = remember(message.content) {
+                                ContentBlockParser.parse(message.content)
+                            }
+                            ContentBlockRenderer(
+                                blocks    = contentBlocks,
                                 textColor = colors.textPrimary,
                                 style     = type.body,
                             )
@@ -476,7 +477,7 @@ internal fun ThoughtCard(
                 horizontalArrangement = Arrangement.spacedBy(Spacing.xs),
             ) {
                 Icon(
-                    imageVector        = Icons.Outlined.Lightbulb,
+                    imageVector        = AppIcons.Lightbulb,
                     contentDescription = null,
                     tint               = accentColor,
                     modifier           = Modifier.size(14.dp),
@@ -492,7 +493,7 @@ internal fun ThoughtCard(
                     modifier = Modifier.weight(1f),
                 )
                 Icon(
-                    imageVector        = Icons.Outlined.ExpandMore,
+                    imageVector        = AppIcons.ExpandMore,
                     contentDescription = if (expanded) "收起" else "展开",
                     tint               = colors.textDisabled,
                     modifier           = Modifier
@@ -661,7 +662,7 @@ internal fun TableCard(
             }
 
             // 查看全部按钮 + 全屏按钮（v1.48）
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
                 Box(
                     modifier = Modifier
                         .clip(RoundedCornerShape(Radius.sm))
@@ -941,7 +942,7 @@ internal fun ToolHintRow(
                 start  = AvatarSize.bubbleAvatar + Spacing.sm + Spacing.sm,
                 end    = Spacing.md,
                 top    = 2.dp,
-                bottom = 4.dp,
+                bottom = Spacing.xs,
             ),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.Start,

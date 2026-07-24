@@ -56,9 +56,9 @@ interface LearningGoalDao {
 
     @Query("""
         UPDATE learning_goals
-        SET progress = MIN(1.0, progress + :delta),
+        SET progress = MAX(0.0, MIN(1.0, progress + :delta)),
             lastUpdateNote = :note,
-            status = CASE WHEN MIN(1.0, progress + :delta) >= 1.0 THEN 'COMPLETED' ELSE status END,
+            status = CASE WHEN MAX(0.0, MIN(1.0, progress + :delta)) >= 1.0 THEN 'COMPLETED' ELSE status END,
             updatedAt = :updatedAt
         WHERE id = :goalId AND characterId = :characterId
     """)

@@ -173,11 +173,12 @@ class GlobalScheduleViewModel(application: Application) : AndroidViewModel(appli
         try {
             // L-P0-4 修复：使用 ScheduleRepository 完整删除路径，
             // 替代原来的直接 DA 删除（dao.deleteById）
-            val job = scheduleRepo.getJob(jobId)
+            // P2-18 修复：全局日程视图可跨角色删除，characterId 传 null 跳过归属校验，
+            // 但 deleteJobWithFullSync 内部仍会校验 job 存在性（不存在则抛异常）。
             scheduleRepo.deleteJobWithFullSync(
                 jobId       = jobId,
                 userId      = null,
-                characterId = job?.characterId,
+                characterId = null,
             )
         } catch (e: Exception) {
             ZLog.e("GlobalScheduleViewModel", "删除日程失败 jobId=$jobId", e)

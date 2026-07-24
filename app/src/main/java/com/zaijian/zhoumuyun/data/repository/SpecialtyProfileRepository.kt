@@ -98,6 +98,14 @@ class SpecialtyProfileRepository(
     }
 
     /**
+     * 漏调用-01 修复配套：供 SpecialtyEvolutionViewModel 在 setActive/deleteProfile 之后
+     * 判断"是否已无任何启用中的专长档案"，为空则应停掉每日修炼闹钟
+     * （DailyPracticeScheduler.cancel），避免闹钟持续唤醒设备做无用功。
+     */
+    suspend fun getAllActiveProfiles(): List<SpecialtyProfileEntity> =
+        specialtyProfileDao.getAllActiveProfiles()
+
+    /**
      * 彻底删除专长档案及其全部关联记录。
      * 级联范围：evolution_plans / stage_digests 通过 specialtyId 关联，
      * 一并清理；practice_records 及其归档为避免误删用户想保留的创作产出，

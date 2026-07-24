@@ -11,13 +11,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Add
-import androidx.compose.material.icons.outlined.CalendarMonth
-import androidx.compose.material.icons.outlined.Close
-import androidx.compose.material.icons.outlined.Delete
-import androidx.compose.material.icons.outlined.FolderOpen
-import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -28,9 +21,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.zaijian.zhoumuyun.ui.component.DetailTopBar
+import com.zaijian.zhoumuyun.ui.component.EmptyStateView
 import com.zaijian.zhoumuyun.ui.component.ScheduleCardShell
 import com.zaijian.zhoumuyun.ui.component.ScheduleRepeatChip
-import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -46,9 +40,8 @@ import com.zaijian.zhoumuyun.ui.viewmodel.RepeatPreset
 import com.zaijian.zhoumuyun.ui.viewmodel.ScheduleDraft
 import com.zaijian.zhoumuyun.ui.viewmodel.TaskKind
 import com.zaijian.zhoumuyun.ui.viewmodel.repeatLabel
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
+import com.zaijian.zhoumuyun.util.TimeFormatUtils
+import com.zaijian.zhoumuyun.ui.design.AppIcons
 
 // ─────────────────────────────────────────────────────────────
 //  PersonalScheduleScreen — Stage C + D；独立路由见下方 U2 修复
@@ -97,29 +90,12 @@ fun PersonalScheduleScreen(
                 .padding(paddingValues),
         ) {
             // ── 顶部栏 ────────────────────────────────────────
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .statusBarsPadding()
-                    .height(Spacing.topBarHeight)
-                    .padding(horizontal = Spacing.screenHorizontal),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                IconButton(onClick = onBack) {
-                    Icon(
-                        imageVector        = Icons.AutoMirrored.Outlined.ArrowBack,
-                        contentDescription = "返回",
-                        tint               = colors.textPrimary,
-                    )
-                }
-                Spacer(Modifier.width(Spacing.xs))
-                Text(
-                    text     = "$charName · 日程",
-                    style    = type.cardTitle,
-                    color    = colors.textPrimary,
-                    modifier = Modifier.weight(1f),
-                )
-            }
+            // D-2 统一顶栏：内联 Row → DetailTopBar
+            DetailTopBar(
+                title    = "$charName · 日程",
+                onBack   = onBack,
+                headerBg = colors.bgBase,
+            )
 
             // ── 内容：P0-5 修复，改为 Column + verticalScroll。
             //    原实现用 LazyColumn 单 item 包装，其 item 传入无界高度约束
@@ -196,7 +172,7 @@ fun PersonalScheduleTabContent(
                     .padding(horizontal = Spacing.screenHorizontal, vertical = Spacing.xs)
                     .clip(RoundedCornerShape(Radius.xs))
                     .background(Palette.SemanticDanger.copy(alpha = 0.12f))
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                    .padding(horizontal = 12.dp, vertical = Spacing.sm),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(text = errorMsg, style = type.label, color = Palette.SemanticDanger)
@@ -225,12 +201,12 @@ fun PersonalScheduleTabContent(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Icon(
-                    imageVector        = Icons.Outlined.Add,
+                    imageVector        = AppIcons.Add,
                     contentDescription = "新增日程",
                     tint               = accentColor,
                     modifier           = Modifier.size(16.dp),
                 )
-                Spacer(Modifier.width(4.dp))
+                Spacer(Modifier.width(Spacing.xs))
                 Text(text = "新增日程", style = type.label, color = accentColor)
             }
         }
@@ -246,7 +222,11 @@ fun PersonalScheduleTabContent(
                 CircularProgressIndicator(color = accentColor)
             }
         } else if (uiState.jobs.isEmpty()) {
-            PersonalScheduleEmptyState(accentColor = accentColor)
+            EmptyStateView(
+                icon     = AppIcons.CalendarMonth,
+                title    = "还没有日程",
+                subtitle = "点击右上角「新增日程」手动添加，\n或由角色通过工具自主创建",
+            )
         } else {
             // 静态宿主页面用 LazyColumn 会与外层 LazyColumn 嵌套冲突，
             // 这里改用普通 Column（数据量级是单角色日程，通常个位数到几十条）。
@@ -254,7 +234,7 @@ fun PersonalScheduleTabContent(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = Spacing.screenHorizontal),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(Spacing.sm),
             ) {
                 uiState.jobs.sortedBy { it.nextRunAt }.forEach { job ->
                     PersonalScheduleCard(
@@ -313,48 +293,14 @@ fun PersonalScheduleTabContent(
 }
 
 // ─────────────────────────────────────────────────────────────
-//  空状态
-// ─────────────────────────────────────────────────────────────
-
-@Composable
-private fun PersonalScheduleEmptyState(accentColor: Color) {
-    val colors = ZaijianTheme.colors
-    val type   = ZaijianTheme.typography
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = Spacing.xxl),
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Icon(
-            imageVector        = Icons.Outlined.CalendarMonth,
-            contentDescription = null,
-            tint               = colors.textDisabled,
-            modifier           = Modifier.size(40.dp),
-        )
-        Spacer(Modifier.height(10.dp))
-        Text(text = "还没有日程", style = type.cardTitle, color = colors.textSecondary)
-        Spacer(Modifier.height(4.dp))
-        Text(
-            text  = "点击右上角「新增日程」手动添加，\n或由角色通过工具自主创建",
-            style = type.label,
-            color = colors.textDisabled,
-        )
-    }
-}
-
-// ─────────────────────────────────────────────────────────────
 //  单条日程卡片（与 GlobalScheduleScreen 的 ScheduleJobCard 视觉一致，
 //  但展开后多了「编辑」入口）
 // ─────────────────────────────────────────────────────────────
 
-private fun formatNextRun(ts: Long): String {
-    // 批次4-3 修复：SimpleDateFormat 非线程安全，顶层共享 val sdf 在
-    // 多个协程并发调用时可能产生日期解析错误。改为每次调用新建实例。
-    val sdf = SimpleDateFormat("MM-dd HH:mm", Locale.CHINA)
-    return sdf.format(Date(ts))
-}
+private fun formatNextRun(ts: Long): String =
+    // 批次7 [重构-01]：改用 TimeFormatUtils 统一格式化（DateTimeFormatter 本身
+    // 线程安全，不再需要"每次调用新建实例"这层防御）。
+    TimeFormatUtils.formatMonthDayDashTime(ts)
 
 @Composable
 private fun PersonalScheduleCard(
@@ -433,7 +379,7 @@ private fun PersonalScheduleCard(
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Icon(
-                                imageVector        = Icons.Outlined.FolderOpen,
+                                imageVector        = AppIcons.FolderOpen,
                                 contentDescription = null,
                                 modifier           = Modifier.size(12.dp),
                                 tint               = if (isDisabled) colors.textDisabled else accentColor.copy(alpha = 0.7f),
@@ -543,7 +489,7 @@ private fun ScheduleDraftSheet(
                     text  = "取消",
                     style = type.caption,
                     color = colors.textSecondary,
-                    modifier = Modifier.clickable { onDismiss() }.padding(4.dp),
+                    modifier = Modifier.clickable { onDismiss() }.padding(Spacing.xs),
                 )
             }
 
@@ -564,7 +510,7 @@ private fun ScheduleDraftSheet(
             // 默认新建 = TOOL（保持现状），编辑 = 按 existing.toolName 自动选中。
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text(text = "模式", style = type.label, color = colors.textSecondary)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
                     TaskKind.values().forEach { mode ->
                         val selected = draft.mode == mode
                         Box(
@@ -577,7 +523,7 @@ private fun ScheduleDraftSheet(
                                     shape = RoundedCornerShape(Radius.sm),
                                 )
                                 .clickable { onModeChange(mode) }
-                                .padding(horizontal = Spacing.md, vertical = 8.dp),
+                                .padding(horizontal = Spacing.md, vertical = Spacing.sm),
                             contentAlignment = Alignment.Center,
                         ) {
                             Text(
@@ -607,7 +553,7 @@ private fun ScheduleDraftSheet(
                             color = colors.textDisabled,
                         )
                     } else {
-                        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
                             items(availableToolNames, key = { it }) { toolName ->
                                 val selected = draft.toolName == toolName
                                 Box(
@@ -620,7 +566,7 @@ private fun ScheduleDraftSheet(
                                             shape = RoundedCornerShape(Radius.sm),
                                         )
                                         .clickable { onToolNameChange(toolName) }
-                                        .padding(horizontal = Spacing.md, vertical = 8.dp),
+                                        .padding(horizontal = Spacing.md, vertical = Spacing.sm),
                                     contentAlignment = Alignment.Center,
                                 ) {
                                     Text(
@@ -666,7 +612,7 @@ private fun ScheduleDraftSheet(
             // 重复规则
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text(text = "重复规则", style = type.label, color = colors.textSecondary)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
                     RepeatPreset.values().forEach { preset ->
                         val selected = draft.repeatPreset == preset
                         Box(
@@ -679,7 +625,7 @@ private fun ScheduleDraftSheet(
                                     shape = RoundedCornerShape(Radius.sm),
                                 )
                                 .clickable { onRepeatChange(preset) }
-                                .padding(horizontal = Spacing.md, vertical = 8.dp),
+                                .padding(horizontal = Spacing.md, vertical = Spacing.sm),
                             contentAlignment = Alignment.Center,
                         ) {
                             Text(
@@ -780,7 +726,7 @@ private fun ScheduleTextField(
     val type   = ZaijianTheme.typography
     val isError = errorText != null
 
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
         if (label.isNotEmpty()) {
             Text(text = label, style = type.label, color = colors.textSecondary)
         }
@@ -860,11 +806,11 @@ private fun ProjectSelectorField(
                     // 选中态：图标 + 标题 + 状态色点 + 描述预览
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Icon(
-                            imageVector        = Icons.Outlined.FolderOpen,
+                            imageVector        = AppIcons.FolderOpen,
                             contentDescription = null,
                             modifier           = Modifier.size(16.dp),
                             tint               = accentColor,
@@ -899,7 +845,7 @@ private fun ProjectSelectorField(
                             }
                         }
                         Icon(
-                            imageVector        = Icons.Outlined.KeyboardArrowDown,
+                            imageVector        = AppIcons.KeyboardArrowDown,
                             contentDescription = null,
                             modifier           = Modifier.size(16.dp),
                             tint               = colors.textDisabled,
@@ -909,11 +855,11 @@ private fun ProjectSelectorField(
                     // 未选态：Add 图标 + 占位文本
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Icon(
-                            imageVector        = Icons.Outlined.Add,
+                            imageVector        = AppIcons.Add,
                             contentDescription = null,
                             modifier           = Modifier.size(16.dp),
                             tint               = colors.textDisabled,
@@ -999,11 +945,11 @@ private fun DropdownMenuItemClear(onClick: () -> Unit) {
     DropdownMenuItem(
         text = {
             Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Icon(
-                    imageVector        = Icons.Outlined.Close,
+                    imageVector        = AppIcons.Close,
                     contentDescription = null,
                     modifier           = Modifier.size(14.dp),
                     tint               = colors.textSecondary,
@@ -1032,7 +978,7 @@ private fun DropdownMenuItemProject(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Icon(
-                        imageVector        = Icons.Outlined.FolderOpen,
+                        imageVector        = AppIcons.FolderOpen,
                         contentDescription = null,
                         modifier           = Modifier.size(14.dp),
                         tint               = if (selected) accentColor else colors.textSecondary,

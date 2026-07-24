@@ -31,7 +31,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 
 
-import com.zaijian.zhoumuyun.ui.component.MarkdownText
+import com.zaijian.zhoumuyun.domain.ContentBlockParser
+import com.zaijian.zhoumuyun.ui.component.ContentBlockRenderer
 import com.zaijian.zhoumuyun.ui.theme.AnimDuration
 import com.zaijian.zhoumuyun.ui.theme.Radius
 import com.zaijian.zhoumuyun.ui.theme.Spacing
@@ -127,8 +128,11 @@ internal fun EvaluationCard(
             }
 
             // ── Agent B 评审汇报文本 ──────────────────────
-            MarkdownText(
-                markdown  = reportText,
+            // E2 统一内容渲染接入：评审汇报走 ContentBlockParser → ContentBlockRenderer，
+            // AI 生成的结构化文本（标题/列表/引用等）获得块级渲染。
+            val reportBlocks = remember(reportText) { ContentBlockParser.parse(reportText) }
+            ContentBlockRenderer(
+                blocks    = reportBlocks,
                 textColor = colors.textSecondary,
                 style     = type.caption,
             )

@@ -99,7 +99,7 @@ data class ArchSpot(val cx: Float, val cy: Float, val w: Float, val h: Float)
 // 明媚/莫婉凝/江凡，参见 StateExtensions.kt）直接查表，
 // 不再依赖 floor+shelfCol 的组合判断——每人数值已各自独立。
 val archSpots: Map<Int, ArchSpot> = mapOf(
-    // ── SECOND：蒂法(1) / 露娜(2) / 伊芙(3) ── 左右w已强制一致(0.1550，v42拉齐)
+    // ── SECOND：蒂法(1) / 露娜(2) / 伊芙(3) ── 左w=0.1550，右w=0.1580（v42调整后未完全拉齐）
     1 to ArchSpot(cx = 0.2770f, cy = 0.3315f, w = 0.1550f, h = 0.1510f),
     2 to ArchSpot(cx = 0.5000f, cy = 0.3325f, w = 0.1680f, h = 0.1510f),
     3 to ArchSpot(cx = 0.7240f, cy = 0.3325f, w = 0.1580f, h = 0.1490f),

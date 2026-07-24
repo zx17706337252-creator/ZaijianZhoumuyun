@@ -1427,8 +1427,10 @@ class CompetitionRoundManager(
     /**
      * 构建竞赛记忆的 FTS4 关键词串。
      *
-     * FTS4 使用 TOKENIZER_UNICODE61，中文按 Unicode 字符分割（逐字分词）。
-     * buildFtsQuery 对每个词加 * 做前缀匹配，因此这里把关键词用空格分隔即可。
+     * FTS4 使用 TOKENIZER_UNICODE61，该 tokenizer 不对连续中文做分词（E1 审计
+     * 报告任务1 实测证实）。buildFtsQuery 现已改用 ChineseTokenizer 分词后对
+     * 每个词加 * 做前缀匹配，因此这里把关键词用空格分隔，每个词才会被 unicode61
+     * 索引为独立 token，前缀匹配才能命中。
      *
      * 关键词组成：
      * - 固定竞赛词："比赛 竞赛"（保证"你那次比赛怎么样"能命中）

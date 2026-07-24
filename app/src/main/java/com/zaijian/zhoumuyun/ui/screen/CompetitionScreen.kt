@@ -12,9 +12,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material.icons.outlined.*
+import com.zaijian.zhoumuyun.ui.component.DetailTopBar
+import com.zaijian.zhoumuyun.ui.component.EmptyStateView
 import com.zaijian.zhoumuyun.ui.design.WorldCard
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -42,6 +41,7 @@ import com.zaijian.zhoumuyun.data.model.CompetitionRoundStatus.STATUS_JUDGING
 import com.zaijian.zhoumuyun.data.model.CompetitionRoundStatus.STATUS_AWAITING_USER
 import com.zaijian.zhoumuyun.data.model.CompetitionRoundStatus.STATUS_COMPLETED
 import com.zaijian.zhoumuyun.data.model.CompetitionRoundStatus.STATUS_CANCELLED
+import com.zaijian.zhoumuyun.ui.design.AppIcons
 
 // ─────────────────────────────────────────────────────────────
 //  CompetitionScreen — 裁判与竞争机制 · 竞赛屏幕（窗口3+4）
@@ -111,7 +111,7 @@ fun CompetitionScreen(
                     contentColor   = colors.bgBase,
                     shape          = CircleShape,
                 ) {
-                    Icon(Icons.Outlined.EmojiEvents, contentDescription = "发起竞赛")
+                    Icon(AppIcons.EmojiEvents, contentDescription = "发起竞赛")
                 }
             }
         },
@@ -122,51 +122,32 @@ fun CompetitionScreen(
                 .padding(paddingValues),
         ) {
             // ── 顶部栏 ────────────────────────────────────────
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .statusBarsPadding()
-                    .height(Spacing.topBarHeight)
-                    .padding(horizontal = Spacing.screenHorizontal),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                IconButton(onClick = {
-                    if (selectedId != null) viewModel.selectRound(null) else onBack()
-                }) {
-                    Icon(
-                        imageVector    = Icons.AutoMirrored.Outlined.ArrowBack,
-                        contentDescription = "返回",
-                        tint           = colors.textPrimary,
-                    )
-                }
-                Spacer(Modifier.width(Spacing.xs))
-                Text(
-                    text  = if (selectedId == null) "$domain · 竞赛"
-                            else roundDetail.round?.topic ?: "$domain · 竞赛",
-                    // 17sp 是 cardTitle(16sp) 与 titleBold(20sp) 之间的合理中间层级，有意设计
-                    style = type.cardTitle.copy(fontSize = 17.sp),
-                    color = colors.textPrimary,
-                    modifier = Modifier.weight(1f),
-                )
-                // ── 取消竞赛入口（W4-5） ─────────────────────
-                // 仅详情层显示；轮次状态为 COMPLETED（已结算，取消没有意义）
-                // 或 CANCELLED（已经是取消状态）时不显示——与
-                // CompetitionRoundManager.cancelRound 的状态守卫条件保持一致。
-                val currentRoundStatus = roundDetail.round?.status
-                val canCancel = selectedId != null
-                    && currentRoundStatus != null
-                    && currentRoundStatus != STATUS_COMPLETED
-                    && currentRoundStatus != STATUS_CANCELLED
-                if (canCancel) {
-                    IconButton(onClick = { showCancelConfirmDialog = true }) {
-                        Icon(
-                            imageVector        = Icons.Outlined.Close,
-                            contentDescription = "取消竞赛",
-                            tint               = colors.textDisabled,
-                        )
+            DetailTopBar(
+                title    = if (selectedId == null) "$domain · 竞赛"
+                           else roundDetail.round?.topic ?: "$domain · 竞赛",
+                onBack   = { if (selectedId != null) viewModel.selectRound(null) else onBack() },
+                headerBg = colors.bgBase,
+                actions  = {
+                    // ── 取消竞赛入口（W4-5） ─────────────────────
+                    // 仅详情层显示；轮次状态为 COMPLETED（已结算，取消没有意义）
+                    // 或 CANCELLED（已经是取消状态）时不显示——与
+                    // CompetitionRoundManager.cancelRound 的状态守卫条件保持一致。
+                    val currentRoundStatus = roundDetail.round?.status
+                    val canCancel = selectedId != null
+                        && currentRoundStatus != null
+                        && currentRoundStatus != STATUS_COMPLETED
+                        && currentRoundStatus != STATUS_CANCELLED
+                    if (canCancel) {
+                        IconButton(onClick = { showCancelConfirmDialog = true }) {
+                            Icon(
+                                imageVector        = AppIcons.Close,
+                                contentDescription = "取消竞赛",
+                                tint               = colors.textDisabled,
+                            )
+                        }
                     }
-                }
-            }
+                },
+            )
 
             GoldDivider()
 
@@ -264,10 +245,11 @@ private fun CompetitionListContent(
             if (isLoading) {
                 CircularProgressIndicator(color = colors.accent)
             } else {
-                Text(
-                    text  = "还没有任何竞赛记录。\n点击右下角按钮，发起第一轮。",
-                    style = type.body,
-                    color = colors.textDisabled,
+                // D-3 P3：空状态收口至统一组件 EmptyStateView
+                EmptyStateView(
+                    icon     = AppIcons.EmojiEvents,
+                    title    = "还没有任何竞赛记录",
+                    subtitle = "点击右下角按钮，发起第一轮",
                 )
             }
         }
@@ -348,7 +330,7 @@ private fun RoundSummaryCard(
             }
             Spacer(Modifier.width(Spacing.xs))
             Icon(
-                imageVector    = Icons.Outlined.ChevronRight,
+                imageVector    = AppIcons.ChevronRight,
                 contentDescription = null,
                 tint           = colors.textDisabled,
                 modifier       = Modifier.size(18.dp),
@@ -794,7 +776,7 @@ internal fun CompetitionDetailContent(
                         Spacer(Modifier.width(Spacing.xs))
                         Text("结算中…")
                     } else {
-                        Icon(Icons.Outlined.EmojiEvents, contentDescription = null)
+                        Icon(AppIcons.EmojiEvents, contentDescription = null)
                         Spacer(Modifier.width(Spacing.xs))
                         Text("提交并结算")
                     }
@@ -827,7 +809,7 @@ private fun RetryJudgingBanner(onRetry: () -> Unit) {
         horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
     ) {
         Icon(
-            imageVector        = Icons.Outlined.Warning,
+            imageVector        = AppIcons.Warning,
             contentDescription = null,
             tint               = Palette.TaskFailed,
             modifier           = Modifier.size(16.dp),
@@ -978,7 +960,7 @@ private fun EntryCard(
             Column(verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(
-                        Icons.Outlined.Gavel,
+                        AppIcons.Gavel,
                         contentDescription = null,
                         tint     = Palette.Gold,
                         modifier = Modifier.size(14.dp),
@@ -1008,7 +990,7 @@ private fun EntryCard(
             Column(verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(
-                        Icons.Outlined.SelfImprovement,
+                        AppIcons.SelfImprovement,
                         contentDescription = null,
                         tint     = colors.accent,
                         modifier = Modifier.size(14.dp),
@@ -1046,7 +1028,7 @@ private fun EntryCard(
                 GoldDivider()
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(
-                        Icons.Outlined.Person,
+                        AppIcons.Person,
                         contentDescription = null,
                         tint     = colors.textDisabled,
                         modifier = Modifier.size(14.dp),
@@ -1176,7 +1158,7 @@ private fun ScoreInputSection(
                         enabled  = k > 1,
                     ) {
                         Icon(
-                            Icons.Outlined.KeyboardArrowUp,
+                            AppIcons.KeyboardArrowUp,
                             contentDescription = "名次提前",
                             tint = if (k > 1) colors.accent else colors.textDisabled,
                         )
@@ -1186,7 +1168,7 @@ private fun ScoreInputSection(
                         enabled  = k < n,
                     ) {
                         Icon(
-                            Icons.Outlined.KeyboardArrowDown,
+                            AppIcons.KeyboardArrowDown,
                             contentDescription = "名次推后",
                             tint = if (k < n) colors.accent else colors.textDisabled,
                         )

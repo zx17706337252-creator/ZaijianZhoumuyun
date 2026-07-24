@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
@@ -26,6 +25,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.zaijian.zhoumuyun.ui.component.RootTabTopBar
 import com.zaijian.zhoumuyun.ui.screen.briefing.BriefingAttentionSection
 import com.zaijian.zhoumuyun.ui.screen.briefing.BriefingCharacterCard
 import com.zaijian.zhoumuyun.ui.screen.briefing.BriefingIntroSection
@@ -44,6 +44,12 @@ import com.zaijian.zhoumuyun.ui.viewmodel.BriefingViewModel
 //    1. isLoading → loading 指示器
 //    2. error 非空 → 错误提示 + 重试 + 跳过按钮
 //    3. data 非空 → 正常简报内容
+//
+//  D-3 P2 修复：补页面级标题结构。原先仅给 LazyColumn 加了 statusBarsPadding()，
+//  只解决"第一项不贴状态栏"，但整页仍无标题识别——BriefingIntroSection 会随列表
+//  滚走，不是持久标题栏。现统一接入 RootTabTopBar（简报是无返回箭头的开场落地页，
+//  用根 Tab 顶栏语义而非 DetailTopBar），statusBarsPadding 由顶栏自身承担，
+//  三分支（loading/error/content）恒定可见同一标题栏，页面级标题识别成立。
 // ─────────────────────────────────────────────────────────────
 
 @Composable
@@ -55,105 +61,113 @@ fun BriefingScreen(
     val colors = ZaijianTheme.colors
     val type = ZaijianTheme.typography
 
-    // ── 分支 1：加载中 ────────────────────────────────────────
-    if (uiState.isLoading) {
-        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            CircularProgressIndicator(color = colors.primary)
-        }
-        return
-    }
+    Column(modifier = Modifier.fillMaxSize()) {
+        // D-3 P2：页面级标题栏，恒定可见（statusBarsPadding 由 RootTabTopBar 承担）
+        RootTabTopBar(
+            title    = "简报",
+            headerBg = colors.bgBase,
+        )
 
-    // ── 分支 2：加载失败（W14 修复：原逻辑合并到 isLoading 分支导致永久卡死）──
-    if (uiState.error != null) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(Spacing.screenHorizontal),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center,
-        ) {
-            Text(
-                text = uiState.error!!,
-                color = colors.textSecondary,
-                style = type.body, // 14sp 恰好等于 body，改用排印系统接入
-                textAlign = TextAlign.Center,
-            )
-            Spacer(Modifier.height(20.dp))
-            Button(
-                onClick = { viewModel.refresh() },
-                modifier = Modifier.fillMaxWidth(),
-                colors = ButtonDefaults.buttonColors(containerColor = colors.accent),
-            ) {
-                Text("重新加载")
+        when {
+            // ── 分支 1：加载中 ───────────────────────────────────────
+            uiState.isLoading -> {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(color = colors.primary)
+                }
             }
-            Spacer(Modifier.height(12.dp))
-            OutlinedButton(
-                onClick = onEnterWorld,
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text("跳过，直接进入公馆")
+
+            // ── 分支 2：加载失败（W14 修复：原逻辑合并到 isLoading 分支导致永久卡死）──
+            uiState.error != null -> {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(Spacing.screenHorizontal),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
+                ) {
+                    Text(
+                        text = uiState.error!!,
+                        color = colors.textSecondary,
+                        style = type.body, // 14sp 恰好等于 body，改用排印系统接入
+                        textAlign = TextAlign.Center,
+                    )
+                    Spacer(Modifier.height(20.dp))
+                    Button(
+                        onClick = { viewModel.refresh() },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(containerColor = colors.accent),
+                    ) {
+                        Text("重新加载")
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedButton(
+                        onClick = onEnterWorld,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("跳过，直接进入公馆")
+                    }
+                }
             }
-        }
-        return
-    }
 
-    // ── 分支 3：data 仍为 null 但没有 isLoading 也没有 error ──
-    //  理论上不会到达此分支（init 中要么成功设 data，要么失败设 error），
-    //  保留作为兜底防护。
-    if (uiState.data == null) {
-        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            CircularProgressIndicator(color = colors.primary)
-        }
-        return
-    }
-    val data = uiState.data!!
-
-    // P3-36 修复：底部安全区缺失，添加 navigationBarsPadding
-    // Fix-Briefing-StatusBar：顶部安全区同样缺失，标题（BriefingIntroSection）
-    // 作为第一个 item 直接贴到屏幕最顶端，露在状态栏里。补上 statusBarsPadding。
-    LazyColumn(
-        modifier = Modifier
-            .fillMaxSize()
-            .statusBarsPadding()
-            .navigationBarsPadding(),
-    ) {
-        item { BriefingIntroSection(periodStart = data.periodStart, periodEnd = data.periodEnd) }
-
-        if (data.attentionItems.isNotEmpty()) {
-            item {
-                BriefingAttentionSection(
-                    items = data.attentionItems,
-                    daughterNameMap = uiState.daughterNameMap,
-                    modifier = Modifier.padding(horizontal = Spacing.screenHorizontal, vertical = Spacing.xs),
-                )
+            // ── 分支 3：data 仍为 null 但没有 isLoading 也没有 error ──
+            //  理论上不会到达此分支（init 中要么成功设 data，要么失败设 error），
+            //  保留作为兜底防护。
+            uiState.data == null -> {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(color = colors.primary)
+                }
             }
-        }
 
-        items(data.characters, key = { it.character.id }) { entry ->
-            BriefingCharacterCard(
-                entry = entry,
-                modifier = Modifier.padding(horizontal = Spacing.screenHorizontal, vertical = Spacing.xs),
-            )
-        }
+            // ── 分支 4：正常简报内容 ───────────────────────────────
+            else -> {
+                val data = uiState.data!!
+                // P3-36 修复：底部安全区缺失，添加 navigationBarsPadding。
+                // 顶部 statusBarsPadding 已由 RootTabTopBar 承担，此处不再重复。
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .navigationBarsPadding(),
+                ) {
+                    item { BriefingIntroSection(periodStart = data.periodStart, periodEnd = data.periodEnd) }
 
-        item {
-            BriefingRankingSection(
-                ranking = data.affectionRanking,
-                modifier = Modifier.padding(horizontal = Spacing.screenHorizontal, vertical = Spacing.xs),
-            )
-        }
+                    if (data.attentionItems.isNotEmpty()) {
+                        item {
+                            BriefingAttentionSection(
+                                items = data.attentionItems,
+                                daughterNameMap = uiState.daughterNameMap,
+                                modifier = Modifier.padding(horizontal = Spacing.screenHorizontal, vertical = Spacing.xs),
+                            )
+                        }
+                    }
 
-        item {
-            Button(
-                onClick = onEnterWorld,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(Spacing.screenHorizontal),
-                // P3-54 修复（重做）："推门进入公馆" 是主操作 CTA，语义上是强调/引导操作，
-                // 不应使用 error（红色/危险语义）。改用 colors.accent 作为主强调色。
-                colors = ButtonDefaults.buttonColors(containerColor = colors.accent),
-            ) {
-                Text("推门进入公馆")
+                    items(data.characters, key = { it.character.id }) { entry ->
+                        BriefingCharacterCard(
+                            entry = entry,
+                            modifier = Modifier.padding(horizontal = Spacing.screenHorizontal, vertical = Spacing.xs),
+                        )
+                    }
+
+                    item {
+                        BriefingRankingSection(
+                            ranking = data.affectionRanking,
+                            modifier = Modifier.padding(horizontal = Spacing.screenHorizontal, vertical = Spacing.xs),
+                        )
+                    }
+
+                    item {
+                        Button(
+                            onClick = onEnterWorld,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(Spacing.screenHorizontal),
+                            // P3-54 修复（重做）："推门进入公馆" 是主操作 CTA，语义上是强调/引导操作，
+                            // 不应使用 error（红色/危险语义）。改用 colors.accent 作为主强调色。
+                            colors = ButtonDefaults.buttonColors(containerColor = colors.accent),
+                        ) {
+                            Text("推门进入公馆")
+                        }
+                    }
+                }
             }
         }
     }

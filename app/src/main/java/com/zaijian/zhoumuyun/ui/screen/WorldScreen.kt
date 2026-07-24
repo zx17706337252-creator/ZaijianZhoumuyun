@@ -37,6 +37,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.zaijian.zhoumuyun.BuildConfig
 import com.zaijian.zhoumuyun.R
 import com.zaijian.zhoumuyun.data.model.PresenceState
 import com.zaijian.zhoumuyun.data.model.StatusType
@@ -249,7 +250,8 @@ fun WorldScreen(
                 .pointerInput(Unit) {
                     detectTapGestures(
                         onLongPress = {
-                            showDebugGrid = !showDebugGrid
+                            // P2-37 修复：调试网格仅 debug build 可用，防止调试色值泄漏到 release。
+                            if (BuildConfig.DEBUG) showDebugGrid = !showDebugGrid
                         },
                     )
                 },
@@ -337,7 +339,9 @@ fun WorldScreen(
 
                 // ── 调试网格：高亮框精确画出当前 cx/cy/archWidth/archHeight ──
                 // 长按背景空白处打开后，对着真实拱门截图比对，直接读数校准。
-                if (showDebugGrid) {
+                // P2-37 修复：双重守卫——showDebugGrid 只在 debug build 可被置 true，
+                // 此处再检查 BuildConfig.DEBUG 做防御性编程。
+                if (showDebugGrid && BuildConfig.DEBUG) {
                     Box(
                         modifier = Modifier
                             .offset(

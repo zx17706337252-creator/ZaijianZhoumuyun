@@ -2,81 +2,35 @@ package com.zaijian.zhoumuyun.ui.screen
 
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.statusBars
 
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Check
-import androidx.compose.material.icons.outlined.KeyboardArrowDown
-import androidx.compose.material.icons.outlined.Palette
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.TextRange
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.input.TextFieldValue
-import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.tooling.preview.Preview
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.zaijian.zhoumuyun.data.model.DefaultCharacters
 import com.zaijian.zhoumuyun.data.provider.ProviderManager
 import com.zaijian.zhoumuyun.data.provider.ProviderType
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import com.zaijian.zhoumuyun.ui.component.BreathingAvatar
 import com.zaijian.zhoumuyun.ui.component.OptionPickerDialog
-import com.zaijian.zhoumuyun.ui.design.WorldCard
-import com.zaijian.zhoumuyun.ui.theme.AvatarSize
+import com.zaijian.zhoumuyun.ui.component.RootTabTopBar
 import com.zaijian.zhoumuyun.ui.theme.AppTheme
 import com.zaijian.zhoumuyun.ui.theme.GlassOpacity
-import com.zaijian.zhoumuyun.ui.theme.Palette
-import com.zaijian.zhoumuyun.ui.theme.Radius
 import com.zaijian.zhoumuyun.ui.theme.Spacing
 import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
 import kotlinx.coroutines.launch
@@ -130,12 +84,24 @@ fun ProfileScreen(
     else
         colors.bgBase.copy(alpha = GlassOpacity.topBarLight)
 
-    // Phase 16：用户昵称 + 签名（用 SharedPreferences 持久化）
+    // Phase 16：用户昵称（用 SharedPreferences 持久化）
+    // 窗口1方案B：签名字段已删除，不保留、不迁移。
+    // 「称呼」功能性缺陷修复：不再由本 Composable 裸持有 SharedPreferences 实例，
+    // 改走 ProfileViewModel.getUserName()——与 buildSystemPrompt 四条读取路径
+    // 共用同一份 key 名/默认值定义（UserProfileRepository），避免两处硬编码字面量漂移。
     val context = LocalContext.current
+    // 通知设置持久化（Phase 16 起沿用的简单 SharedPreferences 存储）。
+    // P1-30 修复：原使用 "profile_prefs" 文件，但所有读取方
+    // （ZaijianApp、ZaijianMessagingService、ProactiveMessageNotifier、
+    // PresenceEngine）均从 "user_profile" 文件读取，导致写入的通知开关
+    // 设置永远不会被读到，三个开关全部失效。
+    // 现改为写入 "user_profile"，与所有读取方对齐；
+    // ZaijianApp 中注册的 OnSharedPreferenceChangeListener 也将正确触发。
     val userPrefs = remember { context.getSharedPreferences("user_profile", android.content.Context.MODE_PRIVATE) }
-    var userName  by remember { mutableStateOf(userPrefs.getString("user_name", "旅人") ?: "旅人") }
-    var signature by remember { mutableStateOf(userPrefs.getString("user_signature", "") ?: "") }
-    var showEditProfileDialog by remember { mutableStateOf(false) }
+    // E0 分层收口：原直接 AppContainer.instance.userProfileRepo.getUserName()，
+    // 改走 ProfileViewModel.getUserName()，Composable 不再持有 Repository。
+    var userName  by remember { mutableStateOf(profileViewModel.getUserName()) }
+    var showEditNicknameDialog by remember { mutableStateOf(false) }
 
     // ── 外观设置（Fix-11: DataStore 持久化，响应式 Flow 驱动）──────
     val themeOptions     = remember { listOf("跟随系统", "深色", "浅色") }
@@ -235,16 +201,6 @@ fun ProfileScreen(
                 bottom = LocalBottomBarHeight.current + Spacing.md,
             ),
         ) {
-            // ── 用户信息卡片 ──────────────────────────────────
-            item {
-                UserCard(
-                    userName  = userName,
-                    signature = signature,
-                    onEdit    = { showEditProfileDialog = true },
-                )
-                Spacer(Modifier.height(Spacing.md))
-            }
-
             // ── 统计概览行 ────────────────────────────────────
             item {
                 StatsRow(
@@ -258,7 +214,10 @@ fun ProfileScreen(
 
             // ── AI 配置（接真实 ProviderManager）────────────
             item {
-                AiConfigSection()
+                AiConfigSection(
+                    userName       = userName,
+                    onEditNickname = { showEditNicknameDialog = true },
+                )
                 Spacer(Modifier.height(Spacing.lg))
             }
 
@@ -280,9 +239,11 @@ fun ProfileScreen(
             // ── 外观设置 ──────────────────────────────────────
             item {
                 AppearanceSection(
-                    themeLabel    = themeOptions[themeIndex],
-                    fontSizeLabel = fontSizeOptions[fontSizeIndex],
-                    bgStyleLabel  = bgStyleOptions[bgStyleIndex],
+                    // P2-36 修复：DataStore 中可能存储了超出范围的索引值，
+                    // 直接索引访问会抛 IndexOutOfBoundsException，加 coerceIn 保护。
+                    themeLabel    = themeOptions[themeIndex.coerceIn(0, themeOptions.lastIndex)],
+                    fontSizeLabel = fontSizeOptions[fontSizeIndex.coerceIn(0, fontSizeOptions.lastIndex)],
+                    bgStyleLabel  = bgStyleOptions[bgStyleIndex.coerceIn(0, bgStyleOptions.lastIndex)],
                     splashBgLabel = if (splashBgConfig != null) "已自定义" else "默认",
                     onThemeClick    = { showThemeDialog   = true },
                     onFontClick     = { showFontDialog    = true },
@@ -338,57 +299,23 @@ fun ProfileScreen(
             }
         }
 
-        // ── 固定顶部 Header ────────────────────────────────
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(headerBg)
-                .border(
-                    width = 0.5.dp,
-                    color = colors.borderSubtle,
-                    shape = RoundedCornerShape(0.dp),
-                )
-                .statusBarsPadding()
-                .align(Alignment.TopCenter)
-                // Fix-顶栏点击穿透：此前顶栏只是纯展示 Box，不消费触摸事件，
-                // 隔着顶栏能点到下方 LazyColumn 里滚上来、恰好处在顶栏视觉
-                // 区域下面的设置项。加空 clickable 拦截，让顶栏范围内的点击
-                // 到此为止。indication=null 避免多余水波纹。
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication        = null,
-                ) {},
-        ) {
-            Box(
-                modifier         = Modifier
-                    .fillMaxWidth()
-                    .height(Spacing.topBarHeight),
-                contentAlignment = Alignment.CenterStart,
-            ) {
-            Text(
-                text     = "我",
-                style    = type.navTitle,
-                color    = colors.textPrimary,
-                modifier = Modifier.padding(horizontal = Spacing.screenHorizontal),
-            )
-            }
-        }
+        // ── 固定顶部 Header（窗口4：统一为 RootTabTopBar）────────
+        RootTabTopBar(
+            title    = "我",
+            headerBg = headerBg,
+            modifier = Modifier.align(Alignment.TopCenter),
+        )
 
-        // ── Phase 16：编辑用户资料 Dialog ─────────────────
-        if (showEditProfileDialog) {
-            EditProfileDialog(
-                initialName      = userName,
-                initialSignature = signature,
-                onConfirm        = { newName, newSig ->
-                    userName  = newName.ifBlank { "旅人" }
-                    signature = newSig
-                    userPrefs.edit()
-                        .putString("user_name", userName)
-                        .putString("user_signature", signature)
-                        .apply()
-                    showEditProfileDialog = false
+        // ── 编辑称呼 Dialog（窗口1方案B：不再是"编辑资料"，只编辑称呼）──
+        if (showEditNicknameDialog) {
+            EditNicknameDialog(
+                initialName = userName,
+                onConfirm   = { newName ->
+                    profileViewModel.setUserName(newName)
+                    userName = profileViewModel.getUserName()
+                    showEditNicknameDialog = false
                 },
-                onDismiss = { showEditProfileDialog = false },
+                onDismiss = { showEditNicknameDialog = false },
             )
         }
 

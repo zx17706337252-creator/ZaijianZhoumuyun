@@ -23,6 +23,7 @@ import com.zaijian.zhoumuyun.data.repository.IdentityRepository
 import com.zaijian.zhoumuyun.data.repository.JudgeProfileRepository
 import com.zaijian.zhoumuyun.data.repository.LearningGoalRepository
 import com.zaijian.zhoumuyun.data.repository.MemoryRepository
+import com.zaijian.zhoumuyun.data.repository.SkillRepository
 import com.zaijian.zhoumuyun.data.repository.MenstrualCycleRepository
 import com.zaijian.zhoumuyun.data.repository.MessageRepository
 import com.zaijian.zhoumuyun.data.repository.NotificationRepository
@@ -33,6 +34,7 @@ import com.zaijian.zhoumuyun.data.repository.RoundtableMessageRepository
 import com.zaijian.zhoumuyun.data.repository.ScheduleRepository
 import com.zaijian.zhoumuyun.data.repository.SpecialtyProfileRepository
 import com.zaijian.zhoumuyun.data.repository.TaskRepository
+import com.zaijian.zhoumuyun.data.repository.UserProfileRepository
 import com.zaijian.zhoumuyun.data.repository.WorkflowRepository
 import com.zaijian.zhoumuyun.data.repository.AgentActivityRepository
 import com.zaijian.zhoumuyun.data.repository.CapabilityPanelRepository
@@ -107,6 +109,15 @@ class AppContainer private constructor(context: Context) {
     // ProfileScreen（设置入口）都通过 AppContainer.instance 引用同一份实例。
     val splashBackgroundDataStore: SplashBackgroundDataStore = SplashBackgroundDataStore(context)
 
+    // 「称呼」功能性缺陷修复：全项目原先没有 Repository 层封装 SharedPreferences
+    // ("user_profile")，ProfileScreen.kt 直接裸持有读写，四条真实对话路径
+    // （ChatMessageOrchestrator/RoundtableBotReplyGenerator/RoundtableIdleManager/
+    // AgentTaskJobExecutor）均未接入，buildSystemPrompt 的 userName 参数恒为默认值
+    // "你"，「称呼」设置对 AI 完全不生效。与其余 DataStore/Repository 同一持有模式：
+    // 容器构造函数收到的 context 直接构造单例，ProfileScreen（写）与四条调用路径
+    // （读）共用同一实例，key 名/默认值只在 UserProfileRepository 内部一处硬编码。
+    val userProfileRepo: UserProfileRepository = UserProfileRepository(context)
+
     // 阶段2 S-1 收尾：TimelineViewModel 原先本地独立构造，构造参数与此处完全
     // 一致，已切换为引用此实例。
     val eventRepo: EventRepository = EventRepository(db.worldEventDao())
@@ -116,8 +127,12 @@ class AppContainer private constructor(context: Context) {
     // 实例。构造参数（memoryDao/memoryCandidateDao）在所有调用点完全一致，收敛为
     // 容器唯一持有源。ZaijianApp 内 3 处及 CharacterPreviewViewModel/
     // MemoryViewModel 均已切换为引用此处。
-    val memoryRepo: MemoryRepository = MemoryRepository(db.memoryDao(), db.memoryCandidateDao())
+    val memoryRepo: MemoryRepository = MemoryRepository(db.memoryDao(), db.memoryCandidateDao(), db.memoryTagDao())
     val memoryEngine: MemoryEngine = MemoryEngine(db, memoryRepo, eventRepo)
+    // Window C 技能系统：与 memoryRepo 同一持有模式（容器唯一实例），Agent 工具与
+    // 未来 Window D 技能面板均引用此实例，保证任何一次写入经 Room Flow 推送给所有
+    // observeSkills() 订阅者。范式对齐 memoryRepo（上方）。
+    val skillRepo: SkillRepository = SkillRepository(db.skillDao())
 
     // 收尾交接清单 任务组A：ProfileScreen/ProfileStatsRow 原先各自在 Composable 内
     // remember{ AppDatabase.getInstance(context) } 现拿 db 再手动构造 Repository，
@@ -414,6 +429,7 @@ class AppContainer private constructor(context: Context) {
         db                    = db,
         workflowJobDao        = db.workflowJobDao(),
         workflowStepResultDao = db.workflowStepResultDao(),
+        context               = appContext,
     )
 
     // Window B（「心迹」，方案 2.2.2）：Agent 过程可见层 Repository。

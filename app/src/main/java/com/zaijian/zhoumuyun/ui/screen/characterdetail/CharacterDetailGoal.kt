@@ -33,19 +33,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material.icons.outlined.Add
-import androidx.compose.material.icons.outlined.ChevronRight
-import androidx.compose.material.icons.outlined.Code
-import androidx.compose.material.icons.outlined.Description
-import androidx.compose.material.icons.outlined.Email
-import androidx.compose.material.icons.outlined.Search
-import androidx.compose.material.icons.outlined.Star
-import androidx.compose.material.icons.outlined.Delete
-import androidx.compose.material.icons.outlined.Edit
-import androidx.compose.material.icons.outlined.StarBorder
-import androidx.compose.material.icons.outlined.TableChart
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.input.pointer.pointerInput
@@ -123,13 +110,13 @@ import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
 import com.zaijian.zhoumuyun.util.ZLog
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.material.icons.outlined.CameraAlt
 import androidx.compose.ui.platform.LocalContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 import androidx.compose.material3.FilterChip
+import com.zaijian.zhoumuyun.ui.design.AppIcons
 
 @Composable
 internal fun GoalPanel(
@@ -212,7 +199,7 @@ internal fun GoalPanel(
                 verticalAlignment     = Alignment.CenterVertically,
             ) {
                 Icon(
-                    imageVector        = Icons.Outlined.Add,
+                    imageVector        = AppIcons.Add,
                     contentDescription = "新增目标",
                     tint               = accentColor,
                     modifier           = Modifier.size(16.dp),
@@ -238,7 +225,7 @@ internal fun GoalPanel(
                     color = accentColor,
                 )
                 Icon(
-                    imageVector        = Icons.Outlined.ChevronRight,
+                    imageVector        = AppIcons.ChevronRight,
                     contentDescription = null,
                     tint               = accentColor,
                     modifier           = Modifier.size(16.dp),
@@ -264,7 +251,7 @@ internal fun GoalPanel(
                     color = accentColor,
                 )
                 Icon(
-                    imageVector        = Icons.Outlined.ChevronRight,
+                    imageVector        = AppIcons.ChevronRight,
                     contentDescription = null,
                     tint               = accentColor,
                     modifier           = Modifier.size(16.dp),
@@ -341,7 +328,7 @@ private fun GoalCard(
             .fillMaxWidth()
             .clickable { onEdit() }
             .padding(Spacing.md),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(Spacing.sm),
     ) {
         // 标题行
         Row(
@@ -391,7 +378,7 @@ private fun GoalCard(
         }
 
         // 进度条
-        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
             Row(
                 modifier              = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -470,7 +457,7 @@ private fun GoalCard(
                 color    = accentColor,
                 modifier = Modifier
                     .clickable { onEdit() }
-                    .padding(4.dp),
+                    .padding(Spacing.xs),
             )
             Spacer(Modifier.width(Spacing.md))
             // S8-窗口07 结论3修复：GoalPanel 此前接收了 onDeactivate 但从未下传，
@@ -481,7 +468,7 @@ private fun GoalCard(
                 color    = colors.textSecondary,
                 modifier = Modifier
                     .clickable { onDeactivate() }
-                    .padding(4.dp),
+                    .padding(Spacing.xs),
             )
             Spacer(Modifier.width(Spacing.md))
             Text(
@@ -490,7 +477,7 @@ private fun GoalCard(
                 color    = colors.textDisabled,
                 modifier = Modifier
                     .clickable { showDeleteConfirm = true }
-                    .padding(4.dp),
+                    .padding(Spacing.xs),
             )
         }
     }
@@ -550,7 +537,7 @@ internal fun GoalDraftSheet(
                     color    = colors.textSecondary,
                     modifier = Modifier
                         .clickable { onDismiss() }
-                        .padding(4.dp),
+                        .padding(Spacing.xs),
                 )
             }
 
@@ -577,7 +564,7 @@ internal fun GoalDraftSheet(
             // 时间维度选择
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text(text = "时间维度", style = type.label, color = colors.textSecondary)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
                     GoalHorizon.values().forEach { h ->
                         val label = when (h) {
                             GoalHorizon.SHORT_TERM -> "短期"
@@ -595,7 +582,7 @@ internal fun GoalDraftSheet(
                                     shape = RoundedCornerShape(Radius.sm),
                                 )
                                 .clickable { onHorizonChange(h) }
-                                .padding(horizontal = Spacing.md, vertical = 8.dp),
+                                .padding(horizontal = Spacing.md, vertical = Spacing.sm),
                             contentAlignment = Alignment.Center,
                         ) {
                             Text(
@@ -622,7 +609,7 @@ internal fun GoalDraftSheet(
                             contentAlignment = Alignment.Center,
                         ) {
                             Icon(
-                                imageVector        = if (active) Icons.Outlined.Star else Icons.Outlined.StarBorder,
+                                imageVector        = if (active) AppIcons.Star else AppIcons.StarBorder,
                                 contentDescription = "${i}星优先级",
                                 tint               = if (active) accentColor else colors.textDisabled,
                                 modifier           = Modifier.size(28.dp),
@@ -669,7 +656,7 @@ internal fun GoalDraftSheet(
                         color = colors.textSecondary,
                     )
                     androidx.compose.foundation.lazy.LazyRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
                     ) {
                         val options = listOf<com.zaijian.zhoumuyun.data.db.entity.ProjectEntity?>(null) + activeProjects
                         items(options) { proj ->
@@ -682,7 +669,7 @@ internal fun GoalDraftSheet(
                                         else growthGreen.copy(alpha = 0.12f)
                                     )
                                     .clickable { onProjectChange(proj?.id) }
-                                    .padding(horizontal = Spacing.md, vertical = 8.dp),
+                                    .padding(horizontal = Spacing.md, vertical = Spacing.sm),
                                 contentAlignment = Alignment.Center,
                             ) {
                                 Text(

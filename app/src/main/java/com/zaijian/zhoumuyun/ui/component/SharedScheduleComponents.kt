@@ -36,8 +36,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
@@ -58,6 +56,7 @@ import androidx.compose.ui.unit.dp
 import com.zaijian.zhoumuyun.ui.viewmodel.RepeatLabel
 import com.zaijian.zhoumuyun.ui.theme.Palette
 import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
+import com.zaijian.zhoumuyun.ui.design.AppIcons
 
 /**
  * 统一重复标签 Chip，取代 GlobalScheduleScreen 的 [RepeatChip] 与
@@ -146,7 +145,7 @@ fun ScheduleDeleteButton(onDelete: () -> Unit) {
     // P3-33 修复：触摸目标 < 48dp，移除 IconButton 的 size 限制，让 minimumInteractiveComponentSize 生效
     IconButton(onClick = onDelete) {
         Icon(
-            imageVector        = Icons.Outlined.Delete,
+            imageVector        = AppIcons.Delete,
             contentDescription = "删除",
             tint               = Palette.SemanticDanger.copy(alpha = 0.7f),  // P3-53 修复：colorScheme.error → Palette.SemanticDanger
             modifier           = Modifier.size(18.dp),

@@ -31,6 +31,7 @@ import java.util.UUID
 import com.zaijian.zhoumuyun.data.provider.LLMProvider
 import com.zaijian.zhoumuyun.data.provider.LLMMessage
 import com.zaijian.zhoumuyun.data.provider.LLMConfig
+import com.zaijian.zhoumuyun.util.ChineseTokenizer
 import com.zaijian.zhoumuyun.util.ZLog
 
 // ─────────────────────────────────────────────────────────────
@@ -138,7 +139,16 @@ class MemoryWriteTool(
 ) : AgentTool {
 
     override val name = "memory_write"
-    override val description = "Agent主动写入一条独立检索用的记忆条目。仅用于：身份类硬事实、有具体时间/行为的明确承诺、关系的重大转折点、用户明确要求记住的事实。日常情绪、偏好、寒暄不要用这个工具，应通过 narrative_memory_update / user_impression_update 融入整体叙事。圆桌场景下，若这条信息是全员共享的群体事实，传 scope=GROUP + roundtableId。"
+    // P3-6 修复（Window A 验收待办）：description 收敛为一句简述（≤40字），
+    // 详细的适用范围 / 参数格式 / 与 narrative_memory_update 的分工移入 usageNotes。
+    // 分工边界已在 PromptOrchestrator.buildMemoryGuidelineBlock() 常驻注入，此处不重复。
+    override val description = "写入一条独立检索用的记忆锚点（非日常叙事类）"
+    override val usageNotes = "仅用于：身份类硬事实、有具体时间/行为的明确承诺、关系的重大转折点、" +
+        "用户明确要求记住的事实。日常情绪、偏好、寒暄不要用这个工具，应通过 " +
+        "narrative_memory_update / user_impression_update 融入整体叙事。" +
+        "圆桌场景下，若这条信息是全员共享的群体事实，传 scope=GROUP + roundtableId。" +
+        "importance 默认 3（长期记忆），=5 时自动标记 isCore（永不衰减）。" +
+        "content 最长 500 字。"
     override val paramKeys = listOf("content", "domain", "importance", "keywords", "scope", "roundtableId")
 
     companion object {
@@ -225,18 +235,15 @@ class MemoryWriteTool(
     }
 
     /**
-     * 从内容中提取前 5 个有效词作为关键词。
-     * 简单策略：按标点/空格分词，取长度 ≥ 2 的前5个词。
+     * 从内容中提取关键词，写入 keywords 字段（同步进 FTS4 + L2 标签索引）。
+     *
+     * E1 审计报告任务1 修复：原实现按标点/空白切分取长度≥2的前5段。中文口语
+     * 句子内部没有空格，一句话如果中间没有逗号，切出来的"关键词"就是整句话
+     * 本身；如果有逗号，切出来的是每个分句的完整文本（而非分句内的词）——
+     * 都不是词粒度，FTS 前缀匹配和 L2 tag 精确匹配双双失效。
+     * 改为委托 [ChineseTokenizer] 做真正的中文分词，与查询侧共用同一分词器。
      */
-    private fun extractKeywords(content: String): String {
-        return content
-            .split(Regex("[\\s，。！？、；：\"'「」【】（）,.!?;:'\"\\[\\]()]"))
-            .filter { it.length >= 2 }
-            .distinct()
-            .take(5)
-            .joinToString(" ")
-            .ifEmpty { content.take(20) }
-    }
+    private fun extractKeywords(content: String): String = ChineseTokenizer.tokenizeJoined(content)
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -286,10 +293,11 @@ class MemoryQueryTool(
         val limit = params["limit"]?.toIntOrNull()?.coerceIn(1, 10) ?: 5
 
         try {
-            // FTS4 前缀检索（添加 * 支持前缀匹配）
-            val ftsQuery = query.split(" ")
-                .filter { it.isNotBlank() }
-                .joinToString(" ") { "$it*" }
+            // E1 审计报告任务1 修复：原实现裸 query.split(" ") 按 空白切分构造
+            // FTS 查询，对无空格的连续中文失效。改为复用 memoryRepo.buildFtsQuery()，
+            // 与 searchRelevant / searchRelevantWithRouting 共用同一套（基于
+            // ChineseTokenizer 的）查询分词 + 前缀匹配构造，保证一致性。
+            val ftsQuery = memoryRepo.buildFtsQuery(query)
 
             val results = memoryRepo.searchByFts(charId, ftsQuery, limit * 2)  // 多取一些再过滤
 
@@ -372,6 +380,7 @@ class GoalUpdateTool(
     override val name = "goal_update"
     override val description = "推进用户学习目标的进度百分比，达到100%自动标记完成"
     override val paramKeys = listOf("goal_id", "delta", "note")
+    override val usageNotes = "delta 须为 0.01~1.0 之间的小数（如 0.1 代表10%进度增量），不是整数"
 
     companion object {
         const val MAX_DELTA = 1.0f
@@ -402,13 +411,15 @@ class GoalUpdateTool(
             // 验证目标存在且属于当前角色
             val goal = goalRepo.getById(goalId)
             if (goal == null) {
-                return@withContext ToolResult(name, false, "目标不存在：$goalId")
+                // P2-09 修复：统一错误信息仅放入 error 字段，content 留空，
+                // 与早期校验分支（charId/goalId/delta）的返回格式一致。
+                return@withContext ToolResult(name, false, "", "目标不存在：$goalId")
             }
             if (goal.characterId != charId) {
-                return@withContext ToolResult(name, false, "目标 $goalId 不属于当前角色")
+                return@withContext ToolResult(name, false, "", "目标 $goalId 不属于当前角色")
             }
             if (!goal.isActive) {
-                return@withContext ToolResult(name, false, "目标「${goal.title}」已停用，无法更新进度")
+                return@withContext ToolResult(name, false, "", "目标「${goal.title}」已停用，无法更新进度")
             }
 
             // 更新进度
@@ -434,7 +445,8 @@ class GoalUpdateTool(
                 userHint = "正在更新学习目标…",
             )
         } catch (e: Exception) {
-            ToolResult(name, false, "更新目标进度失败：${e.message?.take(80)}", e.message)
+            // P2-09 修复：统一错误信息仅放入 error 字段。
+            ToolResult(name, false, "", "更新目标进度失败：${e.message?.take(80)}")
         }
     }
 }
@@ -488,6 +500,7 @@ class RuleDistillTool(
     override val name = "rule_distill"
     override val description = "从当前学习目标的对话经验中提炼出可复用的行为规则并写入记忆"
     override val paramKeys = listOf("goal_id", "rules")
+    override val usageNotes = "rules 用 | 分隔多条规则，每次最多3条，每条≤100字"
 
     companion object {
         const val MAX_RULES_PER_CALL = 3        // 每次最多提炼条数
@@ -512,6 +525,14 @@ class RuleDistillTool(
             return@withContext ToolResult(
                 name, false, "",
                 "目标 $goalId 不存在或已停用，无法关联规则"
+            )
+        }
+        // P1-14 修复（窗口3 P1-7）：原实现未校验 goal.characterId 与当前角色是否一致，
+        // 当前角色的 LLM 传入其他角色名下的 goal_id 时可越权提炼/写入规则。
+        if (goal.characterId != charId) {
+            return@withContext ToolResult(
+                name, false, "",
+                "目标 $goalId 不属于当前角色，无法关联规则"
             )
         }
 

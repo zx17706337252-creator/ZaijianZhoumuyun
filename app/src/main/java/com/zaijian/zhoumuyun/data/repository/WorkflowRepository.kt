@@ -1,5 +1,7 @@
 package com.zaijian.zhoumuyun.data.repository
 
+import android.content.Context
+import com.zaijian.zhoumuyun.data.agent.WorkManagerScheduler
 import com.zaijian.zhoumuyun.data.db.AppDatabase
 import com.zaijian.zhoumuyun.data.db.dao.WorkflowJobDao
 import com.zaijian.zhoumuyun.data.db.dao.WorkflowStepResultDao
@@ -19,7 +21,12 @@ class WorkflowRepository(
     private val db: AppDatabase,
     private val workflowJobDao: WorkflowJobDao,
     private val workflowStepResultDao: WorkflowStepResultDao,
+    context: Context,
 ) {
+    // 漏调用-02 修复配套：持有 applicationContext 而非调用方传入的 context 本身，
+    // 避免因调用方误传 Activity Context 导致 Repository（生命周期通常长于 Activity）
+    // 间接持有并泄漏它。
+    private val appContext = context.applicationContext
 
     companion object {
         const val DEFAULT_MAX_STEPS = 8
@@ -138,6 +145,7 @@ class WorkflowRepository(
             resultSummary = resultSummary,
             failReason = null,
         )
+        cancelPendingWork(id)
     }
 
     /** 达到 maxSteps / deadlineAt 仍未完成：如实呈现已完成部分 + 卡在哪一步 */
@@ -149,6 +157,7 @@ class WorkflowRepository(
             resultSummary = null,
             failReason = failReason,
         )
+        cancelPendingWork(id)
     }
 
     /** 不可恢复错误提前终止 */
@@ -160,5 +169,21 @@ class WorkflowRepository(
             resultSummary = null,
             failReason = failReason,
         )
+        cancelPendingWork(id)
+    }
+
+    /**
+     * 漏调用-02 修复：任务收敛到任一终态（COMPLETED/TIMEOUT/FAILED）后，
+     * 主动取消 WorkManager 中可能仍排队/等待约束满足的对应 OneTimeWorkRequest，
+     * 避免其残留在队列里（此前 WorkManagerScheduler.cancelWorkflow 全代码库
+     * 零调用方，取消入口定义了但从未接入终态写入流程）。
+     *
+     * WorkflowJobWorker.doWork() 起始处已有"若已是终态则直接 Result.success()"
+     * 的防御（见该文件注释"上一次执行已经把任务收敛到终结状态，本次只是
+     * WorkRequest 还没来得及清理"），因此即便这里的 cancel 因某种原因未生效，
+     * 也不会造成任务被重复处理，本修复属于健壮性/省电优化而非纠正数据错误。
+     */
+    private fun cancelPendingWork(jobId: String) {
+        WorkManagerScheduler.cancelWorkflow(appContext, jobId)
     }
 }

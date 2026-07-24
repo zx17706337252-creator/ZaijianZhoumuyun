@@ -728,7 +728,11 @@ object ToolCallInterceptor {
         failedResult: ToolResult,
         disabledToolNames: Set<String>,
     ): DegradeDecision {
-        val availableTools = AgentToolRegistry.buildToolDescriptionBlock(disabledToolNames)
+        // Window B-1 fix2：降级决策 Prompt 消费 usageNotes，帮助 LLM 做更合理的换工具/换参数决策
+        val availableTools = AgentToolRegistry.buildDegradeDecisionToolBlock(
+            excludeNames   = disabledToolNames,
+            failedToolName = failedCall.toolName,
+        )
         val systemPrompt = buildString {
             appendLine("你是一个工具调用降级决策助手。一个工具调用刚刚失败了，你需要决定下一步怎么做。")
             appendLine("只回复以下三种标签之一，不要任何其他文字：")
@@ -737,7 +741,7 @@ object ToolCallInterceptor {
             appendLine("<degrade:switch tool=\"工具名\" params=\"key1=\\\"val1\\\"\"/>   换一个工具")
             appendLine("<degrade:giveup reason=\"放弃原因\"/>   放弃")
             appendLine()
-            appendLine("可用工具列表：")
+            appendLine("可用工具列表（⚠️标记为已失败的工具，换参数重试或换其他工具）：")
             appendLine(availableTools)
         }
         val userPrompt = buildString {
@@ -795,9 +799,36 @@ object ToolCallInterceptor {
         return result
     }
 
-    private fun unescapeAttr(value: String): String = value
-        .replace("\\\"", "\"")
-        .replace("\\n", "\n")
+    /**
+     * P1-10 修复（窗口3 P1-3 / 合并方案 P1-10）：
+     *
+     * 原实现用链式 `.replace("\\\"", "\"")` / `.replace("\\n", "\n")` 全局替换，
+     * 与 ToolParser.kt:427 已修复的同类问题根因一致——链式 replace 不处理 `\\`
+     * 本身且非单遍扫描，多层转义时会把 `\\\"` 误还原成 `\\"` 而非期望的 `\"`。
+     * 现改为与 ToolParser.unescapeAttrValue 完全一致的单遍从左到右扫描实现。
+     */
+    private fun unescapeAttr(value: String): String {
+        val sb = StringBuilder(value.length)
+        var i = 0
+        val n = value.length
+        while (i < n) {
+            val c = value[i]
+            if (c == '\\' && i + 1 < n) {
+                when (value[i + 1]) {
+                    '\\' -> { sb.append('\\'); i += 2 }
+                    '"'  -> { sb.append('"');  i += 2 }
+                    '\'' -> { sb.append('\''); i += 2 }
+                    'n'  -> { sb.append('\n'); i += 2 }
+                    't'  -> { sb.append('\t'); i += 2 }
+                    else -> { sb.append(c); i += 1 }  // 未知转义：保留反斜杠本身，不消费下一字符
+                }
+            } else {
+                sb.append(c)
+                i += 1
+            }
+        }
+        return sb.toString()
+    }
 
     /**
      * 写一条降级事件到心迹事件表（fire-and-forget）。

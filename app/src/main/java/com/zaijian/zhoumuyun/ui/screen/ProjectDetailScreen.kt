@@ -13,24 +13,12 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.outlined.Search
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.FolderOpen
-import androidx.compose.material.icons.outlined.CheckBox
-import androidx.compose.material.icons.outlined.CheckBoxOutlineBlank
-import androidx.compose.material.icons.outlined.Circle
-import androidx.compose.material.icons.outlined.History
-import androidx.compose.material.icons.outlined.Spa
-import androidx.compose.material.icons.outlined.Schedule
+import com.zaijian.zhoumuyun.ui.design.AppIcons
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -45,11 +33,6 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material.icons.outlined.Archive
-import androidx.compose.material.icons.outlined.Edit
-import androidx.compose.material.icons.outlined.MoreVert
-import androidx.compose.material.icons.outlined.PauseCircle
-import androidx.compose.material.icons.outlined.PlayCircle
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -77,6 +60,8 @@ import com.zaijian.zhoumuyun.ui.theme.Palette
 import com.zaijian.zhoumuyun.ui.theme.Radius
 import com.zaijian.zhoumuyun.ui.theme.Spacing
 import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
+import com.zaijian.zhoumuyun.ui.component.DetailTopBar
+import com.zaijian.zhoumuyun.ui.component.EmptyStateView
 import com.zaijian.zhoumuyun.ui.component.SingleInputDialog
 import com.zaijian.zhoumuyun.ui.viewmodel.DayGrowthSummary
 import com.zaijian.zhoumuyun.ui.viewmodel.ProjectViewModel
@@ -148,17 +133,12 @@ fun ProjectDetailScreen(
                 .fillMaxSize()
                 .background(colors.bgBase), // P3-17 修复：统一使用 bgBase 替代 background
         ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .statusBarsPadding()
-                    .padding(horizontal = Spacing.screenHorizontal, vertical = Spacing.md),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                IconButton(onClick = onBack) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回", tint = colors.onBackground)
-                }
-            }
+            // 窗口4补充：统一为 DetailTopBar
+            DetailTopBar(
+                title    = "项目详情",
+                onBack   = onBack,
+                headerBg = colors.bgBase,
+            )
             Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                 Text(
                     text = detail.error ?: "项目不存在或已被删除",
@@ -176,42 +156,29 @@ fun ProjectDetailScreen(
             .background(colors.bgBase), // P3-17 修复：统一使用 bgBase 替代 background
         contentPadding = PaddingValues(bottom = 80.dp),
     ) {
-        // ── 顶栏 ───────────────────────────────────────────
+        // ── 顶栏（窗口4补充：统一为 DetailTopBar）───────────────────
         item {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .statusBarsPadding()
-                    .padding(horizontal = Spacing.screenHorizontal, vertical = Spacing.md),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                IconButton(onClick = onBack) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回", tint = colors.onBackground)
-                }
-                Text(
-                    text = detail.project?.title ?: "项目详情",
-                    color = colors.onBackground,
-                    // P3-32 修复：移除硬编码 fontSize 覆写
-                    style = type.titleBold,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.weight(1f).padding(start = 8.dp),
-                )
-                // Audit-v1.33 P1-3/P1-4 修复：项目标题/描述编辑此前无 UI 入口
-                // （updateProject 定义但从未调用），归档/暂停/恢复流转路径
-                // 此前在 UI 层完全不可达（archiveProject 无入口，
-                // pauseProject/reactivateProject 甚至未在 ViewModel 暴露）。
-                // 菜单风格与 LearningGoalScreen.GoalCardMenu 保持一致
-                // （IconButton(MoreVert) + DropdownMenu）。
-                detail.project?.let { project ->
-                    ProjectDetailMenu(
-                        status = project.status,
-                        onEdit = { showEditProjectDialog = true },
-                        onArchive = { viewModel.archiveProject(project.id) },
-                        onPause = { viewModel.pauseProject(project.id) },
-                        onReactivate = { viewModel.reactivateProject(project.id) },
-                    )
-                }
-            }
+            DetailTopBar(
+                title    = detail.project?.title ?: "项目详情",
+                onBack   = onBack,
+                headerBg = colors.bgBase,
+                actions  = {
+                    // Audit-v1.33 P1-3/P1-4 修复：项目标题/描述编辑此前无 UI 入口
+                    // P1-22 修复：completeProject 此前仅在 ProjectCard 传入 onComplete
+                    // 回调但 ProjectCard 从未使用该回调（死参数），详情页菜单也缺失
+                    // "完成"入口，导致 ACTIVE→COMPLETED 流转在 UI 层完全不可达。
+                    detail.project?.let { project ->
+                        ProjectDetailMenu(
+                            status = project.status,
+                            onEdit = { showEditProjectDialog = true },
+                            onArchive = { viewModel.archiveProject(project.id) },
+                            onPause = { viewModel.pauseProject(project.id) },
+                            onReactivate = { viewModel.reactivateProject(project.id) },
+                            onComplete = { viewModel.completeProject(project.id) },
+                        )
+                    }
+                },
+            )
         }
 
         // ── 项目描述 ───────────────────────────────────────
@@ -326,15 +293,12 @@ fun ProjectDetailScreen(
         }
 
         if (detail.milestones.isEmpty()) {
+            // D-3 收口：内联 Text → 统一空状态组件 EmptyStateView
             item {
-                Text(
-                    text = "还没有里程碑",
-                    color = colors.onBackground.copy(alpha = 0.35f),
-                    style = type.caption,
-                    modifier = Modifier.padding(
-                        horizontal = Spacing.screenHorizontal,
-                        vertical = Spacing.sm,
-                    ),
+                EmptyStateView(
+                    icon     = AppIcons.Flag,
+                    title    = "还没有里程碑",
+                    subtitle = "点击上方「+ 添加」创建第一个",
                 )
             }
         } else {
@@ -382,21 +346,21 @@ fun ProjectDetailScreen(
                                 )
                             )
                         },
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                        contentPadding = PaddingValues(horizontal = Spacing.sm, vertical = 0.dp),
                     ) {
                         Icon(
-                            Icons.Default.FolderOpen,
+                            AppIcons.FolderOpenFilled,
                             contentDescription = "导入文件",
                             modifier = Modifier.size(14.dp),
                             tint = colors.primary,
                         )
-                        Spacer(Modifier.width(4.dp))
+                        Spacer(Modifier.width(Spacing.xs))
                         Text("导入", color = colors.primary, style = type.label)
                     }
                 }
                 TextButton(
                     onClick = { showAddKnowledgeDialog = true },
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                    contentPadding = PaddingValues(horizontal = Spacing.sm, vertical = 0.dp),
                 ) {
                     Text("+ 添加", color = colors.primary, style = type.label)
                 }
@@ -458,15 +422,14 @@ fun ProjectDetailScreen(
                 )
             }
         } else if (!isSearchMode && detail.knowledge.isEmpty()) {
+            // D-3 收口：内联 Text → 统一空状态组件 EmptyStateView
+            // （上面搜索无结果的分支保留原文本样式——那是"搜不到"而不是
+            //  "没有数据"，语义不同，不套用同一个空状态组件）
             item {
-                Text(
-                    text = "还没有知识条目",
-                    color = colors.onBackground.copy(alpha = 0.35f),
-                    style = type.caption,
-                    modifier = Modifier.padding(
-                        horizontal = Spacing.screenHorizontal,
-                        vertical = Spacing.sm,
-                    ),
+                EmptyStateView(
+                    icon     = AppIcons.MenuBook,
+                    title    = "还没有知识条目",
+                    subtitle = "点击上方「+ 添加」或「导入」创建第一条",
                 )
             }
         } else {
@@ -488,15 +451,12 @@ fun ProjectDetailScreen(
             )
         }
         if (detail.members.isEmpty()) {
+            // D-3 收口：内联 Text → 统一空状态组件 EmptyStateView
             item {
-                Text(
-                    text     = "还没有参与角色",
-                    color    = colors.onBackground.copy(alpha = 0.35f),
-                    style    = type.caption,
-                    modifier = Modifier.padding(
-                        horizontal = Spacing.screenHorizontal,
-                        vertical   = Spacing.sm,
-                    ),
+                EmptyStateView(
+                    icon     = AppIcons.Person,
+                    title    = "还没有参与角色",
+                    subtitle = "点击上方「+ 添加」邀请角色加入",
                 )
             }
         } else {
@@ -513,7 +473,7 @@ fun ProjectDetailScreen(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = Spacing.screenHorizontal, vertical = 4.dp),
+                        .padding(horizontal = Spacing.screenHorizontal, vertical = Spacing.xs),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     // 角色颜色标记
@@ -538,7 +498,7 @@ fun ProjectDetailScreen(
                         // P3-32 修复：移除硬编码 fontSize
                         style    = type.caption,
                     )
-                    Spacer(Modifier.width(8.dp))
+                    Spacer(Modifier.width(Spacing.sm))
                     // 移除按钮（视觉28dp，触摸区扩展至48dp）
                     IconButton(
                         onClick  = { viewModel.removeMember(projectId, member.characterId) },
@@ -547,7 +507,7 @@ fun ProjectDetailScreen(
                             .minimumInteractiveComponentSize(),
                     ) {
                         Icon(
-                            Icons.Default.Close,
+                            AppIcons.CloseFilled,
                             contentDescription = "移除",
                             tint     = colors.onBackground.copy(alpha = 0.28f),
                             modifier = Modifier.size(14.dp),
@@ -596,7 +556,7 @@ fun ProjectDetailScreen(
                 if (available.isEmpty()) {
                     Text("所有角色都已参与", color = colors.onBackground.copy(alpha = 0.5f))
                 } else {
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Column(verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
                         available.forEach { char ->
                             Row(
                                 modifier = Modifier
@@ -606,7 +566,7 @@ fun ProjectDetailScreen(
                                         viewModel.addMember(projectId, char.id, "CONTRIBUTOR")
                                         showAddMemberPicker = false
                                     }
-                                    .padding(horizontal = 8.dp, vertical = 10.dp),
+                                    .padding(horizontal = Spacing.sm, vertical = 10.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
                                 Box(
@@ -658,17 +618,17 @@ fun ProjectDetailScreen(
 //  Composable helpers
 // ─────────────────────────────────────────────────────────────
 
-// Audit-v1.33 P1-3/P1-4 修复：项目详情页操作菜单。
+// Audit-v1.33 P1-3/P1-4 修复 + P1-22 修复：项目详情页操作菜单。
 //
 // 状态机（ProjectStatus）支持 ACTIVE/PAUSED/COMPLETED/ARCHIVED 四种状态，
-// 此前 UI 只能从 ACTIVE 流转到 COMPLETED（ProjectCard 的"完成"按钮），
-// 其余流转路径（暂停/恢复/归档、标题描述编辑）在 Repository/ViewModel
-// 层均已定义，但从未接入任何 UI 入口。
+// 此前 UI 只能从 ACTIVE 流转到 PAUSED/ARCHIVED，其余流转路径（暂停/恢复/
+// 归档/完成/标题描述编辑）在 Repository/ViewModel 层均已定义，但从未接入
+// 任何 UI 入口。P1-22 补齐了"完成项目"入口。
 //
 // 菜单项按当前状态动态显示，只暴露状态机语义上合法的下一步操作：
-// - ACTIVE：编辑 / 暂停 / 归档
-// - PAUSED：编辑 / 恢复 / 归档
-// - COMPLETED：编辑 / 归档（已完成的项目不再需要暂停/恢复）
+// - ACTIVE：编辑 / 完成 / 暂停 / 归档
+// - PAUSED：编辑 / 完成 / 恢复 / 归档
+// - COMPLETED：编辑 / 归档（已完成的项目不再需要暂停/恢复/再次完成）
 // - ARCHIVED：仅编辑（归档是终态，不提供"取消归档"——审查报告未要求
 //   此项，且状态机定义中 ARCHIVED 没有回退边，保持与既有状态机定义一致，
 //   不擅自新增回退路径）
@@ -679,6 +639,7 @@ private fun ProjectDetailMenu(
     onArchive: () -> Unit,
     onPause: () -> Unit,
     onReactivate: () -> Unit,
+    onComplete: () -> Unit,
 ) {
     val colors = ZaijianTheme.colors
     var expanded by remember { mutableStateOf(false) }
@@ -691,7 +652,7 @@ private fun ProjectDetailMenu(
                 .minimumInteractiveComponentSize(),
         ) {
             Icon(
-                imageVector        = Icons.Outlined.MoreVert,
+                imageVector        = AppIcons.MoreVert,
                 contentDescription = "项目操作",
                 tint               = colors.onBackground.copy(alpha = 0.7f),
                 modifier           = Modifier.size(20.dp),
@@ -705,9 +666,21 @@ private fun ProjectDetailMenu(
                 text    = { Text("编辑") },
                 onClick = { expanded = false; onEdit() },
                 leadingIcon = {
-                    Icon(Icons.Outlined.Edit, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Icon(AppIcons.Edit, contentDescription = null, modifier = Modifier.size(16.dp))
                 },
             )
+            // P1-22 修复：完成项目入口，仅在 ACTIVE/PAUSED 状态显示。
+            // COMPLETED 状态已经是"已完成"，不需要重复完成。
+            if (status == "ACTIVE" || status == "PAUSED") {
+                HorizontalDivider()
+                DropdownMenuItem(
+                    text    = { Text("完成项目") },
+                    onClick = { expanded = false; onComplete() },
+                    leadingIcon = {
+                        Icon(AppIcons.CheckCircle, contentDescription = null, modifier = Modifier.size(16.dp))
+                    },
+                )
+            }
             if (status == "ACTIVE" || status == "PAUSED") {
                 HorizontalDivider()
                 if (status == "ACTIVE") {
@@ -715,7 +688,7 @@ private fun ProjectDetailMenu(
                         text    = { Text("暂停") },
                         onClick = { expanded = false; onPause() },
                         leadingIcon = {
-                            Icon(Icons.Outlined.PauseCircle, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Icon(AppIcons.PauseCircle, contentDescription = null, modifier = Modifier.size(16.dp))
                         },
                     )
                 } else {
@@ -723,7 +696,7 @@ private fun ProjectDetailMenu(
                         text    = { Text("恢复") },
                         onClick = { expanded = false; onReactivate() },
                         leadingIcon = {
-                            Icon(Icons.Outlined.PlayCircle, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Icon(AppIcons.PlayCircle, contentDescription = null, modifier = Modifier.size(16.dp))
                         },
                     )
                 }
@@ -734,7 +707,7 @@ private fun ProjectDetailMenu(
                     text    = { Text("归档") },
                     onClick = { expanded = false; onArchive() },
                     leadingIcon = {
-                        Icon(Icons.Outlined.Archive, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Icon(AppIcons.Archive, contentDescription = null, modifier = Modifier.size(16.dp))
                     },
                 )
             }
@@ -890,13 +863,13 @@ private fun MilestoneRow(
                 .minimumInteractiveComponentSize(),
         ) {
             Icon(
-                imageVector = if (milestone.isCompleted) Icons.Filled.CheckCircle else Icons.Outlined.Circle,
+                imageVector = if (milestone.isCompleted) AppIcons.CheckCircleFilled else AppIcons.Circle,
                 contentDescription = null,
                 tint = if (milestone.isCompleted) Palette.SemanticSuccess else colors.onBackground.copy(alpha = 0.3f),
                 modifier = Modifier.size(20.dp),
             )
         }
-        Spacer(Modifier.width(8.dp))
+        Spacer(Modifier.width(Spacing.sm))
         Text(
             text = milestone.title,
             color = if (milestone.isCompleted) colors.onBackground.copy(alpha = 0.35f)
@@ -928,7 +901,7 @@ private fun KnowledgeSearchField(
         textStyle = ZaijianTheme.typography.caption,
         leadingIcon = {
             Icon(
-                Icons.Outlined.Search,
+                AppIcons.Search,
                 contentDescription = null,
                 tint = colors.onBackground.copy(alpha = 0.4f),
                 modifier = Modifier.size(18.dp),
@@ -944,7 +917,7 @@ private fun KnowledgeSearchField(
             } else if (query.isNotEmpty()) {
                 IconButton(onClick = onClear, modifier = Modifier.size(32.dp)) {
                     Icon(
-                        Icons.Default.Close,
+                        AppIcons.CloseFilled,
                         contentDescription = "清空搜索",
                         tint = colors.onBackground.copy(alpha = 0.4f),
                         modifier = Modifier.size(16.dp),
@@ -973,7 +946,7 @@ private fun KnowledgeRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = Spacing.screenHorizontal, vertical = 4.dp)
+            .padding(horizontal = Spacing.screenHorizontal, vertical = Spacing.xs)
             .clip(RoundedCornerShape(8.dp))
             .background(colors.bgCard.copy(alpha = GlassOpacity.low)) // P3-17 修复：统一使用 bgCard 替代 surface
             .padding(Spacing.sm),
@@ -994,7 +967,7 @@ private fun KnowledgeRow(
                     }
                 ),
         )
-        Spacer(Modifier.width(8.dp))
+        Spacer(Modifier.width(Spacing.sm))
         Column(modifier = Modifier.weight(1f)) {
             if (entry.title.isNotEmpty()) {
                 Text(entry.title, color = colors.onBackground, style = type.caption, fontWeight = FontWeight.Medium)
@@ -1008,7 +981,7 @@ private fun KnowledgeRow(
                 overflow = TextOverflow.Ellipsis
             )
             // Phase 31：来源徽章 + 字数
-            Spacer(Modifier.height(4.dp))
+            Spacer(Modifier.height(Spacing.xs))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 val sourceLabel = when (entry.source) {
                     "FILE_IMPORT"  -> "📄 文件"
@@ -1033,7 +1006,7 @@ private fun KnowledgeRow(
         }
         IconButton(onClick = onDelete, modifier = Modifier.size(32.dp).minimumInteractiveComponentSize()) {
             Icon(
-                Icons.Default.Close,
+                AppIcons.CloseFilled,
                 contentDescription = "删除",
                 tint = colors.onBackground.copy(alpha = 0.3f),
                 modifier = Modifier.size(16.dp),
@@ -1083,7 +1056,7 @@ private fun TodayGrowthSection(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Icon(
-                imageVector        = Icons.Outlined.Spa,
+                imageVector        = AppIcons.Spa,
                 contentDescription = null,
                 tint               = growthGreen,
                 modifier           = Modifier.size(14.dp),
@@ -1102,7 +1075,11 @@ private fun TodayGrowthSection(
         Spacer(Modifier.height(Spacing.sm))
 
         if (byCharacter.isEmpty()) {
-            // 空状态
+            // D-3 复核结论：这里不套用 EmptyStateView。EmptyStateView 是"列表
+            // 整体为空、引导用户去创建"的场景（48dp图标+标题+副标题，纵向居中，
+            // 撑满一屏区域）；这里是区块内的一条紧凑状态提示条，语义是"内容会在
+            // 21:00自动生成"而非"没有内容、点这里创建"，没有可执行的操作，也不
+            // 适合占用这么大的视觉空间。维持现有内联实现。
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1112,7 +1089,7 @@ private fun TodayGrowthSection(
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(
-                        imageVector        = Icons.Outlined.Schedule,
+                        imageVector        = AppIcons.Schedule,
                         contentDescription = null,
                         tint               = colors.onBackground.copy(alpha = 0.25f),
                         modifier           = Modifier.size(14.dp),
@@ -1146,7 +1123,7 @@ private fun TodayGrowthSection(
                     // ── 角色头像行 ───────────────────────────
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        modifier          = Modifier.padding(bottom = 4.dp),
+                        modifier          = Modifier.padding(bottom = Spacing.xs),
                     ) {
                         // 24dp 角色颜色圆点（规格：Section 9-C）
                         Box(
@@ -1170,7 +1147,7 @@ private fun TodayGrowthSection(
                                 fontWeight = FontWeight.Bold,
                             )
                         }
-                        Spacer(Modifier.width(8.dp))
+                        Spacer(Modifier.width(Spacing.sm))
                         Text(
                             text     = charConf?.name ?: "角色 $charId",
                             color    = colors.onBackground.copy(alpha = 0.7f),
@@ -1186,19 +1163,19 @@ private fun TodayGrowthSection(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable { onTaskToggle(task.id) }
-                                .padding(vertical = 3.dp, horizontal = 4.dp),
+                                .padding(vertical = 3.dp, horizontal = Spacing.xs),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Icon(
                                 imageVector = if (isDone)
-                                    Icons.Outlined.CheckBox
+                                    AppIcons.CheckBox
                                 else
-                                    Icons.Outlined.CheckBoxOutlineBlank,
+                                    AppIcons.CheckBoxOutlineBlank,
                                 contentDescription = if (isDone) "已完成" else "待完成",
                                 tint     = if (isDone) growthGreen else colors.onBackground.copy(alpha = 0.35f),
                                 modifier = Modifier.size(18.dp),
                             )
-                            Spacer(Modifier.width(8.dp))
+                            Spacer(Modifier.width(Spacing.sm))
                             Text(
                                 text  = task.title,
                                 color = if (isDone)
@@ -1260,7 +1237,7 @@ private fun GrowthHistorySection(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Icon(
-                imageVector        = Icons.Outlined.History,
+                imageVector        = AppIcons.History,
                 contentDescription = null,
                 tint               = colors.onBackground.copy(alpha = 0.45f),
                 modifier           = Modifier.size(14.dp),
@@ -1286,7 +1263,7 @@ private fun GrowthHistorySection(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = Spacing.md, vertical = Spacing.sm),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(Spacing.sm),
         ) {
             displaySummaries.forEach { summary ->
                 Row(
@@ -1305,7 +1282,7 @@ private fun GrowthHistorySection(
 
                     // 各角色规划数（用角色颜色圆点 + 数量）
                     Row(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
                         modifier = Modifier.weight(1f),
                     ) {
                         summary.countByCharacter.entries

@@ -13,6 +13,11 @@ import com.zaijian.zhoumuyun.data.agent.HeartbeatSetTool
 import com.zaijian.zhoumuyun.data.agent.HeartbeatUpdateTool
 import com.zaijian.zhoumuyun.data.agent.MemoryQueryTool
 import com.zaijian.zhoumuyun.data.agent.MemoryWriteTool
+import com.zaijian.zhoumuyun.data.agent.SkillCreateTool
+import com.zaijian.zhoumuyun.data.agent.SkillDeprecateTool
+import com.zaijian.zhoumuyun.data.agent.SkillEditTool
+import com.zaijian.zhoumuyun.data.agent.SkillExpandTool
+import com.zaijian.zhoumuyun.data.agent.SkillFeedbackTool
 import com.zaijian.zhoumuyun.data.agent.PlanSaveTool
 import com.zaijian.zhoumuyun.data.agent.AgentTool
 import com.zaijian.zhoumuyun.data.agent.RuleDistillTool
@@ -205,7 +210,7 @@ class ZaijianApp : Application() {
                 crashFile.writeText(
                     buildString {
                         appendLine("Thread: ${thread.name}")
-                        appendLine("Time: ${java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())}")
+                        appendLine("Time: ${com.zaijian.zhoumuyun.util.TimeFormatUtils.formatDateTime(System.currentTimeMillis())}")
                         appendLine("Exception: ${throwable.javaClass.name}: ${throwable.message}")
                         appendLine()
                         appendLine("Stack trace:")
@@ -257,6 +262,29 @@ class ZaijianApp : Application() {
         // 2. 初始化 API Provider 管理器（延迟初始化 + 后台预加载）
         ProviderManager.init(this)
         ProviderManager.instance.preloadAsync()
+
+        // P2-34 修复：预加载自定义启动页背景图到 Coil 内存缓存。
+        // SplashScreen 首帧从 configFlow 拿到配置后用 rememberAsyncImagePainter
+        // 异步加载图片——在此之前品牌 Logo 已经渲染，图片加载完毕后切换造成闪烁。
+        // 此处在 App 启动时后台预取图片到内存缓存，SplashScreen 渲染时
+        // memoryCachePolicy(ENABLED) 直接命中缓存，消除首帧闪烁。
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val config = com.zaijian.zhoumuyun.data.AppContainer.instance
+                    .splashBackgroundDataStore.configFlow.first()
+                if (config != null) {
+                    val imageLoader = coil.Coil.imageLoader(this@ZaijianApp)
+                    imageLoader.execute(
+                        coil.request.ImageRequest.Builder(this@ZaijianApp)
+                            .data(config.uri)
+                            .memoryCachePolicy(coil.request.CachePolicy.ENABLED)
+                            .build()
+                    )
+                }
+            } catch (e: Exception) {
+                ZLog.w("ZaijianApp", "预加载启动页背景图失败（不阻断启动）", e)
+            }
+        }
 
         // 性能 M3 修复（完整版）：appScope 提前声明，全部工具注册 + 调度补偿均在后台执行。
         // 原代码在主线程同步完成：30+ 工具实例化、EncryptedSharedPreferences Keystore 读取
@@ -438,6 +466,7 @@ class ZaijianApp : Application() {
             presenceEngine     = presenceEngine,
             memoryDao          = db.memoryDao(),
             candidateDao       = db.memoryCandidateDao(),
+            memoryTagDao       = db.memoryTagDao(),     // Bugfix：补上 memoryRepo 懒加载依赖的 MemoryTagDao
             projectDao         = db.projectDao(),      // Phase 20 新增：Project 驱动行为
             eventDao           = db.worldEventDao(),   // Phase 20 新增：写入 PROJECT_UPDATED 事件
             context            = this,                 // Phase 20 新增：DataStore 离线补偿
@@ -822,6 +851,31 @@ class ZaijianApp : Application() {
                     memoryRepo  = memoryRepository,
                     characterId = { -1 },
                 ),
+                // ── Window C 技能系统：5 个工具静态占位注册（{-1}），ChatToolRegistrar
+                // .registerCharacterTools() 会按真实角色覆盖。范式对齐 MemoryWriteTool。
+                // 此处 -1 占位的意义与 MemoryWriteTool 一致：保证 App 启动早期
+                // AgentToolRegistry.get("skill_*") 即可命中，charId<0 兜底校验会拦住
+                // 任何"角色未就绪"的误调用，不会写脏数据。
+                SkillCreateTool(
+                    repo        = appContainer.skillRepo,
+                    characterId = { -1 },
+                ),
+                SkillEditTool(
+                    repo        = appContainer.skillRepo,
+                    characterId = { -1 },
+                ),
+                SkillDeprecateTool(
+                    repo        = appContainer.skillRepo,
+                    characterId = { -1 },
+                ),
+                SkillExpandTool(
+                    repo        = appContainer.skillRepo,
+                    characterId = { -1 },
+                ),
+                SkillFeedbackTool(
+                    repo        = appContainer.skillRepo,
+                    characterId = { -1 },
+                ),
                 GoalUpdateTool(
                     goalRepo    = learningGoalRepository,
                     characterId = { -1 },
@@ -975,7 +1029,7 @@ class ZaijianApp : Application() {
                     // 修复：WorkflowStartTool 构造函数只需要 workflowRepository，
                     // 原代码错误地照搬了 CiCdStartTool 的 db/workflowJobDao/
                     // workflowStepResultDao 三参数写法，与真实构造函数不符。
-                    workflowRepository = WorkflowRepository(db, db.workflowJobDao(), db.workflowStepResultDao()),
+                    workflowRepository = WorkflowRepository(db, db.workflowJobDao(), db.workflowStepResultDao(), context),
                     characterId        = { -1 },
                 ),
             )
@@ -1021,16 +1075,19 @@ class ZaijianApp : Application() {
                     scheduleRepository = scheduleRepository,
                     calendarSync = calendarSync,
                     context = context,
+                    characterIdProvider = { -1 },
                 ),
                 ScheduleUpdateTool(
                     scheduleRepository = scheduleRepository,
                     projectRepository  = projectRepository,
                     calendarSync = calendarSync,
                     context = context,
+                    characterIdProvider = { -1 },
                 ),
                 ScheduleGetTool(
                     scheduleRepository = scheduleRepository,
                     projectRepository  = projectRepository,
+                    characterIdProvider = { -1 },
                 ),
                 ScheduleListTool(
                     scheduleRepository  = scheduleRepository,

@@ -100,4 +100,25 @@ class ProfileViewModel(application: Application) : AndroidViewModel(application)
             }
         }
     }
+
+    /**
+     * 读取用户昵称（E0 分层收口）。
+     *
+     * 原 ProfileScreen 直接持有 AppContainer.instance.userProfileRepo 调
+     * getUserName()，现收敛到 ViewModel；Composable 侧只调本方法，不再
+     * 直接触碰 Repository（E0 coupling_scan 违规点 #1 的修复落地）。
+     */
+    fun getUserName(): String =
+        AppContainer.instance.userProfileRepo.getUserName()
+
+    /**
+     * 写入用户昵称（与 getUserName 对称，E0 分层收口）。
+     *
+     * ProfileScreen 编辑称呼 Dialog 的 onConfirm 回调通过本方法写入，
+     * 不直接持有 AppContainer.instance.userProfileRepo（避免重新引入
+     * 本类头部注释点名要修的"Composable 裸持有 Repository"违规）。
+     */
+    fun setUserName(name: String) {
+        AppContainer.instance.userProfileRepo.setUserName(name)
+    }
 }

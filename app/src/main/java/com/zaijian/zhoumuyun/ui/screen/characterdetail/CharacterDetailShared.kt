@@ -15,8 +15,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
@@ -34,6 +32,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.dp
 import com.zaijian.zhoumuyun.ui.theme.Radius
 import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
+import com.zaijian.zhoumuyun.ui.design.AppIcons
 
 // ─────────────────────────────────────────────────────────────
 //  S-8：ListEditSection — 从 CharacterDetailRelationship.kt 提取
@@ -88,7 +87,7 @@ internal fun ListEditSection(
                     modifier = Modifier.size(32.dp),
                 ) {
                     Icon(
-                        imageVector        = Icons.Outlined.Add,
+                        imageVector        = AppIcons.Add,
                         contentDescription = "删除",
                         tint               = colors.textDisabled,
                         modifier           = Modifier
@@ -137,7 +136,7 @@ internal fun ListEditSection(
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(
-                    imageVector        = Icons.Outlined.Add,
+                    imageVector        = AppIcons.Add,
                     contentDescription = "添加",
                     tint               = Color.White,
                     modifier           = Modifier.size(14.dp),

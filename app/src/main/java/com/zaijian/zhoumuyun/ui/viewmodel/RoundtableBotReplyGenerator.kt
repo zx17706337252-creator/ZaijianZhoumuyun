@@ -1,6 +1,7 @@
 package com.zaijian.zhoumuyun.ui.viewmodel
 
 import com.zaijian.zhoumuyun.data.agent.AgentToolRegistry
+import com.zaijian.zhoumuyun.data.agent.SkillRegistry
 import com.zaijian.zhoumuyun.data.agent.StreamEvent
 import com.zaijian.zhoumuyun.data.agent.ToolCallInterceptor
 import com.zaijian.zhoumuyun.data.agent.VaultCallContext
@@ -9,7 +10,6 @@ import com.zaijian.zhoumuyun.data.agent.withVaultContext
 import com.zaijian.zhoumuyun.data.AppContainer
 import com.zaijian.zhoumuyun.data.db.entity.RoundtableMessageEntity
 import com.zaijian.zhoumuyun.data.manager.PregnancyTriggerManager
-import com.zaijian.zhoumuyun.data.memory.MemoryEngine
 import com.zaijian.zhoumuyun.data.model.CharacterConfig
 import com.zaijian.zhoumuyun.data.model.CharacterStateLayer
 import com.zaijian.zhoumuyun.data.model.DaughterCustomEnums
@@ -29,6 +29,7 @@ import com.zaijian.zhoumuyun.data.repository.LearningGoalRepository
 import com.zaijian.zhoumuyun.data.repository.MemoryRepository
 import com.zaijian.zhoumuyun.data.repository.PregnancyRepository
 import com.zaijian.zhoumuyun.data.repository.RoundtableMessageRepository
+import com.zaijian.zhoumuyun.data.repository.SkillRepository
 import com.zaijian.zhoumuyun.domain.ChatTagParser
 import com.zaijian.zhoumuyun.domain.PresenceEngine
 import com.zaijian.zhoumuyun.domain.RelationshipEngine
@@ -73,7 +74,6 @@ internal val ROUNDTABLE_DISABLED_TOOL_NAMES = setOf(
 class RoundtableBotReplyGenerator(
     private val _uiState: MutableStateFlow<RoundtableUiState>,
     private val memoryRepo: MemoryRepository,
-    private val memoryEngine: MemoryEngine,
     private val relationshipEngine: RelationshipEngine,
     private val pregnancyRepo: PregnancyRepository,
     private val characterStateRepo: CharacterStateRepository,
@@ -85,6 +85,10 @@ class RoundtableBotReplyGenerator(
     private val learningGoalDao: LearningGoalRepository,
     private val roundtableMessageDao: RoundtableMessageRepository,
     private val eventRepo: EventRepository,
+    // Window C 技能系统补做：圆桌场景与单聊/工单同等对待——圆桌本质是多个 Agent
+    // 分工协作的项目群，每个角色进圆桌发言时同样应该能看到并复用自己的技能库，
+    // 不应该只有私聊角色才有这个能力。范式对齐 ChatMessageOrchestrator 的 skillRepo。
+    private val skillRepo: SkillRepository,
     private val getCurrentRoundtableId: () -> String?,
     private val isInterruptedRef: () -> Boolean,
     private val viewModelScope: CoroutineScope,
@@ -121,7 +125,7 @@ class RoundtableBotReplyGenerator(
     ): String? {
 
         val coreMemories     = memoryRepo.getCoreMemories(bot.id)
-        val relevantMemories = memoryRepo.searchRelevant(bot.id, userMessage, limit = 8)
+        val relevantMemories = memoryRepo.searchRelevantWithRouting(bot.id, userMessage, limit = 8)
 
         // ── 群记忆查询（圆桌专用，scope=GROUP）──
         val rtId = getCurrentRoundtableId()
@@ -180,9 +184,9 @@ class RoundtableBotReplyGenerator(
         }
         // ── 补全 State Layer（presence 在场状态，和 ChatViewModel 这次的修法对齐）──
         // presence fallback：缓存为空时主动计算一次，结果写入缓存供后续轮次复用
-        var presenceSnap = presenceEngine?.getCachedPresence(bot.id)
+        var presenceSnap = presenceEngine.getCachedPresence(bot.id)
         if (presenceSnap == null) {
-            presenceSnap = presenceEngine?.refreshPresence(bot.id, characterState)
+            presenceSnap = presenceEngine.refreshPresence(bot.id, characterState)
         }
         // ── 补全 miscarriageAftermathPatch（圆桌场景：isOneOnOne 取决于当前
         //    除该角色外是否还有其他角色在场，与 CharacterStateRepository.applySocialMode
@@ -225,11 +229,25 @@ class RoundtableBotReplyGenerator(
         // 适合私聊场景），保留 file_export/excel_gen/weather 等文件生成/查询类工具。
         val toolDesc = AgentToolRegistry.buildToolDescriptionBlock(excludeNames = ROUNDTABLE_DISABLED_TOOL_NAMES)
 
+        // Window C 技能系统补做：圆桌场景补齐 Skill Layer 目录注入（§3 第一级"目录注入"）。
+        // 此前圆桌路径只传了 toolDescriptionBlock，模型知道 skill_expand/skill_create 等
+        // 工具存在，却拿不到任何有效 skill_id——圆桌里等于摆设。技能是纯角色私有的
+        // （§1.3），这里按当前发言的 bot.id 取该角色自己的技能目录，和单聊路径同一份
+        // SkillRegistry.buildSkillCatalogBlock()，无技能时返回空串，零开销。
+        val skillCatalogBlock = SkillRegistry.buildSkillCatalogBlock(
+            characterId = bot.id,
+            repo = skillRepo,
+        )
+
         val systemPrompt = PromptOrchestrator.buildSystemPrompt(
             character               = bot,
             identityEntity          = identityEntity,
             coreMemories            = coreMemories,
             relevantMemories        = relevantMemories,
+            // 「称呼」功能性缺陷修复：此前圆桌常规回复路径未传 userName，恒为默认值
+            // "你"。与 AppContainer.instance.agentActivityRepo（本文件 389/409 行）
+            // 同一模式：直接引用容器单例，不新增构造参数。
+            userName                = AppContainer.instance.userProfileRepo.getUserName(),
             groupCoreMemories       = groupCoreMemories,
             groupRelevantMemories   = groupRelevantMemories,
             presenceActivity        = presenceSnap?.activity ?: "",
@@ -251,6 +269,7 @@ class RoundtableBotReplyGenerator(
             isRoundtableContext     = true,
             daughterPresentInScene  = daughterPresentInScene,
             toolDescriptionBlock    = toolDesc,
+            skillCatalogBlock       = skillCatalogBlock,
         )
 
         // 历史：按轮次取最近 20 轮
@@ -311,6 +330,10 @@ class RoundtableBotReplyGenerator(
         var fullReply = ""
         val config = LLMConfig(model = "", maxTokens = 800, temperature = 0.85f, stream = true)
         var interrupted = false
+        // P0-02 修复：finally 块内计算出的干净回复文本，供 try/finally 结束后的
+        // return 语句使用（finally 内部声明的局部变量出了 finally 就不可见，需要一个
+        // 在 finally 之前声明的外部变量来接住这个值）。
+        var lastCleanReply = ""
         // v1.39 圆桌工具调用接入：暂存本轮工具产出的文件元数据 JSON，与私聊
         // ChatMessageOrchestrator 同语义。
         // v66（1.7 P3）：改用 list 收集本轮全部文件，与私聊路径同步升级——
@@ -428,89 +451,118 @@ class RoundtableBotReplyGenerator(
         } catch (e: Exception) {
             // 超时或其他异常：保留已生成的回复
             ZLog.w("RoundtableViewModel", "流式生成中断（msgId=$msgId），已生成长度=${fullReply.length}", e)
-        }
+        } finally {
+            // P0-02 修复：上面 catch(CancellationException) 里的 throw e 会立刻向外传播，
+            // 原本紧跟在 try-catch 之后的收尾代码（剥标签、isStreaming=false、落库、
+            // mood 回写、事件写入）此前全部写在 try-catch 之外，导致用户新发消息触发
+            // roundJob.cancel() 或点击 interrupt 时这些收尾代码被整体跳过——消息永远
+            // isStreaming=true、不落库、UI 残留永久加载指示器的"幽灵消息"。
+            // 把收尾逻辑挪进 finally 可确保无论正常结束、普通异常、还是被取消，都会执行；
+            // Kotlin 的 finally 会在异常继续向外传播之前完整跑完这个块。
+            //
+            // v1.38 圆桌场景补齐：与私聊 ChatMessageOrchestrator 同一套"结构化标记 +
+            // 客户端剥离"路径——先剥 [thinking:...]（决策思考，戏外），再剥圆括号
+            // （心理感受，戏内），最后剥锚定末尾的 [mood:xxx]（系统内部使用，不展示）。
+            // 圆桌此前从未接入这三层解析，三种标签原样落库、原样喂回下一轮 LLM 历史、
+            // 原样展示给用户；此处统一在唯一出口剥离，下游（DB / UI / 下一轮 prompt
+            // 历史 / alreadyReplied 群上下文）拿到的都是干净文本。
+            val (afterThinking, parsedThinking) = ChatTagParser.stripThinkingTag(fullReply.trimEnd())
+            val (afterPsych, parsedPsych) = ChatTagParser.stripPsychText(afterThinking)
+            val (cleanReply, parsedMood) = ChatTagParser.stripMoodTag(afterPsych)
+            if (parsedMood != null) {
+                // presenceCache 是全局共享缓存（按 characterId），私聊路径已经在写；
+                // 圆桌角色此前从未回写过，导致 RoundtableIdleManager.pickSpontaneousInitiator
+                // 读到的情绪权重实际上是私聊那边写的陈旧值——补上这条写入顺带修正了
+                // 自发发言的情绪权重计算。
+                presenceEngine.updateMoodFromReply(bot.id, parsedMood)
+            }
 
-        // v1.38 圆桌场景补齐：与私聊 ChatMessageOrchestrator 同一套"结构化标记 +
-        // 客户端剥离"路径——先剥 [thinking:...]（决策思考，戏外），再剥圆括号
-        // （心理感受，戏内），最后剥锚定末尾的 [mood:xxx]（系统内部使用，不展示）。
-        // 圆桌此前从未接入这三层解析，三种标签原样落库、原样喂回下一轮 LLM 历史、
-        // 原样展示给用户；此处统一在唯一出口剥离，下游（DB / UI / 下一轮 prompt
-        // 历史 / alreadyReplied 群上下文）拿到的都是干净文本。
-        val (afterThinking, parsedThinking) = ChatTagParser.stripThinkingTag(fullReply.trimEnd())
-        val (afterPsych, parsedPsych) = ChatTagParser.stripPsychText(afterThinking)
-        val (cleanReply, parsedMood) = ChatTagParser.stripMoodTag(afterPsych)
-        if (parsedMood != null) {
-            // presenceCache 是全局共享缓存（按 characterId），私聊路径已经在写；
-            // 圆桌角色此前从未回写过，导致 RoundtableIdleManager.pickSpontaneousInitiator
-            // 读到的情绪权重实际上是私聊那边写的陈旧值——补上这条写入顺带修正了
-            // 自发发言的情绪权重计算。
-            presenceEngine.updateMoodFromReply(bot.id, parsedMood)
-        }
+            _uiState.update { s ->
+                s.copy(messages = s.messages.map { msg ->
+                    if (msg.id == msgId) msg.copy(
+                        content      = cleanReply,
+                        thinkingText = parsedThinking,
+                        psychText    = parsedPsych,
+                        isStreaming  = false,
+                        // v1.39 圆桌工具调用接入：把本轮工具产出的文件元数据接回 UI 消息，
+                        // RoundtableBubble 依赖 RoundtableMessage.exportedFiles（由
+                        // exportedFilesJson 解析而来）才能渲染 FileExportCard 下载卡片。
+                        // v66（1.7 P3）：两个字段都写，exportedFileJson 保留兼容旧路径。
+                        exportedFileJson = pendingExportedFiles.lastOrNull(),
+                        exportedFilesJson = packExportedFilesJson(pendingExportedFiles),
+                        // v67（表格直传 W4）：table_export 产出接回 UI 消息，
+                        // RoundtableBubble 依赖 RoundtableMessage.tablePayload 才能渲染 TableCard。
+                        tableDataJson = pendingTablePayloadJson,
+                    ) else msg
+                }.toImmutableList())
+            }
 
-        _uiState.update { s ->
-            s.copy(messages = s.messages.map { msg ->
-                if (msg.id == msgId) msg.copy(
-                    content      = cleanReply,
-                    thinkingText = parsedThinking,
-                    psychText    = parsedPsych,
-                    isStreaming  = false,
-                    // v1.39 圆桌工具调用接入：把本轮工具产出的文件元数据接回 UI 消息，
-                    // RoundtableBubble 依赖 RoundtableMessage.exportedFiles（由
-                    // exportedFilesJson 解析而来）才能渲染 FileExportCard 下载卡片。
-                    // v66（1.7 P3）：两个字段都写，exportedFileJson 保留兼容旧路径。
-                    exportedFileJson = pendingExportedFiles.lastOrNull(),
-                    exportedFilesJson = packExportedFilesJson(pendingExportedFiles),
-                    // v67（表格直传 W4）：table_export 产出接回 UI 消息，
-                    // RoundtableBubble 依赖 RoundtableMessage.tablePayload 才能渲染 TableCard。
-                    tableDataJson = pendingTablePayloadJson,
-                ) else msg
-            }.toImmutableList())
-        }
-
-        // 落库
-        // 第7窗口问题4修复：原先落库无 try-catch，UI 已在上方展示了完整回复，
-        // 一旦 insert 失败用户毫无感知（该轮对话看似正常，实则未持久化）。
-        // 现补上异常处理：失败时记录日志，并写入 uiState.error 接入
-        // RoundtableScreen 已有的 LaunchedEffect(uiState.error) → clearError()
-        // 展示通路，让用户能实际看到提示。
-        getCurrentRoundtableId()?.let { rtIdForDb ->
-            if (cleanReply.isNotBlank()) {
-                viewModelScope.launch(Dispatchers.IO) {
-                    try {
-                        roundtableMessageDao.insert(
-                            RoundtableMessage(
-                                id              = msgId,
-                                speakerId       = bot.id.toString(),
-                                speakerName     = bot.name,
-                                content         = cleanReply,
-                                turnIndex       = turnIdx,
-                                replyTargetId   = lastSpeakerEntry?.toString(),
-                                replyTargetName = replyTargetName,
-                                thinkingText    = parsedThinking,
-                                psychText       = parsedPsych,
-                                exportedFileJson = pendingExportedFiles.lastOrNull(),
-                                exportedFilesJson = packExportedFilesJson(pendingExportedFiles),
-                                // v67（表格直传 W4）：透传到 toEntity → RoundtableMessageEntity.tableDataJson。
-                                tableDataJson = pendingTablePayloadJson,
-                            ).toEntity(rtIdForDb)
-                        )
-                    } catch (e: Exception) {
-                        ZLog.e("RoundtableViewModel", "圆桌回复落库失败（msgId=$msgId）", e)
-                        _uiState.update { it.copy(error = "消息保存失败，可能会在下次打开时丢失") }
+            // 落库
+            // 第7窗口问题4修复：原先落库无 try-catch，UI 已在上方展示了完整回复，
+            // 一旦 insert 失败用户毫无感知（该轮对话看似正常，实则未持久化）。
+            // 现补上异常处理：失败时记录日志，并写入 uiState.error 接入
+            // RoundtableScreen 已有的 LaunchedEffect(uiState.error) → clearError()
+            // 展示通路，让用户能实际看到提示。
+            getCurrentRoundtableId()?.let { rtIdForDb ->
+                if (cleanReply.isNotBlank()) {
+                    viewModelScope.launch(Dispatchers.IO) {
+                        try {
+                            roundtableMessageDao.insert(
+                                RoundtableMessage(
+                                    id              = msgId,
+                                    speakerId       = bot.id.toString(),
+                                    speakerName     = bot.name,
+                                    content         = cleanReply,
+                                    turnIndex       = turnIdx,
+                                    replyTargetId   = lastSpeakerEntry?.toString(),
+                                    replyTargetName = replyTargetName,
+                                    thinkingText    = parsedThinking,
+                                    psychText       = parsedPsych,
+                                    exportedFileJson = pendingExportedFiles.lastOrNull(),
+                                    exportedFilesJson = packExportedFilesJson(pendingExportedFiles),
+                                    // v67（表格直传 W4）：透传到 toEntity → RoundtableMessageEntity.tableDataJson。
+                                    tableDataJson = pendingTablePayloadJson,
+                                ).toEntity(rtIdForDb)
+                            )
+                        } catch (e: Exception) {
+                            ZLog.e("RoundtableViewModel", "圆桌回复落库失败（msgId=$msgId）", e)
+                            _uiState.update { it.copy(error = "消息保存失败，可能会在下次打开时丢失") }
+                        }
                     }
                 }
             }
+
+            // 记忆写入收窄为 Agent 主动工具调用，不再由此自动提取候选/群记忆。
+            // 只保留 MESSAGE 事件写入：Timeline 等事件流消费方仍需要这条事件
+            // （RelationshipEngine 用独立 sourceEventId，不依赖它）。
+            //
+            // P1-18 修复：generateBotReply 在一轮里对每个发言的 Bot 都会跑一遍，
+            // 此调用原来写在每次调用都会执行的 finally 块里——一轮里有几个 Bot
+            // 回复，同一条用户消息就会被重复记成几条 MESSAGE 事件，在全局
+            // Timeline（TimelineViewModel.load(actorId=null) → queryLatest）
+            // 里表现为同一句话连续出现好几遍。alreadyReplied 是本轮到目前为止
+            // 已完成回复的 Bot 快照（当前 Bot 自己的结果要等 generateBotReply
+            // 返回后才会被 executeRound 写入），只有本轮第一个处理的 Bot 在这里
+            // 看到的 alreadyReplied 才为空，用这个信号把落库收敛成每轮恰好一条，
+            // 对齐 EventRepository 里"每条 Message 必须同时产生一条 MESSAGE 事件"
+            // 的设计原则。就算这个 Bot 回复失败/被中断，finally 仍会执行到这里，
+            // 事件也不会因此丢失。
+            //
+            // P1-17 修复：payloadJson 原来用字符串模板直接拼 JSON，userMessage
+            // 里如果含双引号或反斜杠会产出结构错误的 JSON（下游按 JSON 解析
+            // payload 时解析失败或截断）。改用 JSONObject 构造并转字符串，和本
+            // 文件另外两处 recordEvent 的 toolParamsJson 用同一种做法。
+            if (alreadyReplied.isEmpty()) {
+                eventRepo.appendMessageEvent(
+                    actorId     = "user",
+                    targetId    = bot.id.toString(),
+                    payloadJson = org.json.JSONObject().put("preview", userMessage.take(50)).toString(),
+                )
+            }
+
+            lastCleanReply = cleanReply
         }
 
-        // 记忆写入收窄为 Agent 主动工具调用，不再由此自动提取候选/群记忆。
-        // 只保留 MESSAGE 事件写入：Timeline 等事件流消费方仍需要这条事件
-        // （RelationshipEngine 用独立 sourceEventId，不依赖它）。
-        eventRepo.appendMessageEvent(
-            actorId     = "user",
-            targetId    = bot.id.toString(),
-            payloadJson = """{"preview":"${userMessage.take(50)}"}""",
-        )
-
-        return cleanReply.ifBlank { null }
+        return lastCleanReply.ifBlank { null }
     }
 }

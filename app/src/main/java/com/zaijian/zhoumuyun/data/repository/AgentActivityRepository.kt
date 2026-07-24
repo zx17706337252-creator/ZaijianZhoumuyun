@@ -6,6 +6,7 @@ import com.zaijian.zhoumuyun.data.db.entity.AgentActivityEventEntity
 import com.zaijian.zhoumuyun.data.db.entity.WorkflowStepResultEntity
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flowOf
 import java.util.UUID
 
 /**
@@ -23,8 +24,8 @@ import java.util.UUID
  * ## 合并视图的字段定稿说明
  *
  * 方案 2.2.4 指出"此契约字段建议在 2.2.2/2.2.3 落地、有真实数据跑起来之后再
- * 最终定稿"。本类当前给出的是占位形状（[AgentActivityTimelineItem]），待真实
- * 数据跑通后由 Window D 面板需求驱动再定稿。
+ * 最终定稿"。窗口7已通过 [com.zaijian.zhoumuyun.ui.component.ContentBlockAdapter]
+ * 适配层完成定稿，[AgentActivityTimelineItem] 字段不再为占位形状。
  *
  * ## sceneType / eventType 常量
  *
@@ -60,13 +61,6 @@ class AgentActivityRepository(
         const val SUCCESS = "success"
         const val FAIL = "fail"
         const val TIMEOUT = "timeout"
-    }
-
-    companion object {
-        /** outputSummary 截断上限（方案 2.2.2：建议≤300字）。 */
-        private const val SUMMARY_MAX_CHARS = 300
-        const val SOURCE_ACTIVITY = "activity"
-        const val SOURCE_WORKFLOW_STEP = "workflow_step"
     }
 
     // ── 写入 ──────────────────────────────────────────────────────────────
@@ -153,7 +147,12 @@ class AgentActivityRepository(
      * activity 表的 workflow 分支会有信息重叠；这是有意的双写（workflow_step_results
      * 是工作流执行的事实来源，保留其在时间线的呈现），面板层后续可按需去重/折叠。
      *
-     * 字段形状为占位（方案 2.2.4），待真实数据跑通后定稿。
+     * 字段形状已通过窗口7适配层定稿：[com.zaijian.zhoumuyun.ui.component.ContentBlockAdapter]
+     * 负责从 [AgentActivityTimelineItem] 转换为 `ContentBlock.ToolCall`/`WorkflowStep`/
+     * `SkillActivity` 等块，UI 组件不直接绑定本类字段名。
+     * 后续 [AgentActivityTimelineItem] 字段调整时，只需修改适配层，不需要动 UI 组件。
+     * 适配层已覆盖当前所有 eventType（TOOL_CALL/DEGRADE_x/SKILL_x）和 source
+     * （activity/workflow_step）的映射。
      */
     fun observeTimeline(characterId: Int, limit: Int = 50): Flow<List<AgentActivityTimelineItem>> =
         combine(
@@ -168,6 +167,23 @@ class AgentActivityRepository(
                 .sortedByDescending { it.createdAt }
                 .take(limit)
         }
+
+    /**
+     * 观察多个角色的合并心迹时间线（D-2 圆桌 ContentBlock 入口用）。
+     *
+     * 将各角色的 [observeTimeline] Flow 合并为一条按 createdAt 倒序的统一时间线。
+     * 适用于圆桌等多角色场景，展示所有成员最近的 Agent 活动。
+     */
+    fun observeTimelineForCharacters(
+        characterIds: List<Int>,
+        limit: Int = 50,
+    ): Flow<List<AgentActivityTimelineItem>> {
+        if (characterIds.isEmpty()) return flowOf(emptyList())
+        if (characterIds.size == 1) return observeTimeline(characterIds.first(), limit)
+        return combine(characterIds.map { observeTimeline(it, limit) }) { lists ->
+            lists.flatMap { it }.sortedByDescending { it.createdAt }.take(limit)
+        }
+    }
 
     // ── 内部 ──────────────────────────────────────────────────────────────
 
@@ -202,11 +218,22 @@ class AgentActivityRepository(
             sessionRef = jobId,
         )
 
+    private companion object {
+        const val SOURCE_ACTIVITY = "activity"
+        const val SOURCE_WORKFLOW_STEP = "workflow_step"
+
+        /** outputSummary 截断上限（方案 2.2.2：建议≤300字）。 */
+        const val SUMMARY_MAX_CHARS = 300
+    }
 }
 
 /**
- * 「心迹」统一时间线条目（合并视图投影）。占位形状，见
- * [AgentActivityRepository.observeTimeline] 与方案 2.2.4。
+ * 「心迹」统一时间线条目（合并视图投影）。
+ * 字段形状已通过窗口7适配层定稿，见 [AgentActivityRepository.observeTimeline]。
+ *
+ * 适配层 [com.zaijian.zhoumuyun.ui.component.ContentBlockAdapter] 将本类字段
+ * 转换为 `ContentBlock` Agent 过程类块。本类字段后续如需调整，
+ * 只需同步修改适配层，UI 组件不受影响。
  */
 data class AgentActivityTimelineItem(
     val id: String,

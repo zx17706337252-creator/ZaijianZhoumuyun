@@ -113,8 +113,8 @@ class GitCommitPushTool(
             if (path.isNullOrBlank()) {
                 throw FilesJsonParseException("files_json 第 ${i + 1} 个元素缺少 path 字段")
             }
-            if (content == null) {
-                throw FilesJsonParseException("files_json 第 ${i + 1} 个元素（path=$path）缺少 content 字段")
+            if (content.isNullOrBlank()) {
+                throw FilesJsonParseException("files_json 第 ${i + 1} 个元素（path=$path）缺少 content 字段或内容为空")
             }
             FileToCommit(path = path, content = content)
         }

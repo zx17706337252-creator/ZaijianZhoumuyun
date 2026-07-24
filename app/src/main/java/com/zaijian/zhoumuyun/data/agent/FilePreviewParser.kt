@@ -27,6 +27,33 @@ import java.util.zip.ZipFile
  */
 object FilePreviewParser {
 
+    // P2-17 修复：XLSX/DOCX 的 XML 文本捕获未解码 XML 实体（&amp; &lt; &gt; &quot; &apos;），
+    // 导致预览显示原始实体编码而非实际字符。此函数对捕获文本执行 XML 实体解码。
+    //
+    // P2-17 返工：原实现用链式 .replace() 逐个替换具名实体，存在二次解码问题——
+    // 例如原文中 "&amp;lt;" 先被 "&amp;" → "&" 变成 "&lt;"，再被 "&lt;" → "<"
+    // 错误地变成 "<"，而原文本意是显示字面量 "<"。
+    // 改为单次正则遍历，一次扫描中按出现位置逐段解码，已解码的内容不会被二次处理。
+    private val NAMED_ENTITIES = mapOf(
+        "&amp;" to "&",
+        "&lt;" to "<",
+        "&gt;" to ">",
+        "&quot;" to "\"",
+        "&apos;" to "'",
+    )
+    private val ENTITY_REGEX = Regex("&(?:amp|lt|gt|quot|apos|#(\\d+)|#x([0-9a-fA-F]+));")
+
+    private fun decodeXmlEntities(text: String): String {
+        if (!text.contains('&')) return text
+        return ENTITY_REGEX.replace(text) { m ->
+            // 数值字符引用优先（group 1 = 十进制，group 2 = 十六进制）
+            m.groupValues[1].takeIf { it.isNotEmpty() }?.toIntOrNull()?.toChar()?.toString()
+                ?: m.groupValues[2].takeIf { it.isNotEmpty() }?.toIntOrNull(16)?.toChar()?.toString()
+                ?: NAMED_ENTITIES[m.value]  // 具名实体
+                ?: m.value                  // 未识别的 &xxx;，原样保留
+        }
+    }
+
     /** 文本类扩展名（可编辑）。 */
     private val TEXTUAL_EXTS = setOf("md", "txt", "json", "xml", "log", "yml", "yaml")
 
@@ -214,7 +241,7 @@ object FilePreviewParser {
             val tPattern = Regex("<t[^>]*>([^<]*)</t>")
             siPattern.findAll(ssXml).forEach { siMatch ->
                 val text = tPattern.findAll(siMatch.groupValues[1])
-                    .joinToString("") { it.groupValues[1] }
+                    .joinToString("") { decodeXmlEntities(it.groupValues[1]) }
                 sharedStrings.add(text)
             }
         }
@@ -271,11 +298,11 @@ object FilePreviewParser {
         while (pos < xmlContent.length) {
             val wPMatch = wPPattern.find(xmlContent, pos)
             if (wPMatch == null) {
-                wTPattern.findAll(xmlContent, pos).forEach { textBuilder.append(it.groupValues[1]) }
+                wTPattern.findAll(xmlContent, pos).forEach { textBuilder.append(decodeXmlEntities(it.groupValues[1])) }
                 break
             }
             wTPattern.findAll(xmlContent, pos).takeWhile { it.range.first < wPMatch.range.first }
-                .forEach { textBuilder.append(it.groupValues[1]) }
+                .forEach { textBuilder.append(decodeXmlEntities(it.groupValues[1])) }
             textBuilder.append('\n')
             pos = wPMatch.range.last + 1
         }

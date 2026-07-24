@@ -154,51 +154,66 @@ class ScheduleCreateTool(
         val nextRunAt = System.currentTimeMillis() +
                 (delayHours * TimeUnit.HOURS.toMillis(1)).toLong()
 
-            // 写入任务（本地 + 云端）
-            return try {
-                val charId = params["__character_id"]?.toIntOrNull() ?: characterIdProvider()
-                if (charId < 0) {
-                    return ToolResult(name, false, "", error = "创建定时任务需要指定角色，当前会话未绑定角色")
-                }
-                val jobId = scheduleRepository.createJob(
-                    characterId      = charId,
-                    title            = title,
-                    toolName         = toolName,
-                    toolParams       = toolParams,
-                    repeatIntervalMs = repeatIntervalMs,
-                    nextRunAt        = nextRunAt,
-                    description      = description,
-                    projectId        = projectId,
-                )
+        // P1-21 修复：DB 写入与同步步骤（日历/WorkManager）分离异常隔离。
+        // createJob 成功后任务已落库，后续同步步骤失败不应导致整体返回失败——
+        // 否则 LLM 会误判创建失败并重试，产生重复任务。
+        val charId = params["__character_id"]?.toIntOrNull() ?: characterIdProvider()
+        if (charId < 0) {
+            return ToolResult(name, false, "", error = "创建定时任务需要指定角色，当前会话未绑定角色")
+        }
 
-                // 同步到系统日历（权限未授予时静默跳过）
-                calendarSync?.insertEvent(
-                    jobId            = jobId,
-                    title            = title,
-                    nextRunAt        = nextRunAt,
-                    repeatIntervalMs = repeatIntervalMs,
-                )
-
-                // 注册 WorkManager 后台调度
-                context?.let {
-                    val delayMs = (nextRunAt - System.currentTimeMillis()).coerceAtLeast(0L)
-                    WorkManagerScheduler.enqueue(it, jobId, delayMs)
-                }
-
-                val repeatDesc = if (repeatIntervalMs != null) {
-                    "每 $intervalHours 小时执行一次"
-                } else "仅执行一次"
-
-                val modeDesc = if (isAgentTask) "工单型" else "工具型"
-
-            ToolResult(
-                toolName = name,
-                success  = true,
-                content  = "已创建${modeDesc}定时任务「$title」，$repeatDesc，任务ID: $jobId",
-                userHint = "正在创建定时任务…",
+        val jobId = try {
+            scheduleRepository.createJob(
+                characterId      = charId,
+                title            = title,
+                toolName         = toolName,
+                toolParams       = toolParams,
+                repeatIntervalMs = repeatIntervalMs,
+                nextRunAt        = nextRunAt,
+                description      = description,
+                projectId        = projectId,
             )
         } catch (e: Exception) {
-            ToolResult(name, false, "创建定时任务失败：${e.message?.take(80)}", e.message)
+            return ToolResult(name, false, "创建定时任务失败：${e.message?.take(80)}", "创建定时任务失败：${e.message?.take(80)}")
         }
+
+        // 同步步骤失败不影响整体结果（Room 数据已落库）
+        var syncWarning = ""
+        try {
+            // 同步到系统日历（权限未授予时静默跳过）
+            calendarSync?.insertEvent(
+                jobId            = jobId,
+                title            = title,
+                nextRunAt        = nextRunAt,
+                repeatIntervalMs = repeatIntervalMs,
+            )
+        } catch (e: Exception) {
+            android.util.Log.w("ScheduleCreateTool", "Calendar sync failed for job $jobId", e)
+            syncWarning = "（日历同步失败，不影响任务）"
+        }
+        try {
+            // 注册 WorkManager 后台调度
+            context?.let {
+                val delayMs = (nextRunAt - System.currentTimeMillis()).coerceAtLeast(0L)
+                WorkManagerScheduler.enqueue(it, jobId, delayMs)
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("ScheduleCreateTool", "WorkManager enqueue failed for job $jobId", e)
+            syncWarning = if (syncWarning.isEmpty()) "（后台调度注册失败，任务仍会按计划执行）"
+                          else "$syncWarning，后台调度注册失败"
+        }
+
+        val repeatDesc = if (repeatIntervalMs != null) {
+            "每 $intervalHours 小时执行一次"
+        } else "仅执行一次"
+
+        val modeDesc = if (isAgentTask) "工单型" else "工具型"
+
+        return ToolResult(
+            toolName = name,
+            success  = true,
+            content  = "已创建${modeDesc}定时任务「$title」，$repeatDesc，任务ID: $jobId$syncWarning",
+            userHint = "正在创建定时任务…",
+        )
     }
 }

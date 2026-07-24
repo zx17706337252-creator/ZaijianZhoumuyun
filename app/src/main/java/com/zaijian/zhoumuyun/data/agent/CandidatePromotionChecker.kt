@@ -7,6 +7,7 @@ import com.zaijian.zhoumuyun.domain.SpecialtyEvolutionConfig
 import com.zaijian.zhoumuyun.domain.SpecialtyEvolutionEngine
 import com.zaijian.zhoumuyun.data.repository.SpecialtyProfileRepository
 import com.zaijian.zhoumuyun.util.ZLog
+import androidx.room.withTransaction
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.util.UUID
@@ -139,15 +140,23 @@ object CandidatePromotionChecker {
         val newStyleNotes = if (oldPart.isEmpty()) traitTrimmed
             else "$oldPart\n$traitTrimmed"
 
-        repo.overwriteStyleNotes(profileId, newStyleNotes)
-        repo.removeCandidateObservation(profileId, trait)
-        repo.markUserConfirmed(profileId)  // 满足晋升判定条件3
-        db.systemSuggestionDao().updateStatus(suggestionId, "ADOPTED")
+        // 事务-01 修复：4步 DB 操作用 db.withTransaction 包裹，防止进程在中间崩溃
+        // 导致半写状态（如 styleNotes 已更新但 suggestion 仍 PENDING，造成重复确认）。
+        db.withTransaction {
+            repo.overwriteStyleNotes(profileId, newStyleNotes)
+            repo.removeCandidateObservation(profileId, trait)
+            repo.markUserConfirmed(profileId)  // 满足晋升判定条件3
+            db.systemSuggestionDao().updateStatus(suggestionId, "ADOPTED")
+        }
     }
 
     suspend fun declineCandidate(db: AppDatabase, repo: SpecialtyProfileRepository, profileId: String, trait: String, suggestionId: String) {
-        repo.removeCandidateObservation(profileId, trait)
-        db.systemSuggestionDao().updateStatus(suggestionId, "IGNORED")
+        // 事务-02 修复：2步 DB 操作用 db.withTransaction 包裹，防止第1步成功
+        // 第2步失败导致候选池已移除但 suggestion 仍 PENDING 的半写状态。
+        db.withTransaction {
+            repo.removeCandidateObservation(profileId, trait)
+            db.systemSuggestionDao().updateStatus(suggestionId, "IGNORED")
+        }
     }
 
     // ─────────────────────────────────────────────────────────

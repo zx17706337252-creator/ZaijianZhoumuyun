@@ -19,14 +19,17 @@ import com.zaijian.zhoumuyun.data.repository.DaughterCharacterRepository
 import com.zaijian.zhoumuyun.data.repository.EventRepository
 import com.zaijian.zhoumuyun.data.repository.IdentityRepository
 import com.zaijian.zhoumuyun.data.repository.LearningGoalRepository
+import com.zaijian.zhoumuyun.data.repository.SkillRepository
 import com.zaijian.zhoumuyun.data.repository.MemoryRepository
 import com.zaijian.zhoumuyun.data.repository.MessageRepository
 import com.zaijian.zhoumuyun.data.repository.PregnancyRepository
 import com.zaijian.zhoumuyun.data.repository.ProjectRepository
 import com.zaijian.zhoumuyun.data.repository.TaskRepository
+import com.zaijian.zhoumuyun.data.repository.UserProfileRepository
 import com.zaijian.zhoumuyun.data.repository.WorkflowRepository
 import com.zaijian.zhoumuyun.data.repository.AgentActivityRepository
 import com.zaijian.zhoumuyun.data.agent.AgentToolRegistry
+import com.zaijian.zhoumuyun.data.agent.SkillRegistry
 import com.zaijian.zhoumuyun.data.agent.StreamEvent
 import com.zaijian.zhoumuyun.data.agent.ToolCallInterceptor
 import com.zaijian.zhoumuyun.data.agent.ToolResult
@@ -64,10 +67,17 @@ class ChatMessageOrchestrator(
     private val daughterRepo: DaughterCharacterRepository,
     private val agentPlanRepo: AgentPlanRepository,
     private val learningGoalRepo: LearningGoalRepository,
+    private val skillRepo: SkillRepository,   // Window C 技能系统
     private val taskRepo: TaskRepository,
     private val projectRepo: ProjectRepository,
     private val workflowRepo: WorkflowRepository,
     private val eventRepo: EventRepository,
+    // 「称呼」功能性缺陷修复：此前本类构造 buildSystemPrompt 时从未传 userName，
+    // 恒为默认值"你"。userName 是 ProfileScreen 可编辑的用户设置，不是常驻不变的
+    // 依赖，因此不像 identityRepo 等 Repository 那样只在构造时持有一次引用——
+    // 改用 lambda 惰性读取，每次发消息都取当前最新值，用户中途改了称呼无需
+    // 重建 ChatViewModel/Orchestrator 即可立即生效。
+    private val getUserName: () -> String,
     private val pregnancyDelegate: PregnancyPromptDelegate,
     private val agentRelationEngine: AgentRelationEngine,
     private val daughterGenerator: DaughterCharacterGenerator,
@@ -176,17 +186,17 @@ class ChatMessageOrchestrator(
                 val chatMode = _uiState.value.chatMode
 
                 // ── 补全 Memory Layer（核心 Bug：之前从未查询，一直是空列表）──
-                // coreMemories：每次对话必注入的高重要度记忆（≤5条）
-                // relevantMemories：按本条用户消息做 FTS 检索的相关记忆（≤8条）
+                // coreMemories：每次对话必注入的高重要度记忆（A-4：按500字符预算累加，非固定条数）
+                // relevantMemories：Window A-1 L2优先检索路由（L2 tag精确匹配→L1 FTS4补充）
                 val coreMemories     = memoryRepo.getCoreMemories(getCurrentCharacterId())
-                val relevantMemories = memoryRepo.searchRelevant(
+                val relevantMemories = memoryRepo.searchRelevantWithRouting(
                     characterId = getCurrentCharacterId(),
                     query       = text,
                     limit       = 8,
                 )
 
                 // ── 补全 State Layer（presence 在场状态早就在算，只是没接进 prompt）──
-                var presenceSnap = presenceEngine?.getCachedPresence(getCurrentCharacterId())
+                var presenceSnap = presenceEngine.getCachedPresence(getCurrentCharacterId())
 
                 // ── 补全 AgentPlan Layer（角色自己写的进化方案）──
                 val activePlan = agentPlanRepo.getActive(getCurrentCharacterId())
@@ -202,6 +212,15 @@ class ChatMessageOrchestrator(
                         .map { it.content }
                 }
                 val ruleLayerBlock = PromptOrchestrator.buildRuleLayerBlock(rulesByGoal)
+
+                // ── Window C：补全 Skill Layer（§3 第一级"目录注入"）──
+                // 仅注入当前角色 ACTIVE 技能的 shortDescriptor 列表 + 触发提示，控制 token；
+                // Agent 判断某条适用时用 skill_expand 按需展开 fullContent。无技能时返回空串，
+                // PromptOrchestrator 自动跳过此层。此处在协程内，suspend 调用安全。
+                val skillCatalogBlock = SkillRegistry.buildSkillCatalogBlock(
+                    characterId = getCurrentCharacterId(),
+                    repo = skillRepo,
+                )
 
                 // ── 补全 characterState（深层状态：desireStrength/emotionalSuppression等，
                 //    W6-1 修复：提前读取，供 PregnancyPromptDelegate 使用）──
@@ -275,7 +294,7 @@ class ChatMessageOrchestrator(
 
                 // ── presence fallback：缓存为空时主动计算一次，结果写入缓存供后续轮次复用 ──
                 if (presenceSnap == null) {
-                    presenceSnap = presenceEngine?.refreshPresence(getCurrentCharacterId(), characterState)
+                    presenceSnap = presenceEngine.refreshPresence(getCurrentCharacterId(), characterState)
                 }
 
                 // ── Knowledge Layer（Phase 31）：按注入模式决定是否真正生效 ──
@@ -348,6 +367,7 @@ class ChatMessageOrchestrator(
                     identityEntity        = identityEntity,
                     coreMemories          = coreMemories,
                     relevantMemories      = relevantMemories,
+                    userName              = getUserName(),
                     presenceActivity      = presenceSnap?.activity ?: "",
                     presenceFocus         = presenceSnap?.goalTitle ?: "",
                     presenceMood          = presenceSnap?.mood?.name ?: "",
@@ -370,6 +390,7 @@ class ChatMessageOrchestrator(
                     workflowRecapPatch    = workflowRecapPatch,
                     agentRelationSnapshot = agentRelationSnapshot,
                     taskLayerBlock        = taskLayerBlock,
+                    skillCatalogBlock     = skillCatalogBlock,
                 )
 
                 val config = LLMConfig(
@@ -550,7 +571,7 @@ class ChatMessageOrchestrator(
                 val (afterPsych, parsedPsych) = ChatTagParser.stripPsychText(afterThinking)
                 val (cleanReply, parsedMood) = ChatTagParser.stripMoodTag(afterPsych)
                 if (parsedMood != null) {
-                    presenceEngine?.updateMoodFromReply(getCurrentCharacterId(), parsedMood)
+                    presenceEngine.updateMoodFromReply(getCurrentCharacterId(), parsedMood)
                     _uiState.update { it.copy(currentMood = parsedMood) }
                 }
                 if (cleanReply.isNotBlank()) {

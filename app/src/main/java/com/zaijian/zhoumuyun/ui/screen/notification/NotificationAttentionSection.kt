@@ -5,8 +5,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -15,10 +13,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import com.zaijian.zhoumuyun.data.model.BriefingAttentionItem
 import com.zaijian.zhoumuyun.data.model.DefaultCharacters
+import com.zaijian.zhoumuyun.ui.component.EmptyStateView
 import com.zaijian.zhoumuyun.ui.design.WorldCard
 import com.zaijian.zhoumuyun.ui.theme.Palette
 import com.zaijian.zhoumuyun.ui.theme.Spacing
 import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
+import com.zaijian.zhoumuyun.ui.design.AppIcons
 
 // ─────────────────────────────────────────────────────────────
 //  NotificationAttentionSection — 通知中心"需要关注"区块
@@ -52,7 +52,10 @@ fun NotificationAttentionSection(
                 color = if (items.isNotEmpty()) Palette.Velvet else Palette.VelvetSoft,
             )
             if (items.isEmpty()) {
-                NotificationEmptyState(text = "暂无需要关注的事项 ✿")
+                EmptyStateView(
+                    icon  = AppIcons.Notifications,
+                    title = "暂无需要关注的事项 ✿",
+                )
             }
             items.forEach { item ->
                 val isRead = item in readItems
@@ -60,7 +63,7 @@ fun NotificationAttentionSection(
 
                 Row(
                     modifier = Modifier
-                        .fillMaxWidthCompat()
+                        .fillMaxWidth()
                         .clickable { onItemClick(item) }
                         .padding(vertical = Spacing.xs),
                     verticalAlignment = Alignment.CenterVertically,
@@ -72,7 +75,7 @@ fun NotificationAttentionSection(
                         modifier = Modifier.weight(1f).alpha(if (isRead) 0.5f else 1f),
                     )
                     Icon(
-                        imageVector        = Icons.Outlined.ChevronRight,
+                        imageVector        = AppIcons.ChevronRight,
                         contentDescription = "去看看",
                         tint               = Palette.VelvetSoft,
                     )
@@ -107,6 +110,3 @@ private fun characterNameById(id: String, daughterNameMap: Map<String, String>):
     DefaultCharacters.firstOrNull { it.id.toString() == id }?.name
         ?: daughterNameMap[id]
         ?: id
-
-private fun Modifier.fillMaxWidthCompat() =
-    this.fillMaxWidth()

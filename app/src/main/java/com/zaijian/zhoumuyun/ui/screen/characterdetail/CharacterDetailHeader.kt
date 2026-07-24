@@ -1,126 +1,48 @@
 package com.zaijian.zhoumuyun.ui.screen.characterdetail
 
 
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.asPaddingValues
-import androidx.compose.foundation.layout.statusBars
-import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentSize
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material.icons.outlined.Add
-import androidx.compose.material.icons.outlined.ChevronRight
-import androidx.compose.material.icons.outlined.Code
-import androidx.compose.material.icons.outlined.Description
-import androidx.compose.material.icons.outlined.Email
-import androidx.compose.material.icons.outlined.Search
-import androidx.compose.material.icons.outlined.Star
-import androidx.compose.material.icons.outlined.Delete
-import androidx.compose.material.icons.outlined.Edit
-import androidx.compose.material.icons.outlined.StarBorder
-import androidx.compose.material.icons.outlined.TableChart
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
-import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.ScrollableTabRow
-import androidx.compose.runtime.LaunchedEffect
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.lifecycle.viewmodel.compose.viewModel
-import com.zaijian.zhoumuyun.data.db.entity.CharacterGoalEntity
-import com.zaijian.zhoumuyun.data.db.entity.GoalHorizon
-import com.zaijian.zhoumuyun.ui.viewmodel.GoalDraft
-import com.zaijian.zhoumuyun.ui.viewmodel.GoalViewModel
-import com.zaijian.zhoumuyun.ui.viewmodel.IdentityViewModel
-import com.zaijian.zhoumuyun.ui.viewmodel.MemoryFilter
-import com.zaijian.zhoumuyun.ui.viewmodel.MemoryUiItem
-import com.zaijian.zhoumuyun.ui.viewmodel.MemoryViewModel
-import com.zaijian.zhoumuyun.ui.viewmodel.PregnancyViewModel
-import com.zaijian.zhoumuyun.data.model.PregnancyState
-import com.zaijian.zhoumuyun.data.model.isDaughterMother
-import com.zaijian.zhoumuyun.ui.theme.GoldDivider
 import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRowDefaults
-import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import com.zaijian.zhoumuyun.data.model.CharacterConfig
-import com.zaijian.zhoumuyun.data.model.DefaultCharacters
-import com.zaijian.zhoumuyun.data.model.DefaultPresenceStates
 import com.zaijian.zhoumuyun.data.model.FloorEnum
 import com.zaijian.zhoumuyun.data.model.StatusType
-import com.zaijian.zhoumuyun.data.model.accentLight
 import com.zaijian.zhoumuyun.ui.component.BreathingAvatar
-import com.zaijian.zhoumuyun.ui.design.WorldCard
-import com.zaijian.zhoumuyun.ui.theme.AppTheme
 import com.zaijian.zhoumuyun.ui.theme.AppColors
 import com.zaijian.zhoumuyun.ui.theme.AppTypography
 import com.zaijian.zhoumuyun.ui.theme.AvatarSize
 import com.zaijian.zhoumuyun.ui.theme.Elevation
-import com.zaijian.zhoumuyun.ui.theme.GlassOpacity
 import com.zaijian.zhoumuyun.ui.theme.Palette
 import com.zaijian.zhoumuyun.ui.theme.Radius
 import com.zaijian.zhoumuyun.ui.theme.RingWidth
 import com.zaijian.zhoumuyun.ui.theme.Spacing
 import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
-import com.zaijian.zhoumuyun.util.ZLog
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.material.icons.outlined.CameraAlt
-import androidx.compose.ui.platform.LocalContext
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.withContext
-import androidx.compose.material3.FilterChip
+import com.zaijian.zhoumuyun.ui.design.AppIcons
 
-private fun floorGradientColors(floor: FloorEnum, isDark: Boolean): Pair<Color, Color> {
+internal fun floorGradientColors(floor: FloorEnum, isDark: Boolean): Pair<Color, Color> {
     // W12问题5修复：原本在此处硬编码 12 个 Color(0x...) 字面量，现改用 Palette 中的
     // 具名 token（FloorXxxDarkStart/End、FloorXxxLightStart/End），纯换值不改视觉。
     return when (floor) {
@@ -136,74 +58,6 @@ private fun floorGradientColors(floor: FloorEnum, isDark: Boolean): Pair<Color, 
             Palette.FloorBasementDarkStart to Palette.FloorBasementDarkEnd
         else
             Palette.FloorBasementLightStart to Palette.FloorBasementLightEnd
-    }
-}
-
-@Composable
-internal fun DetailHeader(
-    name: String,
-    headerBg: Color,
-    onBack: () -> Unit,
-    modifier: Modifier = Modifier,
-    floor: FloorEnum? = null,
-) {
-    val colors = ZaijianTheme.colors
-    val type   = ZaijianTheme.typography
-
-    // 楼层光氛围（精修方案 v1.3 第5.2节）：floor != null 时叠加一层楼层基调渐变，
-    // 在原有毛玻璃纯色 headerBg 之上叠加，不替换——保留毛玻璃透明度行为，
-    // 只是把"纯色"换成"带楼层冷暖倾向的渐变"。floor == null（角色数据异常兜底）
-    // 时维持原有纯色 background，不强行画一个无意义的默认渐变。
-    val floorGradientBrush = floor?.let { f ->
-        val (start, end) = floorGradientColors(f, colors.isDark)
-        Brush.verticalGradient(colors = listOf(start, end))
-    }
-
-    // P2-13 修复：楼层渐变此前被毛玻璃完全盖住，看不到任何效果。
-    // 改为：先画 headerBg 基底，再叠加楼层渐变（低透明度），让渐变氛围可见。
-    Box(
-        modifier = modifier
-            .background(headerBg)
-            .then(
-                if (floorGradientBrush != null)
-                    Modifier.background(floorGradientBrush, alpha = 0.35f)
-                else
-                    Modifier
-            )
-            .border(
-                width = 0.5.dp,
-                color = colors.borderSubtle,
-                shape = RoundedCornerShape(0.dp),
-            )
-            .statusBarsPadding()
-            .height(Spacing.topBarHeight)
-            // Fix-顶栏点击穿透：顶栏此前只是纯展示 Box，不消费触摸事件，
-            // 隔着顶栏能点到下方滚动内容里正好滚到顶栏视觉区域下面的项。
-            // 加空 clickable 拦截，indication=null 避免多余水波纹。
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication        = null,
-            ) {},
-    ) {
-        Row(
-            modifier          = Modifier.fillMaxSize().padding(horizontal = Spacing.sm),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            IconButton(onClick = onBack) {
-                Icon(
-                    imageVector        = Icons.AutoMirrored.Outlined.ArrowBack,
-                    contentDescription = "返回",
-                    tint               = colors.textPrimary,
-                    modifier           = Modifier.size(24.dp),
-                )
-            }
-            Spacer(Modifier.width(Spacing.xs))
-            Text(
-                text  = name,
-                style = type.navTitle,
-                color = colors.textPrimary,
-            )
-        }
     }
 }
 
@@ -321,7 +175,7 @@ internal fun CharacterHeroCard(
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(
-                        imageVector        = Icons.Outlined.CameraAlt,
+                        imageVector        = AppIcons.CameraAlt,
                         contentDescription = "更换头像",
                         tint               = Color.White,
                         modifier           = Modifier.size(14.dp),

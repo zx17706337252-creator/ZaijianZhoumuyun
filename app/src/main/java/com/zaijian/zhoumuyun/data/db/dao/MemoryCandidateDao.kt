@@ -23,8 +23,9 @@ interface MemoryCandidateDao {
         SELECT * FROM memory_candidates
         WHERE characterId = :characterId AND isProcessed = 0
         ORDER BY createdAt ASC
+        LIMIT :limit
     """)
-    suspend fun getPending(characterId: Int): List<MemoryCandidateEntity>
+    suspend fun getPending(characterId: Int, limit: Int = 200): List<MemoryCandidateEntity>
 
     /** 标记候选已处理，记录关联的 Memory ID */
     @Query("""

@@ -18,11 +18,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Code
-import androidx.compose.material.icons.outlined.Email
-import androidx.compose.material.icons.outlined.KeyboardArrowDown
-import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -63,6 +58,7 @@ import com.zaijian.zhoumuyun.ui.theme.Radius
 import com.zaijian.zhoumuyun.ui.theme.Spacing
 import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
 import kotlinx.coroutines.launch
+import com.zaijian.zhoumuyun.ui.design.AppIcons
 
 // ─────────────────────────────────────────────────────────────
 //  IntegrationsSection — GitHub / 邮箱 集成配置
@@ -136,7 +132,7 @@ private fun GithubConfigCard() {
     }
 
     IntegrationCard(
-        icon        = Icons.Outlined.Code,
+        icon        = AppIcons.Code,
         title       = "GitHub",
         subtitle    = "用于 CI/CD：建仓库、提交推送、触发编译、下载 APK",
         expandedByDefault = false,
@@ -279,7 +275,7 @@ private fun EmailConfigCard() {
     }
 
     IntegrationCard(
-        icon        = Icons.Outlined.Email,
+        icon        = AppIcons.Email,
         title       = "邮箱（QQ邮箱）",
         subtitle    = "用于角色真实收发邮件（email_send / email_fetch）",
         expandedByDefault = false,
@@ -429,7 +425,7 @@ private fun IntegrationCard(
                     }
                 }
                 Icon(
-                    imageVector = if (expanded) Icons.Outlined.KeyboardArrowUp else Icons.Outlined.KeyboardArrowDown,
+                    imageVector = if (expanded) AppIcons.KeyboardArrowUp else AppIcons.KeyboardArrowDown,
                     contentDescription = if (expanded) "收起" else "展开",
                     tint = colors.textSecondary,
                     modifier = Modifier.size(20.dp),
@@ -530,7 +526,7 @@ private fun CalendarSyncCard() {
     }
 
     IntegrationCard(
-        icon        = Icons.Outlined.Code,
+        icon        = AppIcons.Code,
         title       = "系统日历",
         subtitle    = if (permissionGranted) "已授权：日程将同步到系统日历" else "未授权：日程无法同步到系统日历",
         expandedByDefault = !permissionGranted,

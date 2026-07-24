@@ -33,19 +33,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material.icons.outlined.Add
-import androidx.compose.material.icons.outlined.ChevronRight
-import androidx.compose.material.icons.outlined.Code
-import androidx.compose.material.icons.outlined.Description
-import androidx.compose.material.icons.outlined.Email
-import androidx.compose.material.icons.outlined.Search
-import androidx.compose.material.icons.outlined.Star
-import androidx.compose.material.icons.outlined.Delete
-import androidx.compose.material.icons.outlined.Edit
-import androidx.compose.material.icons.outlined.StarBorder
-import androidx.compose.material.icons.outlined.TableChart
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.foundation.text.BasicTextField
@@ -112,10 +99,10 @@ import com.zaijian.zhoumuyun.ui.theme.Radius
 import com.zaijian.zhoumuyun.ui.theme.RingWidth
 import com.zaijian.zhoumuyun.ui.theme.Spacing
 import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
+import com.zaijian.zhoumuyun.util.TimeFormatUtils
 import com.zaijian.zhoumuyun.util.ZLog
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.material.icons.outlined.CameraAlt
 import androidx.compose.material3.FilterChip
 
 @Composable
@@ -124,33 +111,28 @@ internal fun RelationshipPanel(
     accentColor: Color,
     characterIdStr: String = character.id.toString(),
     onNavigateToTimeline: (Int) -> Unit = {},
+    // E0 分层收口：关系数据改走 ViewModel，Composable 不再直接持有 Repository。
+    relationshipViewModel: com.zaijian.zhoumuyun.ui.viewmodel.RelationshipViewModel = viewModel(),
+    // P2-31 修复：复用 Hero 卡片已收集的关系状态，避免重复订阅同一 Flow。
+    sharedRelState: com.zaijian.zhoumuyun.data.db.entity.RelationshipEntity? = null,
     modifier: Modifier = Modifier,
 ) {
     val colors  = ZaijianTheme.colors
     val type    = ZaijianTheme.typography
 
     // Phase 17：从 Room 加载真实关系数据（用户 → 该角色）
-    // S8-窗口01 修复：原先在 Composable 内 `remember { AppDatabase.getInstance(...) }`
-    // 裸拿 db 再直接调用 relationshipDao/worldEventDao/relationshipMilestoneDao 三个
-    // DAO，是 UI 层直触持久化层的分层违规，且 LaunchedEffect 内查询无 try-catch
-    // 保护（报告新发现1：DB 查询失败会导致本面板崩溃）。改为走 AppContainer 共享的
-    // relationshipReadRepo：Flow 侧内置 `.catch{}` 兜底为 null，挂起函数侧内置
-    // try-catch 兜底为空列表，本面板不再需要各自处理异常。
-    val relationshipReadRepo = com.zaijian.zhoumuyun.data.AppContainer.instance.relationshipReadRepo
-    val relFlow = remember(characterIdStr) {
-        relationshipReadRepo.observeRelationTo("user", characterIdStr)
-    }
-    val relState by relFlow.collectAsStateWithLifecycle(initialValue = null)
+    // P2-31 修复：若父级已传入 sharedRelState 则直接复用，避免与 Hero 卡片重复订阅。
+    val relState = sharedRelState
 
     // Phase 17：加载最近关系变化事件（用于历史 Timeline）
     val recentRelEvents = remember { mutableStateOf<List<com.zaijian.zhoumuyun.data.db.entity.WorldEventEntity>>(emptyList()) }
     // 关系转折点（Milestone）
     val milestones = remember { mutableStateOf<List<com.zaijian.zhoumuyun.data.db.entity.RelationshipMilestoneEntity>>(emptyList()) }
     LaunchedEffect(characterIdStr) {
-        recentRelEvents.value = relationshipReadRepo.getRecentRelationshipEvents(
+        recentRelEvents.value = relationshipViewModel.getRecentRelationshipEvents(
             actorId = "user", targetId = characterIdStr, queryLimit = 8,
         )
-        milestones.value = relationshipReadRepo.getRecentMilestones(
+        milestones.value = relationshipViewModel.getRecentMilestones(
             fromId = "user", toId = characterIdStr, limit = 10,
         )
     }
@@ -349,8 +331,7 @@ private fun RelationshipHistoryRow(
     }
 
     val dateLabel = remember(event.createdAt) {
-        java.text.SimpleDateFormat("MM/dd HH:mm", java.util.Locale.getDefault())
-            .format(java.util.Date(event.createdAt))
+        TimeFormatUtils.formatMonthDaySlashTime(event.createdAt)
     }
 
     // WorldCard 接入（精修方案 v1.3）：关系变化记录，归属当前查看角色，
@@ -400,8 +381,7 @@ private fun MilestoneRow(
     val directionLabel = if (isWorsened) "↘ 转折" else "↗ 缓和"
 
     val dateLabel = remember(milestone.createdAt) {
-        java.text.SimpleDateFormat("MM/dd HH:mm", java.util.Locale.getDefault())
-            .format(java.util.Date(milestone.createdAt))
+        TimeFormatUtils.formatMonthDaySlashTime(milestone.createdAt)
     }
 
     // WorldCard 接入（精修方案 v1.3）：关系转折点，归属当前查看角色，

@@ -9,9 +9,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material.icons.outlined.*
+import com.zaijian.zhoumuyun.ui.component.DetailTopBar
 import com.zaijian.zhoumuyun.ui.design.WorldCard
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -33,8 +31,8 @@ import com.zaijian.zhoumuyun.ui.viewmodel.JudgeProfileViewModel
 import com.zaijian.zhoumuyun.ui.viewmodel.SimpleSavedStateViewModelFactory
 import androidx.activity.compose.BackHandler
 import androidx.lifecycle.compose.collectAsStateWithLifecycle // P1-11-2
-import java.text.SimpleDateFormat
-import java.util.*
+import com.zaijian.zhoumuyun.util.TimeFormatUtils
+import com.zaijian.zhoumuyun.ui.design.AppIcons
 
 // ─────────────────────────────────────────────────────────────
 //  JudgeProfileScreen — 裁判档案训练页（窗口 5B）
@@ -102,32 +100,13 @@ fun JudgeProfileScreen(
                 .padding(paddingValues),
         ) {
             // ── 顶部栏 ────────────────────────────────────────
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .statusBarsPadding()
-                    .height(Spacing.topBarHeight)
-                    .padding(horizontal = Spacing.screenHorizontal),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                IconButton(onClick = {
-                    if (selectedId != null) viewModel.selectProfile(null) else onBack()
-                }) {
-                    Icon(
-                        imageVector        = Icons.AutoMirrored.Outlined.ArrowBack,
-                        contentDescription = "返回",
-                        tint               = colors.textPrimary,
-                    )
-                }
-                Spacer(Modifier.width(Spacing.xs))
-                Text(
-                    text     = if (selectedId == null) "$charName · 裁判标准训练"
-                               else "${detail.profile?.domain ?: ""} · 裁判档案",
-                    style    = type.cardTitle,
-                    color    = colors.textPrimary,
-                    modifier = Modifier.weight(1f),
-                )
-            }
+            // D-2 统一顶栏：内联 Row → DetailTopBar
+            DetailTopBar(
+                title    = if (selectedId == null) "$charName · 裁判标准训练"
+                           else "${detail.profile?.domain ?: ""} · 裁判档案",
+                onBack   = { if (selectedId != null) viewModel.selectProfile(null) else onBack() },
+                headerBg = colors.bgBase,
+            )
 
             GoldDivider()
 
@@ -246,7 +225,7 @@ private fun JudgeProfileCard(
                 )
                 if (profile.lastJudgedAt > 0) {
                     Text(
-                        text  = "最近：${_judgeListDateFmt.format(Date(profile.lastJudgedAt))}",
+                        text  = "最近：${TimeFormatUtils.formatMonthDaySlashTime(profile.lastJudgedAt)}",
                         style = type.caption,
                         color = colors.textDisabled,
                     )
@@ -273,7 +252,7 @@ private fun JudgeProfileCard(
         Spacer(Modifier.width(Spacing.xs))
 
         Icon(
-            imageVector        = Icons.Outlined.ChevronRight,
+            imageVector        = AppIcons.ChevronRight,
             contentDescription = null,
             tint               = colors.textDisabled,
             modifier           = Modifier.size(18.dp),
@@ -337,7 +316,7 @@ private fun JudgeDetailContent(
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Icon(
-                            Icons.Outlined.Warning,
+                            AppIcons.Warning,
                             contentDescription = null,
                             tint     = Palette.SemanticDanger,  // P3-53 修复
                             modifier = Modifier.size(14.dp),
@@ -386,7 +365,7 @@ private fun JudgeDetailContent(
                         )
                     } else {
                         Icon(
-                            Icons.Outlined.Edit,
+                            AppIcons.Edit,
                             contentDescription = null,
                             tint     = colors.accent,
                             modifier = Modifier.size(16.dp),
@@ -448,7 +427,7 @@ private fun JudgeDetailContent(
                     horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
                 ) {
                     com.zaijian.zhoumuyun.ui.design.IconBadge(
-                        icon               = Icons.Outlined.Gavel,
+                        icon               = AppIcons.Gavel,
                         contentDescription = null,
                         tint               = Palette.Gold,
                         background         = Palette.Gold.copy(alpha = 0.12f),
@@ -595,7 +574,7 @@ private fun RecentRoundRow(
                 color = colors.textPrimary,
             )
             Text(
-                text  = _judgeListDateFmt.format(Date(round.createdAt)),
+                text  = TimeFormatUtils.formatMonthDaySlashTime(round.createdAt),
                 style = type.caption,
                 color = colors.textDisabled,
             )
@@ -619,7 +598,7 @@ private fun RecentRoundRow(
             )
         }
         Icon(
-            Icons.Outlined.ChevronRight,
+            AppIcons.ChevronRight,
             contentDescription = null,
             tint     = colors.textDisabled,
             modifier = Modifier.size(16.dp),
@@ -726,4 +705,3 @@ private fun JudgeSectionCard(
 //  工具
 // ─────────────────────────────────────────────────────────────
 
-private val _judgeListDateFmt = SimpleDateFormat("MM/dd HH:mm", Locale.getDefault())

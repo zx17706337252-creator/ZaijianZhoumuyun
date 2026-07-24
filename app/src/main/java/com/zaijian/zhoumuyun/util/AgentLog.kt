@@ -9,9 +9,6 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
 import java.io.PrintWriter
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 /**
  * 可导出的 Agent 行为日志（v147+ vault 改造后新增）。
@@ -67,8 +64,6 @@ object AgentLog {
 
     private val mutex = Mutex()
 
-    private val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault())
-
     // ── 公开 API ──────────────────────────────────────────────
 
     /** 普通信息（工具开始/成功/payload 收集等）。 */
@@ -89,21 +84,6 @@ object AgentLog {
             message
         }
         writeLog("ERROR", tag, fullMessage, null)
-    }
-
-    /** 同步版本（仅限无法 suspend 的场景，如 catch 块里；走 IO 线程但阻塞调用方）。 */
-    fun infoSync(tag: String, message: String) {
-        writeLogSync("INFO", tag, message)
-    }
-
-    /** 同步错误日志（catch 块里用）。 */
-    fun errorSync(tag: String, message: String, throwable: Throwable? = null) {
-        val fullMessage = if (throwable != null) {
-            "$message\n  ${throwable.stackTraceString.take(MAX_ENTRY_CHARS)}"
-        } else {
-            message
-        }
-        writeLogSync("ERROR", tag, fullMessage)
     }
 
     // ── 导出 ─────────────────────────────────────────────────
@@ -137,13 +117,6 @@ object AgentLog {
         }
     }
 
-    private fun writeLogSync(level: String, tag: String, message: String) {
-        // 同步写：直接在当前线程跑（通常已在 IO 或 catch 块）
-        kotlinx.coroutines.runBlocking {
-            doWriteLog(level, tag, message)
-        }
-    }
-
     private suspend fun doWriteLog(level: String, tag: String, message: String) {
         mutex.withLock {
             val ctx = appContext ?: return@withLock
@@ -160,7 +133,7 @@ object AgentLog {
             logFile.parentFile?.mkdirs()
 
             // 写入
-            val timestamp = dateFormat.format(Date())
+            val timestamp = TimeFormatUtils.formatLogTimestamp(System.currentTimeMillis())
             val truncated = if (message.length > MAX_ENTRY_CHARS) {
                 "${message.take(MAX_ENTRY_CHARS)}...(截断，共 ${message.length} 字符)"
             } else {

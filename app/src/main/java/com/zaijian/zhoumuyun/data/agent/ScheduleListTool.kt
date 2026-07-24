@@ -47,7 +47,22 @@ class ScheduleListTool(
 
     override suspend fun execute(params: Map<String, String>): ToolResult {
         val charId = params["__character_id"]?.toIntOrNull() ?: params["character_id"]?.toIntOrNull() ?: characterIdProvider()
-        val hoursAhead = params["hours_ahead"]?.toDoubleOrNull() ?: 168.0
+        // P2-16 修复：原 hours_ahead 非数字时静默降级为 168（7天），
+        // 与 ScheduleCreateTool/UpdateTool 的 parseHoursOrError 严格校验不一致。
+        // 现区分"未传参"（合法默认168）与"传了但格式非法"（报错）。
+        val hoursAheadRaw = params["hours_ahead"]?.trim()
+        val hoursAhead = if (hoursAheadRaw.isNullOrEmpty()) {
+            168.0
+        } else {
+            hoursAheadRaw.toDoubleOrNull()
+                ?.takeIf { it >= 0 }
+                ?: return ToolResult(
+                    toolName = name,
+                    success  = false,
+                    content  = "",
+                    error    = "hours_ahead 必须是非负数字，收到: $hoursAheadRaw",
+                )
+        }
         val enabledOnly = params["enabled_only"]?.trim()?.lowercase() != "false"
 
         return try {

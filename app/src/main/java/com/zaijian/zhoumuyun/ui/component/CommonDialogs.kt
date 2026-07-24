@@ -11,8 +11,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedTextField
@@ -33,6 +31,7 @@ import androidx.compose.ui.unit.dp
 import com.zaijian.zhoumuyun.ui.theme.Radius
 import com.zaijian.zhoumuyun.ui.theme.Spacing
 import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
+import com.zaijian.zhoumuyun.ui.design.AppIcons
 
 /**
  * 通用 Dialog 组件（架构瘦身 Phase 1 - 第4项）
@@ -47,8 +46,9 @@ import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
  * 前者是后者的 get() 别名（同一份颜色），迁移到共享组件时统一改用
  * 别名背后的原始命名（textPrimary/accent/bgCard等），不改变任何实际取色。
  *
- * `EditProfileDialog`（编辑昵称+签名，双字段+差异化字数限制）结构与
- * 上述两者不同，本次不纳入收敛范围，仍保留在 ProfileScreen.kt 内。
+ * 原 `EditProfileDialog`（编辑昵称+签名，双字段）结构与上述两者不同，
+ * 当时不纳入收敛范围。窗口1方案B执行后，签名字段已删除、组件改为单字段的
+ * `EditNicknameDialog`（位于 ProfileUserCard.kt），仍不纳入本次收敛范围。
  */
 
 /**
@@ -164,7 +164,7 @@ fun OptionPickerDialog(
                         )
                         if (index == current) {
                             Icon(
-                                imageVector = Icons.Outlined.Check,
+                                imageVector = AppIcons.Check,
                                 contentDescription = null,
                                 tint = colors.accent,
                                 modifier = Modifier.size(18.dp),

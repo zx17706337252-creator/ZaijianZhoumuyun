@@ -197,6 +197,7 @@ class BootReceiver : BroadcastReceiver() {
                         db = db,
                         workflowJobDao = db.workflowJobDao(),
                         workflowStepResultDao = db.workflowStepResultDao(),
+                        context = context,
                     )
                     val runningJobs = db.workflowJobDao().findAllRunning()
                     val processedJobIds = mutableListOf<String>()

@@ -1,58 +1,24 @@
 package com.zaijian.zhoumuyun.ui.screen.characterdetail
 
 
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.statusBars
-import androidx.compose.foundation.layout.sizeIn
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material.icons.outlined.Add
-import androidx.compose.material.icons.outlined.ChevronRight
-import androidx.compose.material.icons.outlined.Code
-import androidx.compose.material.icons.outlined.Description
-import androidx.compose.material.icons.outlined.Email
-import androidx.compose.material.icons.outlined.Search
-import androidx.compose.material.icons.outlined.Star
-import androidx.compose.material.icons.outlined.Delete
-import androidx.compose.material.icons.outlined.Edit
-import androidx.compose.material.icons.outlined.StarBorder
-import androidx.compose.material.icons.outlined.TableChart
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
-import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -60,22 +26,14 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.zaijian.zhoumuyun.data.db.entity.CharacterGoalEntity
-import com.zaijian.zhoumuyun.data.db.entity.GoalHorizon
-import com.zaijian.zhoumuyun.ui.viewmodel.GoalDraft
 import com.zaijian.zhoumuyun.ui.viewmodel.GoalViewModel
 import com.zaijian.zhoumuyun.ui.viewmodel.IdentityViewModel
 import com.zaijian.zhoumuyun.ui.viewmodel.MemoryFilter
-import com.zaijian.zhoumuyun.ui.viewmodel.MemoryUiItem
 import com.zaijian.zhoumuyun.ui.viewmodel.MemoryViewModel
 import com.zaijian.zhoumuyun.ui.viewmodel.PregnancyViewModel
-import com.zaijian.zhoumuyun.data.model.BirthRecord
-import com.zaijian.zhoumuyun.data.model.PregnancyState
+import com.zaijian.zhoumuyun.ui.viewmodel.SkillListViewModel
 import com.zaijian.zhoumuyun.data.model.isDaughterMother
-import com.zaijian.zhoumuyun.ui.theme.GoldDivider
 import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRowDefaults
-import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -86,45 +44,28 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.zaijian.zhoumuyun.data.model.CharacterConfig
-import com.zaijian.zhoumuyun.data.model.DaughterDataException
 import com.zaijian.zhoumuyun.data.model.DefaultCharacters
 import com.zaijian.zhoumuyun.data.model.DefaultPresenceStates
-import com.zaijian.zhoumuyun.data.model.FloorEnum
 import com.zaijian.zhoumuyun.data.model.PresenceState
 import com.zaijian.zhoumuyun.data.model.StatusType
 import com.zaijian.zhoumuyun.data.model.accentLight
-import com.zaijian.zhoumuyun.ui.component.BreathingAvatar
-import com.zaijian.zhoumuyun.ui.design.WorldCard
+import com.zaijian.zhoumuyun.ui.component.DetailTopBar
+import com.zaijian.zhoumuyun.ui.component.EmptyStateView
 import com.zaijian.zhoumuyun.ui.screen.PersonalScheduleTabContent
 import com.zaijian.zhoumuyun.ui.theme.AppTheme
-import com.zaijian.zhoumuyun.ui.theme.AppColors
-import com.zaijian.zhoumuyun.ui.theme.AppTypography
-import com.zaijian.zhoumuyun.ui.theme.AvatarSize
-import com.zaijian.zhoumuyun.ui.theme.Elevation
 import com.zaijian.zhoumuyun.ui.theme.GlassOpacity
-import com.zaijian.zhoumuyun.ui.theme.Palette
-import com.zaijian.zhoumuyun.ui.theme.Radius
-import com.zaijian.zhoumuyun.ui.theme.RingWidth
 import com.zaijian.zhoumuyun.ui.theme.Spacing
 import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
 import com.zaijian.zhoumuyun.util.ZLog
 import kotlinx.coroutines.launch
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.material.icons.outlined.CameraAlt
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.material3.FilterChip
+import com.zaijian.zhoumuyun.ui.design.AppIcons
 
 @Composable
 fun CharacterDetailScreen(
@@ -152,10 +93,19 @@ fun CharacterDetailScreen(
     memoryViewModel: MemoryViewModel = viewModel(),
     goalViewModel: GoalViewModel = viewModel(),
     pregnancyViewModel: PregnancyViewModel = viewModel(),
+    // Window C 缺口2：技能管理面板 ViewModel
+    skillListViewModel: SkillListViewModel = viewModel(),
+    // Window D-4：能力面板 ViewModel
+    capabilityPanelViewModel: com.zaijian.zhoumuyun.ui.viewmodel.CapabilityPanelViewModel = viewModel(),
+    // 窗口7贯通：心迹面板 ViewModel（observeTimeline → ContentBlockAdapter → ContentBlockRenderer）
+    agentActivityViewModel: com.zaijian.zhoumuyun.ui.viewmodel.AgentActivityViewModel = viewModel(),
     // 2.2 修复：mood/energy 改走 PresenceViewModel 响应式订阅，与
     // WorldScreen/CharacterScreen 同一套 uiState.presenceMap 数据源，
     // 不再是一次性快照——角色状态在别处变化后本页会自动刷新。
     presenceViewModel: com.zaijian.zhoumuyun.ui.viewmodel.PresenceViewModel = viewModel(),
+    // E0 分层收口：关系/女儿角色数据改走 ViewModel，Composable 不再直接持有 Repository。
+    relationshipViewModel: com.zaijian.zhoumuyun.ui.viewmodel.RelationshipViewModel = viewModel(),
+    daughterCharacterViewModel: com.zaijian.zhoumuyun.ui.viewmodel.DaughterCharacterViewModel = viewModel(),
 ) {
     val colors    = ZaijianTheme.colors
     val type      = ZaijianTheme.typography
@@ -182,24 +132,11 @@ fun CharacterDetailScreen(
 
     LaunchedEffect(characterId) {
         if (presetCharacter == null) {
-            // 报告第6条修复：原先在此处直接 AppDatabase.getInstance(context) 再
-            // 手动 new 一个 DaughterCharacterRepository，是 Composable 直接
-            // 触达持久化层。现改用 AppContainer 共享的 daughterCharacterRepo
-            // （与 ChatViewModel/RoundtableViewModel 各自持有的同构造参数实例
-            // 语义等价，只是不再各处重复构造）。
-            //
-            // 防御性保护：getCharacterConfig() 女儿数据损坏时抛 DaughterDataException
-            // （见 DaughterCharacterEntity.toDaughterCharacterData() 的校验规则）。
-            // 两条写入路径均已补齐校验，正常流程不应再产生这类坏数据；这里捕获
-            // 只是最后一道防线——daughterCharacter 保持 null，走下面已有的
-            // "角色不存在"兜底页面，而不是让整个详情页崩溃。
-            daughterCharacter = try {
-                com.zaijian.zhoumuyun.data.AppContainer.instance
-                    .daughterCharacterRepo.getCharacterConfig(characterId)
-            } catch (e: DaughterDataException) {
-                ZLog.e("CharacterDetailScreen", "characterId=$characterId 女儿数据损坏，无法加载", e)
-                null
-            }
+            // E0 分层收口：原直接 AppContainer.instance.daughterCharacterRepo
+            // .getCharacterConfig()，改走 DaughterCharacterViewModel.getCharacterConfig()。
+            // 女儿数据损坏（DaughterDataException）已在 VM 内兜底为 null 并记录日志，
+            // daughterCharacter 保持 null → 走下面已有的"角色不存在"兜底页面。
+            daughterCharacter = daughterCharacterViewModel.getCharacterConfig(characterId)
         }
         daughterLookupDone = true
     }
@@ -217,7 +154,7 @@ fun CharacterDetailScreen(
         Box(modifier = Modifier.fillMaxSize().padding(16.dp), contentAlignment = Alignment.Center) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 IconButton(onClick = onBack) {
-                    Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "返回")
+                    Icon(AppIcons.ArrowBack, contentDescription = "返回")
                 }
                 Spacer(Modifier.height(16.dp))
                 Text(
@@ -295,17 +232,13 @@ fun CharacterDetailScreen(
                 lastUpdated = 0L,
             )
         }
-    // relationshipStage：复用 RelationshipPanel 同款查询目标（用户→该角色的关系记录），
-    // 仅服务 Hero 卡片迷你版 BondRibbon；完整版 BondRibbon 仍由 RelationshipPanel 自己的
-    // relState 独立订阅，两处各自查询，不为此额外抽 ViewModel。
-    // S8-窗口01 修复：原先 `remember { AppDatabase.getInstance(...) }` 在 Composable 内
-    // 直接触达持久化层的 heroDb.relationshipDao().observeFrom(...) 裸调用，改为走
-    // AppContainer 共享的 relationshipReadRepo.observeRelationTo()——内部已含
-    // `.catch{}` 兜底为 null，Room 查询异常（如迁移后 schema 不一致）不会再经
-    // collectAsStateWithLifecycle 传播导致本页重组崩溃。
+    // relationshipStage：Hero 卡片订阅关系流，同时通过 sharedRelState 传递给
+    // RelationshipPanel 复用，避免重复订阅同一 Room 查询（P2-31 修复）。
+    // E0 分层收口：改走 RelationshipViewModel.observeRelationTo()——内部已含
+    // `.catch{}` 兜底为 null，Room 查询异常不会再经 collectAsStateWithLifecycle
+    // 传播导致本页重组崩溃。
     val heroRelFlow = remember(characterId) {
-        com.zaijian.zhoumuyun.data.AppContainer.instance
-            .relationshipReadRepo.observeRelationTo("user", characterId.toString())
+        relationshipViewModel.observeRelationTo("user", characterId.toString())
     }
     val heroRelState by heroRelFlow.collectAsStateWithLifecycle(initialValue = null)
     val heroBondStage = heroRelState?.stage?.let { stageName ->
@@ -414,6 +347,15 @@ fun CharacterDetailScreen(
     // UI S4 修复：Tab 选中位置在进程死亡后应能恢复，改用 rememberSaveable
     var mainTab by rememberSaveable { mutableIntStateOf(initialTab ?: 0) }
 
+    // P1-31 修复：navigateSingle 使用 launchSingleTop=true，当 CharacterDetail
+    // 已在栈顶时 NavBackStackEntry 被复用而非重建，rememberSaveable 保留旧值，
+    // 传入的新 initialTab 被忽略。通过 LaunchedEffect 监听 initialTab 变化，
+    // 非 null 时主动覆盖 mainTab，使通知中心"去看看"→关系 Tab 等跳转生效。
+    // initialTab 为 null（普通导航，无指定 Tab）时不干预，保留用户上次的手动选择。
+    LaunchedEffect(initialTab) {
+        initialTab?.let { mainTab = it }
+    }
+
     // 是否显示「孕育」Tab（仅对母亲角色）
     val showPregnancyTab = isDaughterMother(characterId)
     // Stage C：日程 Tab 的索引随「孕育」Tab 是否存在而浮动（与 MainTabRow 的 buildList 顺序保持一致：
@@ -431,7 +373,7 @@ fun CharacterDetailScreen(
     // 编辑记忆：非 null 时存储「正在编辑的 (id, 原始内容)」
     var editingMemory by remember { mutableStateOf<Pair<String, String>?>(null) }
 
-    // 能力子 Tab：0=能力 1=工具 2=任务
+    // 能力子 Tab：0=能力 1=任务 2=技能 3=心迹
     var abilityTab by rememberSaveable { mutableIntStateOf(0) }
 
     val accentColor = character.accentColor
@@ -454,7 +396,7 @@ fun CharacterDetailScreen(
             contentPadding = PaddingValues(bottom = Spacing.xxl),
         ) {
             // ── 顶部 Header 占位 ──────────────────────────────
-            // DetailHeader 的实际高度 = statusBar高度 + topBarHeight(44dp)，
+            // DetailTopBar 的实际高度 = statusBar高度 + topBarHeight(44dp)，
             // 这里用 WindowInsets.statusBars 动态读取状态栏高度，与顶栏保持一致，
             // 避免刘海/高状态栏设备上头像被顶栏底边遮挡。
             item {
@@ -499,9 +441,8 @@ fun CharacterDetailScreen(
                     showPregnancyTab = showPregnancyTab,
                     onSelect         = { index, label ->
                         if (label == "文件") {
-                            // P1-15 修复：点击"文件"Tab 时同步更新 mainTab，
-                            // 确保从 FileVaultScreen 返回后 Tab 高亮正确显示"文件"
-                            mainTab = index
+                            // P2-30 修复：不将 mainTab 设为"文件"Tab 索引，仅导航。
+                            // 返回后 mainTab 保持上一次有效 Tab，避免内容区空白。
                             onNavigateToFileVault(characterId)
                         } else {
                             mainTab = index
@@ -579,12 +520,28 @@ fun CharacterDetailScreen(
                             accentLight = accentLight,
                         )
                     }
-                    else -> item {
-                        EmptyState(
-                            text     = "有点卡住，先歇一歇",
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = Spacing.xxl),
+                    // Window C 缺口2：技能管理面板
+                    2 -> item {
+                        SkillTabContent(
+                            characterId       = characterId,
+                            accentColor       = accentColor,
+                            skillListViewModel = skillListViewModel,
+                        )
+                    }
+                    // Window D-4：能力面板（原"任务"子Tab占位符，现为Agent能力面板）
+                    1 -> item {
+                        CapabilityPanelContent(
+                            characterId              = characterId,
+                            accentColor              = accentColor,
+                            capabilityPanelViewModel = capabilityPanelViewModel,
+                        )
+                    }
+                    // 窗口7贯通：心迹面板（observeTimeline → ContentBlockAdapter → ContentBlockRenderer）
+                    3 -> item {
+                        AgentActivityTimelinePanel(
+                            characterId            = characterId,
+                            accentColor            = accentColor,
+                            agentActivityViewModel = agentActivityViewModel,
                         )
                     }
                 }
@@ -673,6 +630,8 @@ fun CharacterDetailScreen(
                         accentColor   = accentColor,
                         characterIdStr = character.id.toString(),
                         onNavigateToTimeline = onNavigateToTimeline,
+                        relationshipViewModel = relationshipViewModel,
+                        sharedRelState = heroRelState,
                     )
                 }
             }
@@ -704,10 +663,11 @@ fun CharacterDetailScreen(
                             if (record.isDaughter) {
                                 pregnancyScope.launch {
                                     val daughterId = runCatching {
-                                        com.zaijian.zhoumuyun.data.AppContainer.instance
-                                            .daughterCharacterRepo
-                                            .getByMother(record.characterId)
-                                            ?.daughterCharacterId
+                                        // E0 分层收口：原 AppContainer.instance
+                                        // .daughterCharacterRepo.getByMother()，
+                                        // 改走 DaughterCharacterViewModel.getDaughterIdByMother()。
+                                        daughterCharacterViewModel
+                                            .getDaughterIdByMother(record.characterId)
                                     }.getOrNull()
                                     if (daughterId != null) {
                                         onNavigateToCharacterDetail(daughterId)
@@ -741,14 +701,19 @@ fun CharacterDetailScreen(
         }
 
         // ── 固定顶栏（毛玻璃）────────────────────────────────
-        DetailHeader(
-            name     = character.name,
-            headerBg = headerBg,
-            onBack   = onBack,
-            floor    = character.floor,
-            modifier = Modifier
+        // 窗口4：统一为 DetailTopBar，楼层渐变通过 backgroundBrush 参数传入
+        val floorGradientBrush = character.floor?.let { f ->
+            val (start, end) = floorGradientColors(f, colors.isDark)
+            Brush.verticalGradient(colors = listOf(start, end))
+        }
+        DetailTopBar(
+            title           = character.name,
+            onBack          = onBack,
+            headerBg        = headerBg,
+            modifier        = Modifier
                 .fillMaxWidth()
                 .align(Alignment.TopCenter),
+            backgroundBrush  = floorGradientBrush,
         )
 
         // ── Phase 16：新增记忆 Dialog ─────────────────────────

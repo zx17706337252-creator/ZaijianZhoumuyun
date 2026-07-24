@@ -20,6 +20,7 @@ import com.zaijian.zhoumuyun.data.db.dao.JobResultDao
 import com.zaijian.zhoumuyun.data.db.dao.LearningGoalDao
 import com.zaijian.zhoumuyun.data.db.dao.MemoryCandidateDao
 import com.zaijian.zhoumuyun.data.db.dao.MemoryDao
+import com.zaijian.zhoumuyun.data.db.dao.MemoryTagDao                          // Window A-1 L2 记忆索引层
 import com.zaijian.zhoumuyun.data.db.dao.MessageDao
 import com.zaijian.zhoumuyun.data.db.dao.PregnancyDao
 import com.zaijian.zhoumuyun.data.db.dao.ProjectDao
@@ -48,6 +49,7 @@ import com.zaijian.zhoumuyun.data.db.dao.CompetitionRoundDao             // 裁�
 import com.zaijian.zhoumuyun.data.db.dao.CompetitionEntryDao             // 裁判竞争
 import com.zaijian.zhoumuyun.data.db.dao.CompetitionWeightConfigDao      // 裁判竞争
 import com.zaijian.zhoumuyun.data.db.dao.JudgeAccuracyLogDao             // 裁判竞争
+import com.zaijian.zhoumuyun.data.db.dao.SkillDao                        // Window C 技能系统
 import com.zaijian.zhoumuyun.data.db.entity.AgentPlanEntity
 import com.zaijian.zhoumuyun.data.db.entity.AgentRelationEntity
 import com.zaijian.zhoumuyun.data.db.entity.BirthRecordEntity
@@ -65,6 +67,7 @@ import com.zaijian.zhoumuyun.data.db.entity.LearningGoalEntity
 import com.zaijian.zhoumuyun.data.db.entity.MemoryCandidateEntity
 import com.zaijian.zhoumuyun.data.db.entity.MemoryEntity
 import com.zaijian.zhoumuyun.data.db.entity.MemoryFtsEntity
+import com.zaijian.zhoumuyun.data.db.entity.MemoryTagEntity                  // Window A-1 L2 记忆索引层
 import com.zaijian.zhoumuyun.data.db.entity.MessageEntity
 import com.zaijian.zhoumuyun.data.db.entity.PregnancyEntity
 import com.zaijian.zhoumuyun.data.db.entity.ProjectEntity
@@ -94,6 +97,8 @@ import com.zaijian.zhoumuyun.data.db.entity.CompetitionRoundEntity           // 
 import com.zaijian.zhoumuyun.data.db.entity.CompetitionEntryEntity           // 裁判竞争
 import com.zaijian.zhoumuyun.data.db.entity.CompetitionWeightConfigEntity    // 裁判竞争
 import com.zaijian.zhoumuyun.data.db.entity.JudgeAccuracyLogEntity           // 裁判竞争
+import com.zaijian.zhoumuyun.data.db.entity.SkillEditLogEntity          // Window C 技能系统
+import com.zaijian.zhoumuyun.data.db.entity.SkillEntity                  // Window C 技能系统
 
 /**
  * 再见周慕云 · Room 数据库
@@ -226,8 +231,16 @@ import com.zaijian.zhoumuyun.data.db.entity.JudgeAccuracyLogEntity           // 
         JudgeAccuracyLogEntity::class,
         PromotedSkillTagEntity::class,          // 擅长领域标签墙
         NotificationReadStateEntity::class,     // 通知中心已读状态
+        SkillEntity::class,                     // Window C 技能系统（Agent 自主技能）
+        SkillEditLogEntity::class,              // Window C 技能变更日志
+        MemoryTagEntity::class,                 // Window A-1 L2 记忆索引层
     ],
-    version = 68,  // 67 → 68：Agent 过程可见层（「心迹」，Window B 2.2.2）——新增
+    version = 70,  // 69 → 70：Window A-1 L2 记忆索引层——新增 memory_tags 表，
+    // 为每条记忆建立结构化标签索引，支持 L2 优先检索路由（L2 tag 精确匹配 → L1 FTS4 全文匹配）。
+    // 纯新增表，不改动任何既有 schema，详见 Migration69to70.kt。
+    // 承载 Agent 自主创建/编辑/废弃的可复用技能及其变更日志。纯新增表，不改动任何既有
+    // schema，详见 Migration68to69.kt。
+    // 67 → 68：Agent 过程可见层（「心迹」，Window B 2.2.2）——新增
     // agent_activity_events 表，承载 Agent 工具调用/降级链路/工作流镜像的过程痕迹，
     // 供「心迹」面板时间线呈现。纯新增表，不改动任何既有 schema，详见 Migration67to68.kt。
     // 66 → 67：表格直传方案 W1 数据模型——messages /
@@ -286,6 +299,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun characterIdentityDao(): CharacterIdentityDao
     abstract fun memoryDao(): MemoryDao
     abstract fun memoryCandidateDao(): MemoryCandidateDao
+    abstract fun memoryTagDao(): MemoryTagDao                              // Window A-1 L2 记忆索引层
     abstract fun relationshipDao(): RelationshipDao
     abstract fun characterGoalDao(): CharacterGoalDao
     abstract fun projectDao(): ProjectDao
@@ -322,6 +336,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun judgeAccuracyLogDao(): JudgeAccuracyLogDao
     abstract fun promotedSkillTagDao(): PromotedSkillTagDao        // 擅长领域标签墙
     abstract fun notificationReadStateDao(): NotificationReadStateDao  // 通知中心已读状态
+    abstract fun skillDao(): SkillDao                                  // Window C 技能系统
 
     /**
      * S2 修复：原子记录工作流步骤（插入步骤结果 + 推进 currentStep 在同一事务内）。
@@ -361,11 +376,7 @@ abstract class AppDatabase : RoomDatabase() {
                         *com.zaijian.zhoumuyun.data.db.migration.MIGRATIONS_11_20,
                         *com.zaijian.zhoumuyun.data.db.migration.MIGRATIONS_21_30,
                         *com.zaijian.zhoumuyun.data.db.migration.MIGRATIONS_31_40,
-                        *com.zaijian.zhoumuyun.data.db.migration.MIGRATIONS_41_48,
-                        com.zaijian.zhoumuyun.data.db.migration.MIGRATION_48_49,
-                        com.zaijian.zhoumuyun.data.db.migration.MIGRATION_49_50,
-                        com.zaijian.zhoumuyun.data.db.migration.MIGRATION_50_51,
-                        com.zaijian.zhoumuyun.data.db.migration.MIGRATION_51_52,
+                        *com.zaijian.zhoumuyun.data.db.migration.MIGRATIONS_41_52,
                         com.zaijian.zhoumuyun.data.db.migration.MIGRATION_52_53,
                         com.zaijian.zhoumuyun.data.db.migration.MIGRATION_53_54,
                         com.zaijian.zhoumuyun.data.db.migration.MIGRATION_54_55,
@@ -382,16 +393,18 @@ abstract class AppDatabase : RoomDatabase() {
                         com.zaijian.zhoumuyun.data.db.migration.MIGRATION_65_66,
                         com.zaijian.zhoumuyun.data.db.migration.MIGRATION_66_67,
                         com.zaijian.zhoumuyun.data.db.migration.MIGRATION_67_68,
+                        com.zaijian.zhoumuyun.data.db.migration.MIGRATION_68_69,
+                        com.zaijian.zhoumuyun.data.db.migration.MIGRATION_69_70,
                     )
                     .fallbackToDestructiveMigrationOnDowngrade()
                     // P1-11 修复：原先仅有 fallbackToDestructiveMigrationOnDowngrade()
                     // （只兜底"版本号变小"这一种场景）。若本地库版本号落在上面
-                    // 46 条迁移链覆盖范围之外（脏数据、库文件损坏、或未来某次
+                    // 69 条迁移链覆盖范围之外（脏数据、库文件损坏、或未来某次
                     // 漏加 migration），Room 会在 build() 首次访问时抛
                     // IllegalStateException，且这是 onCreate() 主线程同步调用，
                     // 会导致应用直接崩溃且无法启动，用户唯一自救手段是手动清数据。
                     // 追加 fallbackToDestructiveMigration()：仅在"迁移路径缺失/
-                    // 执行异常"时触发清库重建兜底，不影响正常情况下 46 条迁移链
+                    // 执行异常"时触发清库重建兜底，不影响正常情况下 69 条迁移链
                     // 的照常执行，不会掩盖真实的 migration bug。
                     .fallbackToDestructiveMigration()
                     .build()

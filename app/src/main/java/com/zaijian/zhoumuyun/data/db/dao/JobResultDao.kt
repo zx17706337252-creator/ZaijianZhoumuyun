@@ -26,11 +26,25 @@ interface JobResultDao {
 
     // ── 方案 4-4：批量查询，消除 TaskViewModel 的 N+1 问题 ──────
 
+    /**
+     * 按 jobId 批量取每个 job 最新一条结果。
+     *
+     * P1-01/窗口0B审查 H-1 修复：原实现 `SELECT * ... GROUP BY jobId HAVING
+     * createdAt = MAX(createdAt)` 语义错误——SQLite 里 SELECT * 配合 GROUP BY
+     * 时非分组列（这里是 createdAt 以及其他所有列）取自该分组内被任意选中的
+     * "代表行"（通常是 rowid 最小的一行），并不是 MAX(createdAt) 对应的那一行。
+     * HAVING 里的 createdAt 引用的是代表行的值，几乎不可能恰好等于 MAX(createdAt)，
+     * 导致整个分组被 HAVING 过滤掉——实测哪怕只传一个 jobId 也大概率返回空列表。
+     *
+     * 改为相关子查询：对每个 jobId，只保留 createdAt 等于该 jobId 分组内
+     * MAX(createdAt) 的那一行，语义上不依赖 GROUP BY 的代表行选取规则。
+     */
     @Query("""
-        SELECT * FROM job_results
-        WHERE jobId IN (:jobIds)
-        GROUP BY jobId
-        HAVING createdAt = MAX(createdAt)
+        SELECT * FROM job_results j1
+        WHERE j1.jobId IN (:jobIds)
+          AND j1.createdAt = (
+              SELECT MAX(j2.createdAt) FROM job_results j2 WHERE j2.jobId = j1.jobId
+          )
     """)
     suspend fun findLatestByJobIds(jobIds: List<String>): List<JobResultEntity>
 

@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import kotlinx.coroutines.Dispatchers
+import com.zaijian.zhoumuyun.util.TimeFormatUtils
 import kotlinx.coroutines.withContext
 import java.util.Calendar
 
@@ -72,8 +73,7 @@ class NoteSaveTool(private val context: Context) : AgentTool {
             val fileName  = "${timestamp}_${safeTitle}.txt"
             val file      = java.io.File(notesDir, fileName)
 
-            val now = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault())
-                .format(java.util.Date(timestamp))
+            val now = TimeFormatUtils.formatDateTimeMinute(timestamp)
 
             val noteText = buildString {
                 appendLine("# $title")
@@ -146,6 +146,14 @@ class ReminderTool(
             val file      = java.io.File(remindersDir, "${id}.json")
 
             val triggerAtMs = parseTriggerTime(date, time, id)
+            // 重新核实的 P1-13 修复：原重构（toJson/fromJson 合并为内联 JSONObject）
+            // 遗漏了 characterId 字段——execute() 内部算出的 characterId 只传给了
+            // scheduleAlarm() 用于本次注册，从未写入持久化 JSON。设备重启后
+            // BootReceiver.restoreReminderAlarms() 读 json.optInt("characterId", -1)
+            // 只能拿到默认值 -1，导致重启前设置的提醒，重启后恢复的闹钟全部丢失
+            // characterId，通知上「查看日程」按钮的角色深链接失效。这里先算出
+            // characterId 并写入 JSON，使持久化数据与首次注册时使用的值一致。
+            val characterId = params["__character_id"]?.toIntOrNull() ?: characterIdProvider()
 
             val jsonObj = org.json.JSONObject().apply {
                 put("id", id)
@@ -155,6 +163,7 @@ class ReminderTool(
                 put("createdAt", id)
                 put("triggerAtMs", triggerAtMs)
                 put("isCompleted", false)
+                put("characterId", characterId)
             }
             file.writeText(jsonObj.toString(), Charsets.UTF_8)
 
@@ -171,7 +180,7 @@ class ReminderTool(
             // 约 2^16 条同时存活的提醒才会有 50% 碰撞概率，对单机提醒场景足够安全）。
             val requestCode = id.toString().hashCode()
             if (triggerAtMs > System.currentTimeMillis()) {
-                scheduleAlarm(requestCode, text, triggerAtMs, params["__character_id"]?.toIntOrNull() ?: characterIdProvider())
+                scheduleAlarm(requestCode, text, triggerAtMs, characterId)
             }
 
             val timeDesc = buildString {

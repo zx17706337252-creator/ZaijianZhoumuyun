@@ -35,8 +35,6 @@ import coil.compose.rememberAsyncImagePainter
 import androidx.compose.foundation.Canvas
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Person
 import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import com.zaijian.zhoumuyun.data.model.StatusType
 import com.zaijian.zhoumuyun.data.model.dotColor
@@ -47,6 +45,7 @@ import com.zaijian.zhoumuyun.ui.theme.BreathScaleMin
 import com.zaijian.zhoumuyun.ui.theme.Palette
 import com.zaijian.zhoumuyun.ui.theme.breathAlphaSpec
 import com.zaijian.zhoumuyun.ui.theme.breathScaleSpec
+import com.zaijian.zhoumuyun.ui.design.AppIcons
 
 // ─────────────────────────────────────────────────────────────
 //  BreathingAvatar
@@ -451,7 +450,7 @@ private fun AvatarContent(
 
             if (imageUrl.isBlank() || painterState is AsyncImagePainter.State.Error) {
                 Icon(
-                    imageVector        = Icons.Outlined.Person,
+                    imageVector        = AppIcons.Person,
                     contentDescription = null,
                     tint               = breathColor.copy(alpha = 0.4f),
                     modifier           = Modifier.fillMaxSize(0.6f),

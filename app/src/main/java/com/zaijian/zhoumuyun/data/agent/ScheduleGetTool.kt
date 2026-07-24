@@ -25,6 +25,9 @@ import java.util.concurrent.TimeUnit
 class ScheduleGetTool(
     private val scheduleRepository: ScheduleRepository,
     private val projectRepository: ProjectRepository? = null,
+    // 跨角色越权修复：与 ScheduleDeleteTool/ScheduleUpdateTool 同款——原实现
+    // 完全没有 characterId 概念，任何角色都能查到其他角色名下定时任务的详情。
+    private val characterIdProvider: () -> Int = { -1 },
 ) : AgentTool {
 
     override val name = "schedule_get"
@@ -46,9 +49,20 @@ class ScheduleGetTool(
             return ToolResult(name, false, "", error = "id 参数不能为空")
         }
 
+        val charId = characterIdProvider()
+        if (charId < 0) {
+            return ToolResult(name, false, "", error = "角色未初始化")
+        }
+
         return try {
             val job = scheduleRepository.getJob(id)
                 ?: return ToolResult(name, false, "", error = "找不到任务 ID: $id")
+
+            // 跨角色越权修复：job.characterId 与当前角色不一致时按"找不到"处理，
+            // 不暴露该 id 属于其他角色的事实。
+            if (job.characterId != charId) {
+                return ToolResult(name, false, "", error = "找不到任务 ID: $id")
+            }
 
             val repeatDesc = if (job.repeatIntervalMs != null) {
                 val hours = job.repeatIntervalMs / TimeUnit.HOURS.toMillis(1).toDouble()

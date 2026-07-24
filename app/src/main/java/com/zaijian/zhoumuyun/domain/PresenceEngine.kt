@@ -502,6 +502,9 @@ class PresenceEngine(
      * @param relAffection        与用户的亲密度（0-100）
      * @param relTrust            与用户的信任度（0-100）
      * @param relDependence       与用户的依赖度（0-100）
+     * @param lastMsgAt           该角色最近一条真实消息的时间戳（0L = 从未对话过）。
+     *                            P2-29 修复：用于区分"新角色从未聊过"与"老角色沉寂已久"，
+     *                            前者跳过 LONGING/MIDNIGHT，后者正常触发。
      */
     suspend fun tryEmitContextualProactiveMessage(
         characterId: Int,
@@ -512,6 +515,7 @@ class PresenceEngine(
         relAffection: Int = 50,
         relTrust: Int = 50,
         relDependence: Int = 50,
+        lastMsgAt: Long = 0L,
     ) {
         if (!isProactiveEnabled()) return
 
@@ -531,6 +535,7 @@ class PresenceEngine(
                 relAffection       = relAffection,
                 relTrust           = relTrust,
                 relDependence      = relDependence,
+                lastMsgAt          = lastMsgAt,
             ) ?: return@withLock
 
             setLastProactiveAt(characterId, now)
@@ -570,9 +575,15 @@ class PresenceEngine(
         relAffection: Int,
         relTrust: Int,
         relDependence: Int,
+        lastMsgAt: Long = 0L,
         hourOfDay: Int = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY),
     ): ProactiveMessage? {
         val elapsedH = elapsedMs / 3_600_000L
+        // P2-29 修复（返工）：原方案用 elapsedH < 365*24（"超过一年算没聊过"）
+        // 过于宽泛——会连带把真实沉寂超一年的老角色也永久静音 LONGING/MIDNIGHT。
+        // 收窄为判断 lastMsgAt == 0L（从未有过真实对话），只跳过新角色，
+        // 不影响老角色的正常主动消息触发。
+        val hasPriorConversation = lastMsgAt != 0L
         val elapsedStr = when {
             elapsedH < 1  -> "不到一小时"
             elapsedH < 24 -> "${elapsedH}小时"
@@ -582,8 +593,8 @@ class PresenceEngine(
         val mode = when {
             recentOtherCharIds.isNotEmpty()                                      -> ProactiveMode.JEALOUSY
             relAffection >= 80 && elapsedMs > 3 * 3_600_000L                    -> ProactiveMode.MILESTONE
-            elapsedH > 48                                                         -> ProactiveMode.LONGING
-            (hourOfDay in 22..23 || hourOfDay in 0..2) && elapsedH < 12         -> ProactiveMode.MIDNIGHT
+            hasPriorConversation && elapsedH > 48                                -> ProactiveMode.LONGING
+            hasPriorConversation && (hourOfDay in 22..23 || hourOfDay in 0..2) && elapsedH < 12 -> ProactiveMode.MIDNIGHT
             goalTitle != null && mood in listOf(
                 MoodType.EXCITED, MoodType.FOCUSED, MoodType.CURIOUS,
                 MoodType.SATISFIED, MoodType.REFLECTIVE

@@ -49,6 +49,7 @@ import com.zaijian.zhoumuyun.data.model.StatusType
 import com.zaijian.zhoumuyun.data.model.dotColor
 import com.zaijian.zhoumuyun.ui.theme.AnimDuration
 import com.zaijian.zhoumuyun.ui.theme.RingWidth
+import com.zaijian.zhoumuyun.ui.theme.Spacing
 import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
 import com.zaijian.zhoumuyun.ui.theme.presenceGlow
 
@@ -290,7 +291,7 @@ fun WindowCard(
                 .align(Alignment.TopCenter)
                 .offset(y = archHeight + 1.dp)
                 .wrapContentWidth(unbounded = true)
-                .padding(horizontal = 4.dp),
+                .padding(horizontal = Spacing.xs),
         )
 
         // ── [4] 状态点（右上角）──────────────────────────────
@@ -300,7 +301,7 @@ fun WindowCard(
                 statusType = presence.statusType,
                 modifier   = Modifier
                     .align(Alignment.TopEnd)
-                    .padding(top = 8.dp, end = 8.dp),
+                    .padding(top = Spacing.sm, end = Spacing.sm),
             )
         }
 
@@ -310,7 +311,7 @@ fun WindowCard(
             Box(
                 modifier = Modifier
                     .align(Alignment.TopStart)
-                    .padding(top = 8.dp, start = 8.dp)
+                    .padding(top = Spacing.sm, start = Spacing.sm)
                     .size(8.dp)
                     .clip(CircleShape)
                     .background(character.accentColor),
@@ -443,21 +444,21 @@ private fun WindowCardOnline(
                 .align(Alignment.TopCenter)
                 .offset(y = archHeight + 1.dp)
                 .wrapContentWidth(unbounded = true)
-                .padding(horizontal = 4.dp),
+                .padding(horizontal = Spacing.xs),
         )
 
         StatusDot(
             statusType = presence.statusType,
             modifier   = Modifier
                 .align(Alignment.TopEnd)
-                .padding(top = 8.dp, end = 8.dp),
+                .padding(top = Spacing.sm, end = Spacing.sm),
         )
 
         if (hasDescendants) {
             Box(
                 modifier = Modifier
                     .align(Alignment.TopStart)
-                    .padding(top = 8.dp, start = 8.dp)
+                    .padding(top = Spacing.sm, start = Spacing.sm)
                     .size(8.dp)
                     .clip(CircleShape)
                     .background(character.accentColor),

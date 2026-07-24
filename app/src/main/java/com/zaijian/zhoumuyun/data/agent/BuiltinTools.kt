@@ -1,6 +1,7 @@
 package com.zaijian.zhoumuyun.data.agent
 
 import android.content.Context
+import com.zaijian.zhoumuyun.util.TimeFormatUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -11,9 +12,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
 import java.nio.charset.Charset
-import java.text.SimpleDateFormat
 import java.util.Calendar
-import java.util.Locale
 
 /**
  * Phase 13 · Tool Call Engine（Prompt-based Dispatch）
@@ -223,20 +222,16 @@ class DateTimeTool : AgentTool {
     override suspend fun execute(params: Map<String, String>): ToolResult = withContext(Dispatchers.IO) {
         val format = params["format"]?.trim()?.lowercase() ?: "full"
         val now = Calendar.getInstance()
-        val locale = Locale.CHINESE
 
         val result = when (format) {
             "date" -> {
-                val sdf = SimpleDateFormat("yyyy年M月d日 EEEE", locale)
-                sdf.format(now.time)
+                TimeFormatUtils.formatChineseFullDateWithWeekday(now.timeInMillis)
             }
             "time" -> {
-                val sdf = SimpleDateFormat("HH:mm:ss", locale)
-                sdf.format(now.time)
+                TimeFormatUtils.formatTimeWithSeconds(now.timeInMillis)
             }
             "week" -> {
-                val sdf = SimpleDateFormat("EEEE", locale)
-                sdf.format(now.time)
+                TimeFormatUtils.getChineseWeekdayFull(now.timeInMillis)
             }
             "year" -> {
                 now.get(Calendar.YEAR).toString()
@@ -245,11 +240,10 @@ class DateTimeTool : AgentTool {
                 (now.timeInMillis / 1000L).toString()
             }
             else -> {
-                val dateSdf = SimpleDateFormat("yyyy年M月d日 EEEE HH:mm:ss", locale)
                 val tz = now.timeZone
                 val offsetHours = tz.rawOffset / 3_600_000
                 val tzStr = if (offsetHours >= 0) "UTC+$offsetHours" else "UTC$offsetHours"
-                "${dateSdf.format(now.time)} ($tzStr)"
+                "${TimeFormatUtils.formatChineseFullDateTimeWithWeekday(now.timeInMillis)} ($tzStr)"
             }
         }
 
@@ -441,7 +435,11 @@ class FileReadTool(private val context: Context) : AgentTool {
             return ToolResult(name, false, "", "缺少 path 参数")
         }
 
-        if (path.contains("../") || path.contains("..\\")) {
+        // P2-19 修复（同步）：原用 path.contains("../") 子串匹配，对含 "..."
+        // 的合法路径误报。改为按路径分隔符分段后精确比较==".."，与
+        // FileSystemTools.hasPathTraversal 的修复保持一致。
+        val pathSegments = path.split("/", "\\")
+        if (pathSegments.any { it == ".." }) {
             return ToolResult(
                 toolName = name,
                 success  = false,
@@ -1374,7 +1372,7 @@ class DiagLogExportTool(private val context: Context) : AgentTool {
             }
 
             // 复制到 vault 目录，生成可下载的文件
-            val stamp = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.getDefault()).format(java.util.Date())
+            val stamp = TimeFormatUtils.formatFileStamp(System.currentTimeMillis())
             val humanName = "诊断日志_$stamp.txt"
             val metaJson = writeVaultStream(context, humanName, "text/plain") { out ->
                 logFile.inputStream().use { it.copyTo(out) }

@@ -46,17 +46,6 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material.icons.outlined.Add
-import androidx.compose.material.icons.outlined.AutoMode
-import androidx.compose.material.icons.outlined.Check
-import androidx.compose.material.icons.outlined.Close
-import androidx.compose.material.icons.outlined.Send
-import androidx.compose.material.icons.outlined.Settings
-import androidx.compose.material.icons.outlined.SmartToy
-import androidx.compose.material.icons.outlined.Speed
-import androidx.compose.material.icons.outlined.Person
 import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -122,6 +111,7 @@ import com.zaijian.zhoumuyun.ui.viewmodel.ScheduleMode
 import com.zaijian.zhoumuyun.util.TimeFormatUtils
 import kotlinx.coroutines.launch
 import androidx.compose.runtime.snapshotFlow
+import com.zaijian.zhoumuyun.ui.design.AppIcons
 
 
 // ─────────────────────────────────────────────────────────────
@@ -232,7 +222,7 @@ private fun MemberChip(
                     // presenceGlow 是本组件的既定轻量方案（28dp 小头像 + 生成状态点），
                     // 替换为 BreathingAvatar 是更大改动，风险不成比例，故仅做最小视觉对齐。
                     .border(1.dp, bot.accentColor.copy(alpha = 0.3f), CircleShape),
-                error              = rememberVectorPainter(Icons.Outlined.Person),
+                error              = rememberVectorPainter(AppIcons.Person),
             )
 
             // 金色指示点：紧贴头像底部中心，仅 GENERATING 时显示

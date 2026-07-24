@@ -24,7 +24,10 @@ import com.zaijian.zhoumuyun.data.repository.SlotRecordResult
 import com.zaijian.zhoumuyun.domain.StageTransitionResult
 import com.zaijian.zhoumuyun.domain.pregnancy.IntentResult
 import com.zaijian.zhoumuyun.domain.pregnancy.PregnancyAnswerIntentDetector
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import java.util.concurrent.ConcurrentHashMap
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -70,6 +73,7 @@ class PregnancyPromptDelegate(
     private val d3AskAttemptStore: D3AskAttemptDataStore,
     private val daughterRepo: DaughterCharacterRepository,
     private val agentRelationEngine: AgentRelationEngine,
+    private val viewModelScope: CoroutineScope,
 ) {
 
     companion object {
@@ -530,6 +534,55 @@ class PregnancyPromptDelegate(
                 // 不再需要单独的 recordAsked 调用。
             }
             // didAsk == NO：AI 没把问题问出口，不记 pending、不增加计数
+        }
+    }
+
+    // ═════════════════════════════════════════════════════════════════════════
+    //  onFertileWindowDialogResult()
+    //
+    //  受孕窗口同意对话框的用户选择回调。从 ChatViewModel 中移入。
+    //  accepted = true/false 分别对应用户点击「同意」/「拒绝」。
+    //  使用 characterId（弹窗展示时捕获的快照）而非实时 currentCharacterId。
+    // ═════════════════════════════════════════════════════════════════════════
+    fun onFertileWindowDialogResult(
+        accepted: Boolean,
+        characterId: Int,
+    ) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val pressureScale = pregnancyPressureDataStore.pregnancyPressureScaleFlow.first()
+                val result = pregnancyTriggerManager.proceedAfterDialogConsent(
+                    characterId   = characterId,
+                    accepted      = accepted,
+                    pressureScale = pressureScale,
+                )
+                when (result) {
+                    is PregnancyTriggerResult.Triggered -> {
+                        ZLog.i("PregnancyPromptDelegate", "受孕弹窗同意后判定：怀孕触发（characterId=$characterId）")
+                    }
+                    is PregnancyTriggerResult.FertileButFailed -> {
+                        ZLog.i("PregnancyPromptDelegate", "受孕弹窗同意后判定：本次未命中（characterId=$characterId，" +
+                            "连续失败${result.consecutiveFailCount}次）")
+                    }
+                    is PregnancyTriggerResult.WrongPhase -> {
+                        ZLog.i("PregnancyPromptDelegate", "受孕弹窗同意后判定：非排卵期（characterId=$characterId）")
+                    }
+                    is PregnancyTriggerResult.Rejected -> {
+                        ZLog.i("PregnancyPromptDelegate", "受孕弹窗拒绝：累积副作用已写入（characterId=$characterId）")
+                    }
+                    is PregnancyTriggerResult.AmbiguousRejected,
+                    is PregnancyTriggerResult.NotTriggered,
+                    is PregnancyTriggerResult.BreakthroughA,
+                    is PregnancyTriggerResult.BreakthroughB,
+                    is PregnancyTriggerResult.Miscarried -> {
+                        // proceedAfterDialogConsent 内部只会走 evaluateCycleAndProceed（同意分支）
+                        // 或 applyRejectedEffect（拒绝分支），不会产出以上分支；
+                        // 穷尽 when 分支需要，安全忽略。
+                    }
+                }
+            } catch (e: Exception) {
+                ZLog.w("PregnancyPromptDelegate", "onFertileWindowDialogResult: proceedAfterDialogConsent 异常", e)
+            }
         }
     }
 }

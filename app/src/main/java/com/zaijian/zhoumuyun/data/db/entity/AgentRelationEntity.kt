@@ -30,8 +30,8 @@ data class AgentRelationEntity(
     @PrimaryKey val daughterId: Int,
     /** 对应母亲的 characterId（1-9） */
     val motherCharacterId: Int,
-    /** 当前关系阶段 */
-    val stage: AgentRelationStage = AgentRelationStage.STAGE_1_INITIAL,
+    /** 当前关系阶段（以 AgentRelationStage.name 存储；Room 无 TypeConverter 支持枚举列，与项目其余实体统一用 String 存储的约定对齐） */
+    val stage: String = AgentRelationStage.STAGE_1_INITIAL.name,
     /** 与用户的累计有效交互次数（D5 用于阶段切换判定的参考字段） */
     val interactionCount: Int = 0,
     /** 关系建立时间戳（女儿 Agent 首次生成时写入） */

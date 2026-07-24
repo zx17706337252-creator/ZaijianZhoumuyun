@@ -52,7 +52,7 @@ interface ScheduledJobDao {
     """)
     suspend fun updateRunTimeUsingCurrentInterval(id: String, lastRunAt: Long): Int
 
-    @Query("UPDATE scheduled_jobs SET lockedUntil = :lockExpiry WHERE id = :id AND (lockedUntil IS NULL OR lockedUntil < :claimNow)")
+    @Query("UPDATE scheduled_jobs SET lockedUntil = :lockExpiry WHERE id = :id AND (lockedUntil IS NULL OR lockedUntil <= :claimNow)")
     suspend fun claimJob(id: String, claimNow: Long, lockExpiry: Long): Int
 
     @Query("UPDATE scheduled_jobs SET lockedUntil = NULL WHERE id = :id")

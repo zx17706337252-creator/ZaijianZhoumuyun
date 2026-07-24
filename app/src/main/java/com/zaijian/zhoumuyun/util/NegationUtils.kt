@@ -20,6 +20,27 @@ object NegationUtils {
     /** 向前查找否定词时的最大回溯字符数（覆盖"没有"这类2字否定词）。 */
     private const val LOOKBACK_WINDOW = 5  // P2-4 修复：窗口从3扩大到5，提升否定词覆盖率
 
+    /** 句子边界字符：lookback 扫描时遇到这些字符应截断，不再继续向前查找否定词。
+     * 阶段0矛盾1修复：HeuristicRelTracker 将 userText + " " + assistantText 拼接后传入，
+     * 若不在标点/空格处截断 prefix，会导致否定词跨越两句话边界产生误判。 */
+    private val SENTENCE_BOUNDARY_CHARS = setOf('，', '。', '！', '？', '、', '；', ' ', '\n', '\t')
+
+    /**
+     * 从 [text] 的 [upTo]（不含）位置向前截取，最多回溯 [LOOKBACK_WINDOW] 个字符，
+     * 但一旦遇到句子边界字符（标点或空格）就停止，不跨边界继续查找。
+     */
+    private fun boundedLookbackPrefix(text: String, upTo: Int): String {
+        var start = upTo
+        var steps = 0
+        while (start > 0 && steps < LOOKBACK_WINDOW) {
+            val prevChar = text[start - 1]
+            if (prevChar in SENTENCE_BOUNDARY_CHARS) break
+            start--
+            steps++
+        }
+        return text.substring(start, upTo)
+    }
+
     /**
      * 判断 [text] 中关键词 [keyword] 的命中，是否被其前方的否定词修饰。
      *
@@ -37,8 +58,7 @@ object NegationUtils {
             val idx = text.indexOf(keyword, searchFrom)
             if (idx < 0) break
             foundAny = true
-            val lookbackStart = (idx - LOOKBACK_WINDOW).coerceAtLeast(0)
-            val prefix = text.substring(lookbackStart, idx)
+            val prefix = boundedLookbackPrefix(text, idx)
             val negatedHere = NEGATION_WORDS.any { prefix.contains(it) }  // P2-4 修复：endsWith→contains
             if (!negatedHere) return false // 存在至少一次未被否定的命中
             searchFrom = idx + keyword.length
@@ -69,8 +89,7 @@ object NegationUtils {
             if (found < 0) return false
             seen++
             if (seen == occurrenceIndex) {
-                val lookbackStart = (found - LOOKBACK_WINDOW).coerceAtLeast(0)
-                val prefix = text.substring(lookbackStart, found)
+                val prefix = boundedLookbackPrefix(text, found)
                 return NEGATION_WORDS.any { prefix.contains(it) }
             }
             idx = found + keyword.length

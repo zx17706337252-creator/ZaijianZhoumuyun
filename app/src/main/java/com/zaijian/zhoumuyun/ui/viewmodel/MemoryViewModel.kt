@@ -8,6 +8,8 @@ import com.zaijian.zhoumuyun.data.db.entity.CharacterIdentityEntity
 import com.zaijian.zhoumuyun.data.db.entity.MemoryDomain
 import com.zaijian.zhoumuyun.data.agent.writeVaultText
 import com.zaijian.zhoumuyun.data.db.entity.MemoryEntity
+import com.zaijian.zhoumuyun.util.ChineseTokenizer
+import com.zaijian.zhoumuyun.util.TimeFormatUtils
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -307,10 +309,8 @@ class MemoryViewModel(application: Application) : AndroidViewModel(application) 
             runCatching {
                 val state = uiState.value
                 val now = System.currentTimeMillis()
-                val ts = java.text.SimpleDateFormat("yyyy-MM-dd_HHmm", java.util.Locale.getDefault())
-                    .format(java.util.Date(now))
-                val displayTs = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault())
-                    .format(java.util.Date(now))
+                val ts = TimeFormatUtils.formatExportStamp(now)
+                val displayTs = TimeFormatUtils.formatDateTimeMinute(now)
 
                 val coreLines = if (state.coreMemories.isEmpty()) {
                     "（暂无）"
@@ -383,13 +383,19 @@ class MemoryViewModel(application: Application) : AndroidViewModel(application) 
         if (cid < 0 || content.isBlank()) return
         viewModelScope.launch {
             val now = System.currentTimeMillis()
+            val trimmedContent = content.trim()
             val entity = MemoryEntity(
                 id             = java.util.UUID.randomUUID().toString(),
                 characterId    = cid,
                 domain         = domain.name,
-                content        = content.trim(),
+                content        = trimmedContent,
                 importance     = 3,
-                keywords       = "",
+                // P1-05 修复：原实现硬编码为空字符串，从未提取关键词，导致手动
+                // 新增的记忆在 syncL2Tags() 里因 tags 为空被直接判定"删标签"，
+                // 永远不会写入 L2 标签索引，按关键词检索不到。改为复用
+                // MemoryEngine/AgentCoreTools 同款的 ChineseTokenizer.tokenizeJoined()，
+                // 保证三条写入路径（Agent 工具 / MemoryEngine / 手动新增）提取逻辑一致。
+                keywords       = ChineseTokenizer.tokenizeJoined(trimmedContent),
                 sourceEventId  = null,
                 createdAt      = now,
                 updatedAt      = now,
@@ -409,14 +415,22 @@ class MemoryViewModel(application: Application) : AndroidViewModel(application) 
 
     /**
      * 编辑已有记忆的文本内容。
-     * domain / importance / isCore 保持不变，仅更新 content 和 updatedAt。
+     * domain / importance / isCore 保持不变，更新 content、updatedAt，
+     * 并重新提取 keywords（P1-06 修复，避免关键词与新内容脱节）。
      */
     fun updateContent(memoryId: String, newContent: String) {
         if (newContent.isBlank()) return
         viewModelScope.launch {
             val entity = _entities.value.find { it.id == memoryId } ?: return@launch
+            val trimmedContent = newContent.trim()
             val updated = entity.copy(
-                content   = newContent.trim(),
+                content   = trimmedContent,
+                // P1-06 修复：原实现只更新 content，keywords 沿用编辑前的旧值，
+                // 导致关键词与新内容脱节（repo.update() 内部 syncL2Tags() 会按
+                // 这份 keywords 同步 L2 标签，旧关键词继续生效但已不对应新内容，
+                // 新内容里的实际关键词反而检索不到）。与 addMemory() 同款处理，
+                // 编辑时也重新提取。
+                keywords  = ChineseTokenizer.tokenizeJoined(trimmedContent),
                 updatedAt = System.currentTimeMillis(),
             )
             repo.update(updated)
@@ -444,22 +458,14 @@ class MemoryViewModel(application: Application) : AndroidViewModel(application) 
         val aboutSelf   = domain == MemoryDomain.PERSONAL.name
 
         // 日期格式化
-        val dateLabel = run {
-            val sdf = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault())
-            sdf.format(java.util.Date(createdAt))
-        }
+        val dateLabel = TimeFormatUtils.formatIsoDate(createdAt)
 
         // Phase 17：衰减状态标签
-        val now = System.currentTimeMillis()
-        val daysSinceCreated = (now - createdAt) / (1000L * 60 * 60 * 24)
+        // deleteStaleUnused 只清理 importance < 3 的记忆，importance >= 3 不会被删除，
+        // 因此不应展示"到期/即将到期"等误导标签，统一标记为"长期"。
         val decayLabel: String? = when {
             isCore          -> null
-            importance >= 4 -> "长期"
-            importance == 3 -> when {
-                daysSinceCreated > 7 -> "7天到期"
-                daysSinceCreated > 4 -> "即将到期"
-                else                 -> null
-            }
+            importance >= 3 -> "长期"
             else            -> "即将清理"
         }
 

@@ -20,8 +20,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -42,6 +40,7 @@ import com.zaijian.zhoumuyun.data.model.DefaultPresenceStates
 import com.zaijian.zhoumuyun.data.model.PresenceState
 import com.zaijian.zhoumuyun.data.model.StatusType
 import com.zaijian.zhoumuyun.ui.component.BreathingAvatar
+import com.zaijian.zhoumuyun.ui.component.DetailTopBar
 import com.zaijian.zhoumuyun.ui.design.WorldCard
 import com.zaijian.zhoumuyun.ui.theme.Palette
 import com.zaijian.zhoumuyun.ui.theme.Spacing
@@ -107,44 +106,18 @@ fun FamilyScreen(
             .background(colors.bgBase),
     ) {
         // ── 顶部 Bar ─────────────────────────────────────────
-        // P2 修复：height() 改为 heightIn(min=...)，为标题 maxLines 2 预留可伸展空间，
-        // 避免长标题第二行在固定高度容器内被裁切（而非仅靠 Ellipsis 处理）。
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .statusBarsPadding()
-                .heightIn(min = Spacing.topBarHeight),
-            contentAlignment = Alignment.CenterStart,
-        ) {
-            IconButton(
-                onClick  = onBack,
-                modifier = Modifier.padding(start = 4.dp),
-            ) {
-                Icon(
-                    imageVector        = Icons.AutoMirrored.Outlined.ArrowBack,
-                    contentDescription = "返回",
-                    tint               = colors.textPrimary,
-                )
-            }
-            // 标题居中
-            val titleText = when (val s = uiState) {
-                is FamilyListUiState.Ready ->
-                    s.members.firstOrNull { it.generation == 1 }?.config?.name?.let { "$it 的家族" }
-                        ?: "家族"
-                else -> "家族"
-            }
-            Text(
-                text     = titleText,
-                style    = type.titleBold,
-                color    = colors.textPrimary,
-                // P2 修复：maxLines 1→2，避免用户自定义长角色名导致标题显示不完整。
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier
-                    .align(Alignment.Center)
-                    .padding(horizontal = 48.dp, vertical = 4.dp), // 避免与两侧按钮重叠
-            )
+        // D-2 统一顶栏：内联 Box → DetailTopBar
+        val titleText = when (val s = uiState) {
+            is FamilyListUiState.Ready ->
+                s.members.firstOrNull { it.generation == 1 }?.config?.name?.let { "$it 的家族" }
+                    ?: "家族"
+            else -> "家族"
         }
+        DetailTopBar(
+            title    = titleText,
+            onBack   = onBack,
+            headerBg = colors.bgBase,
+        )
 
         // ── 内容区 ───────────────────────────────────────────
         when (val state = uiState) {
@@ -259,7 +232,7 @@ private fun FamilyMemberCard(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 14.dp),
+            .padding(horizontal = Spacing.md, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         // ── 56dp 真实头像 ────────────────────────────────────
@@ -276,11 +249,11 @@ private fun FamilyMemberCard(
         // ── 文字信息区 ───────────────────────────────────────
         Column(
             modifier            = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
+            verticalArrangement = Arrangement.spacedBy(Spacing.xs),
         ) {
             Row(
                 verticalAlignment      = Alignment.CenterVertically,
-                horizontalArrangement  = Arrangement.spacedBy(8.dp),
+                horizontalArrangement  = Arrangement.spacedBy(Spacing.sm),
             ) {
                 Text(
                     text     = member.config.name,

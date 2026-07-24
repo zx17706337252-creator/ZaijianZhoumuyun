@@ -260,7 +260,12 @@ internal suspend fun writeVaultFile(
 ): String {
     val dir = resolveVaultTargetDir(context).also { it.mkdirs() }
     val timestamp = System.currentTimeMillis()
-    val file = File(dir, "${timestamp}_${finalSafeName}")
+    // P1-24 修复：与 writeVaultStream 一致，加 8 位 UUID 后缀防并发覆盖。
+    // 原先仅用 "${timestamp}_${finalSafeName}"，同一毫秒内两个协程以相同文件名
+    // 写入同一目录时会互相覆盖、静默丢失数据。加 UUID 后磁盘文件名唯一，
+    // metaJson.fileName 仍为 finalSafeName（不含时间戳/UUID），不影响下游读取。
+    val uniqueSuffix = UUID.randomUUID().toString().take(8)
+    val file = File(dir, "${timestamp}_${uniqueSuffix}_${finalSafeName}")
     file.writeText(content, Charsets.UTF_8)
     return buildMetaJson(file, finalSafeName, mimeType, currentVaultContext())
 }

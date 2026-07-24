@@ -1,11 +1,14 @@
 package com.zaijian.zhoumuyun.ui.viewmodel
 
 import android.app.Application
+import android.os.FileObserver
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -14,11 +17,15 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import com.zaijian.zhoumuyun.data.agent.personalVaultDir
 import com.zaijian.zhoumuyun.data.agent.projectVaultDir
+import com.zaijian.zhoumuyun.data.agent.resolveVaultPath
+import com.zaijian.zhoumuyun.data.agent.VaultCallContext
+import com.zaijian.zhoumuyun.data.agent.VaultPathResolution
+import com.zaijian.zhoumuyun.data.agent.VaultScope
 import com.zaijian.zhoumuyun.data.agent.vaultRoot
+import com.zaijian.zhoumuyun.data.agent.withVaultContext
+import com.zaijian.zhoumuyun.util.TimeFormatUtils
+import com.zaijian.zhoumuyun.util.ZLog
 import java.io.File
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 // ─────────────────────────────────────────────────────────────
 //  FileVaultViewModel — v147 文件保险库改造（树形重写）
@@ -28,7 +35,9 @@ import java.util.Locale
 //        · vault/personal/{characterId}/        →「角色私库」
 //        · vault/shared/roundtable/{rtId}/      →「圆桌共享」（仅该角色参与的圆桌）
 //        · vault/shared/project/                →「项目共享」
-//    - 支持预览（文本类）、编辑（文本类覆盖写）、导出到 Downloads、删除。
+//    - 支持导出到 Downloads、删除。预览/编辑已迁移至统一的
+//      FilePreviewEditorScreen（经 onNavigateToPreview 跳转），本 ViewModel
+//      不再持有预览/编辑状态（死代码-10 修复，阶段2·批次1）。
 //    - 文件夹树可展开/折叠。
 //
 //  可见范围（与 resolveVaultPath 权限层一致）：
@@ -75,11 +84,6 @@ data class FileVaultUiState(
     val isLoading: Boolean = true,
     /** 展开的文件夹 absolutePath 集合。根文件夹默认展开。 */
     val expandedPaths: Set<String> = emptySet(),
-    val previewTarget: VaultNode.FileLeaf? = null,
-    val previewContent: String? = null,
-    val previewLoading: Boolean = false,
-    val editTarget: VaultNode.FileLeaf? = null,
-    val editContent: String = "",
     val deleteTarget: VaultNode? = null,
     val snackbarMessage: String? = null,
 )
@@ -96,7 +100,12 @@ class FileVaultViewModel(
     private val _uiState = MutableStateFlow(FileVaultUiState())
     val uiState: StateFlow<FileVaultUiState> = _uiState.asStateFlow()
 
-    private val fmt = SimpleDateFormat("MM/dd HH:mm", Locale.getDefault())
+    // P2-24 修复：目录监听机制
+    // FileObserver 只能监听单个目录（非递归），因此对 vault 下当前角色
+    // 可见的每个关键目录分别建立 observer。文件创建/删除/移动时触发
+    // debounce 重扫，替代原来空操作的 refreshSignal LaunchedEffect。
+    private var fileObservers: List<FileObserver> = emptyList()
+    private var reloadJob: Job? = null
 
     fun load() {
         viewModelScope.launch {
@@ -107,6 +116,8 @@ class FileVaultViewModel(
             _uiState.update {
                 it.copy(roots = roots, isLoading = false, expandedPaths = defaultExpanded)
             }
+            // P2-24：启动目录监听（每次 load 重建 observer，确保新增的圆桌目录也被覆盖）
+            startWatching()
         }
     }
 
@@ -117,68 +128,95 @@ class FileVaultViewModel(
         }
     }
 
-    // ── 预览 ─────────────────────────────────────────────────
+    // ── 目录监听（P2-24 修复）─────────────────────────────────
 
-    fun openPreview(file: VaultNode.FileLeaf) {
-        if (!isTextLike(file.extension)) {
-            _uiState.update { it.copy(snackbarMessage = "该文件类型不支持预览，可导出后查看") }
-            return
-        }
-        _uiState.update { it.copy(previewTarget = file, previewContent = null, previewLoading = true) }
-        viewModelScope.launch {
-            val content = withContext(Dispatchers.IO) {
-                runCatching { File(file.absolutePath).readText(Charsets.UTF_8) }.getOrNull()
+    /**
+     * 对当前角色可见的 vault 关键目录建立 [FileObserver]。
+     *
+     * FileObserver 非递归，因此需要逐目录创建。监听的事件掩码涵盖
+     * 文件创建、删除、移入、移出、写入关闭——覆盖所有会让树形列表
+     * 过期的文件系统变更。
+     */
+    private fun startWatching() {
+        stopWatching()
+        val context = getApplication<Application>()
+        val dirsToWatch = collectWatchedDirs(context)
+
+        // FileObserver.MODIFY 会在写入过程中频繁触发，CLOSE_WRITE 更精准——
+        // 文件写完关闭后才通知。但部分设备/文件系统不保证发 CLOSE_WRITE，
+        // 保留 MODIFY 兜底。CREATE/DELETE/MOVED_FROM/MOVED_TO 覆盖增删移动。
+        val mask = FileObserver.CREATE or FileObserver.DELETE or
+            FileObserver.MOVED_FROM or FileObserver.MOVED_TO or
+            FileObserver.CLOSE_WRITE or FileObserver.MODIFY
+
+        fileObservers = dirsToWatch.map { dir ->
+            object : FileObserver(dir, mask) {
+                override fun onEvent(event: Int, path: String?) {
+                    // onEvent 在 FileObserver 的后台线程回调，不能直接操作
+                    // Compose 状态。通过 viewModelScope.launch 转回主线程。
+                    scheduleReload()
+                }
             }
-            _uiState.update {
-                it.copy(previewContent = content, previewLoading = false)
+        }
+        fileObservers.forEach { it.startWatching() }
+    }
+
+    /** 收集需要监听的目录列表（与 scanVaultTree 的可见范围一致）。 */
+    private fun collectWatchedDirs(context: Application): List<File> {
+        val dirs = mutableListOf<File>()
+
+        // 1. vault 根目录（捕获结构性变化：新子目录出现）
+        dirs.add(vaultRoot(context))
+
+        // 2. 角色私库
+        val personal = personalVaultDir(context, characterId)
+        if (personal.exists()) dirs.add(personal)
+
+        // 3. 参与的圆桌共享目录
+        val roundtableRoot = File(File(vaultRoot(context), "shared"), "roundtable")
+        if (roundtableRoot.exists()) {
+            dirs.add(roundtableRoot)
+            roundtableRoot.listFiles { f -> f.isDirectory }?.forEach { rtDir ->
+                val participants = rtDir.name.split("_")
+                if (characterId.toString() in participants) {
+                    dirs.add(rtDir)
+                }
+            }
+        }
+
+        // 4. 项目共享
+        val project = projectVaultDir(context)
+        if (project.exists()) dirs.add(project)
+
+        return dirs
+    }
+
+    /**
+     * 防抖重扫：取消上一次待执行的 reload，500ms 后执行新的。
+     * 避免短时间内多次文件变更（如批量写入）触发过多扫描。
+     */
+    private fun scheduleReload() {
+        reloadJob?.cancel()
+        reloadJob = viewModelScope.launch {
+            delay(500)
+            val roots = withContext(Dispatchers.IO) { scanVaultTree() }
+            // 只更新 roots，保留用户当前的 expandedPaths（不重置展开状态）
+            _uiState.update { state ->
+                state.copy(roots = roots, isLoading = false)
             }
         }
     }
 
-    fun closePreview() {
-        _uiState.update { it.copy(previewTarget = null, previewContent = null, previewLoading = false) }
+    private fun stopWatching() {
+        fileObservers.forEach { it.stopWatching() }
+        fileObservers = emptyList()
+        reloadJob?.cancel()
+        reloadJob = null
     }
 
-    // ── 编辑 ─────────────────────────────────────────────────
-
-    fun startEdit(file: VaultNode.FileLeaf) {
-        if (!isTextLike(file.extension)) {
-            _uiState.update { it.copy(snackbarMessage = "该文件类型不支持编辑") }
-            return
-        }
-        _uiState.update { it.copy(editTarget = file, editContent = "") }
-        viewModelScope.launch {
-            val content = withContext(Dispatchers.IO) {
-                runCatching { File(file.absolutePath).readText(Charsets.UTF_8) }.getOrNull() ?: ""
-            }
-            _uiState.update { it.copy(editContent = content) }
-        }
-    }
-
-    fun updateEditContent(text: String) {
-        _uiState.update { it.copy(editContent = text) }
-    }
-
-    fun saveEdit() {
-        val target = _uiState.value.editTarget ?: return
-        val content = _uiState.value.editContent
-        viewModelScope.launch {
-            val ok = withContext(Dispatchers.IO) {
-                runCatching { File(target.absolutePath).writeText(content, Charsets.UTF_8) }.isSuccess
-            }
-            _uiState.update {
-                it.copy(
-                    editTarget = null,
-                    editContent = "",
-                    snackbarMessage = if (ok) "已保存「${target.name}」" else "保存失败，请重试",
-                )
-            }
-            if (ok) load()
-        }
-    }
-
-    fun cancelEdit() {
-        _uiState.update { it.copy(editTarget = null, editContent = "") }
+    override fun onCleared() {
+        super.onCleared()
+        stopWatching()
     }
 
     // ── 删除 ─────────────────────────────────────────────────
@@ -194,17 +232,44 @@ class FileVaultViewModel(
     fun confirmDelete() {
         val target = _uiState.value.deleteTarget ?: return
         viewModelScope.launch {
+            // P2-47 修复：收口到 resolveVaultPath 权限校验，
+            // 不再直接 File(path).delete() 绕过权限链路。
             val ok = withContext(Dispatchers.IO) {
-                val f = File(target.absolutePath)
-                if (f.isDirectory) f.deleteRecursively() else f.delete()
+                val resolution = withVaultContext(
+                    VaultCallContext(characterId, VaultScope.PERSONAL)
+                ) {
+                    resolveVaultPath(
+                        getApplication(),
+                        target.absolutePath,
+                        characterIdProvider = { characterId },
+                        isDelete = true,
+                    )
+                }
+                when (resolution) {
+                    is VaultPathResolution.Denied -> {
+                        _uiState.update {
+                            it.copy(
+                                deleteTarget = null,
+                                snackbarMessage = "无权删除：${resolution.reason}",
+                            )
+                        }
+                        return@withContext false
+                    }
+                    is VaultPathResolution.Allowed -> {
+                        val f = resolution.file
+                        if (f.isDirectory) f.deleteRecursively() else f.delete()
+                    }
+                }
             }
-            _uiState.update {
-                it.copy(
-                    deleteTarget = null,
-                    snackbarMessage = if (ok) "已删除「${target.name}」" else "删除失败，请重试",
-                )
+            if (ok) {
+                _uiState.update {
+                    it.copy(
+                        deleteTarget = null,
+                        snackbarMessage = "已删除「${target.name}」",
+                    )
+                }
+                load()
             }
-            if (ok) load()
         }
     }
 
@@ -229,7 +294,25 @@ class FileVaultViewModel(
             val result = withContext(Dispatchers.IO) {
                 try {
                     val context = getApplication<Application>()
-                    val srcFile = File(file.absolutePath)
+                    // P2-47 修复：收口到 resolveVaultPath 权限校验
+                    val resolution = withVaultContext(
+                        VaultCallContext(characterId, VaultScope.PERSONAL)
+                    ) {
+                        resolveVaultPath(
+                            context,
+                            file.absolutePath,
+                            characterIdProvider = { characterId },
+                        )
+                    }
+                    val srcFile = when (resolution) {
+                        is VaultPathResolution.Denied -> {
+                            _uiState.update {
+                                it.copy(snackbarMessage = "无权导出：${resolution.reason}")
+                            }
+                            return@withContext null
+                        }
+                        is VaultPathResolution.Allowed -> resolution.file
+                    }
                     if (!srcFile.exists()) return@withContext null
 
                     val displayName = uniqueDisplayName(file.name)
@@ -417,7 +500,7 @@ class FileVaultViewModel(
             absolutePath = f.absolutePath,
             rawName = f.name,
             sizeLabel = formatSize(f.length()),
-            dateLabel = fmt.format(Date(f.lastModified())),
+            dateLabel = TimeFormatUtils.formatMonthDaySlashTime(f.lastModified()),
             extension = ext,
             sizeBytes = f.length(),
         )
@@ -438,10 +521,6 @@ class FileVaultViewModel(
         bytes < 1024 * 1024 -> "${"%.1f".format(bytes / 1024f)} KB"
         else                -> "${"%.1f".format(bytes / 1024f / 1024f)} MB"
     }
-
-    /** 可预览/可编辑的文本类扩展名。 */
-    private fun isTextLike(ext: String): Boolean =
-        ext.lowercase() in setOf("md", "txt", "html", "htm", "json", "xml", "csv", "log", "yml", "yaml")
 
     companion object {
         /**

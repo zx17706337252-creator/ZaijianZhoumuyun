@@ -32,19 +32,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material.icons.outlined.Add
-import androidx.compose.material.icons.outlined.ChevronRight
-import androidx.compose.material.icons.outlined.Code
-import androidx.compose.material.icons.outlined.Description
-import androidx.compose.material.icons.outlined.Email
-import androidx.compose.material.icons.outlined.Search
-import androidx.compose.material.icons.outlined.Star
-import androidx.compose.material.icons.outlined.Delete
-import androidx.compose.material.icons.outlined.Edit
-import androidx.compose.material.icons.outlined.StarBorder
-import androidx.compose.material.icons.outlined.TableChart
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.foundation.text.BasicTextField
@@ -67,7 +54,6 @@ import com.zaijian.zhoumuyun.ui.viewmodel.MemoryViewModel
 import com.zaijian.zhoumuyun.ui.viewmodel.PregnancyViewModel
 import com.zaijian.zhoumuyun.data.model.PregnancyState
 import com.zaijian.zhoumuyun.data.model.isDaughterMother
-import com.zaijian.zhoumuyun.ui.theme.GoldDivider
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRowDefaults
 import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
@@ -97,7 +83,9 @@ import com.zaijian.zhoumuyun.data.model.FloorEnum
 import com.zaijian.zhoumuyun.data.model.StatusType
 import com.zaijian.zhoumuyun.data.model.accentLight
 import com.zaijian.zhoumuyun.ui.component.BreathingAvatar
-import com.zaijian.zhoumuyun.ui.component.MarkdownText
+import com.zaijian.zhoumuyun.ui.component.EmptyStateView
+import com.zaijian.zhoumuyun.domain.ContentBlockParser
+import com.zaijian.zhoumuyun.ui.component.ContentBlockRenderer
 import com.zaijian.zhoumuyun.ui.design.WorldCard
 import com.zaijian.zhoumuyun.ui.theme.AppTheme
 import com.zaijian.zhoumuyun.ui.theme.AppColors
@@ -113,9 +101,9 @@ import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
 import com.zaijian.zhoumuyun.util.ZLog
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.material.icons.outlined.CameraAlt
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
+import com.zaijian.zhoumuyun.ui.design.AppIcons
 
 private data class MemoryEntry(
     val id: String,
@@ -188,12 +176,15 @@ internal fun MemoryTabContent(
         Spacer(Modifier.height(Spacing.md))
 
         // 2. 她对你的印象（userImpression）—— 纯文本
+        // P2-4 修复（Window A 验收待办）：补充文档 §3.1 要求纯文本展示，
+        // 不走 MarkdownText——印象文本若含 * _ # 等字符会被误解析。
         NarrativeSection(
-            label       = "她对你的印象",
-            content     = memoryState.userImpression,
-            accentColor = accentColor,
-            onSave      = { memoryViewModel.updateUserImpression(it) },
-            modifier    = Modifier
+            label        = "她对你的印象",
+            content      = memoryState.userImpression,
+            accentColor  = accentColor,
+            useMarkdown  = false,
+            onSave       = { memoryViewModel.updateUserImpression(it) },
+            modifier     = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = Spacing.screenHorizontal),
         )
@@ -246,8 +237,9 @@ internal fun MemoryTabContent(
             val entries = memoryState.items.map { it.toEntry() }
 
             if (entries.isEmpty()) {
-                EmptyState(
-                    text     = "还没有记忆，去聊聊吧",
+                EmptyStateView(
+                    icon     = AppIcons.Psychology,
+                    title    = "还没有记忆，去聊聊吧",
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(vertical = Spacing.xxl),
@@ -344,8 +336,12 @@ private fun MemoryExportButton(
 
 /**
  * 叙事字段展示+内联编辑（关系叙事 / 她对你的印象）。
- * 预览态用 MarkdownText 渲染（阶段日志的时间标签天然显示成结构化文档），
+ * 预览态默认用 MarkdownText 渲染（阶段日志的时间标签天然显示成结构化文档），
  * 编辑态用 BasicTextField，保存复用 identityRepo.upsert*。
+ *
+ * P2-4 修复（Window A 验收待办）：新增 [useMarkdown] 参数。
+ * "关系叙事"保持 MarkdownText（阶段日志含时间标签结构化文本）；
+ * "她对你的印象"按补充文档 §3.1 要求纯文本展示，传 false 走 Text 渲染。
  */
 @Composable
 private fun NarrativeSection(
@@ -354,6 +350,7 @@ private fun NarrativeSection(
     accentColor: Color,
     onSave: (String) -> Unit,
     modifier: Modifier = Modifier,
+    useMarkdown: Boolean = true,
 ) {
     val colors = ZaijianTheme.colors
     val type   = ZaijianTheme.typography
@@ -406,11 +403,21 @@ private fun NarrativeSection(
                         style = type.body,
                         color = colors.textDisabled,
                     )
-                } else {
-                    MarkdownText(
-                        markdown  = content,
+                } else if (useMarkdown) {
+                    // E2 统一内容渲染接入：关系叙事走 ContentBlockParser → ContentBlockRenderer，
+                    // 支持标题/列表/引用等块级结构化渲染，行内 Markdown 仍由内部 MarkdownText 处理。
+                    val blocks = remember(content) { ContentBlockParser.parse(content) }
+                    ContentBlockRenderer(
+                        blocks    = blocks,
                         textColor = colors.textPrimary,
                         style     = type.body,
+                    )
+                } else {
+                    // P2-4：纯文本展示（"她对你的印象"），不走 Markdown 解析
+                    Text(
+                        text  = content,
+                        style = type.body,
+                        color = colors.textPrimary,
                     )
                 }
             }
@@ -451,7 +458,7 @@ private fun CoreAnchorsSection(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(vertical = 4.dp),
+                            .padding(vertical = Spacing.xs),
                         verticalAlignment = Alignment.Top,
                     ) {
                         // 左侧锚点标识色条（和普通 MemoryRow 的维度色条区分：用 accent 色）
@@ -713,7 +720,7 @@ private fun MemorySecondaryChips(
         modifier            = Modifier
             .fillMaxWidth()
             .padding(horizontal = Spacing.screenHorizontal, vertical = 6.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
     ) {
         chips.forEachIndexed { index, label ->
             val chipAccent = when (dimIndex) {
@@ -796,7 +803,7 @@ private fun MemoryRow(
                     style = type.body,
                     color = colors.textPrimary,
                 )
-                Spacer(Modifier.height(4.dp))
+                Spacer(Modifier.height(Spacing.xs))
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(Spacing.xs),
                     verticalAlignment = Alignment.CenterVertically,
@@ -838,7 +845,7 @@ private fun MemoryRow(
                     .wrapContentSize(Alignment.Center),
             ) {
                 Icon(
-                    imageVector        = Icons.Outlined.Edit,
+                    imageVector        = AppIcons.Edit,
                     contentDescription = "编辑记忆",
                     tint               = colors.textDisabled,
                     modifier           = Modifier.size(20.dp),
@@ -852,7 +859,7 @@ private fun MemoryRow(
                     .wrapContentSize(Alignment.Center),
             ) {
                 Icon(
-                    imageVector        = Icons.Outlined.Delete,
+                    imageVector        = AppIcons.Delete,
                     contentDescription = "删除记忆",
                     tint               = colors.textDisabled,
                     modifier           = Modifier.size(20.dp),
@@ -866,7 +873,7 @@ private fun MemoryRow(
                     .wrapContentSize(Alignment.Center),
             ) {
                 Icon(
-                    imageVector        = if (entry.isImportant) Icons.Outlined.Star else Icons.Outlined.StarBorder,
+                    imageVector        = if (entry.isImportant) AppIcons.Star else AppIcons.StarBorder,
                     contentDescription = if (entry.isImportant) "取消重要" else "标记重要",
                     tint               = if (entry.isImportant) accentColor else colors.textDisabled,
                     modifier           = Modifier.size(20.dp),

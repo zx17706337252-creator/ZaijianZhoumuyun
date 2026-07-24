@@ -1,5 +1,6 @@
 package com.zaijian.zhoumuyun.data.agent
 
+import com.zaijian.zhoumuyun.util.TimeFormatUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlin.math.abs
@@ -370,7 +371,10 @@ class UnitConvertTool : AgentTool {
             return@withContext ToolResult(name, false, "", "需要 value、from、to 三个参数")
         }
         val value = valueStr.toDoubleOrNull()
-            ?: return@withContext ToolResult(name, false, "「$valueStr」不是有效的数字。")
+            // P1-11 修复：原 3 参数调用把错误信息塞进 content，error 字段落空，
+            // ToolCallInterceptor 回注 LLM 时读取的是 error 字段（不是 content），
+            // 导致 LLM 看到的是"未知错误"而非"「xxx」不是有效的数字"这条具体原因。
+            ?: return@withContext ToolResult(name, false, "", "「$valueStr」不是有效的数字。")
 
         try {
             val result = convert(value, from, to)
@@ -383,7 +387,9 @@ class UnitConvertTool : AgentTool {
                 userHint = "正在换算…",
             )
         } catch (e: IllegalArgumentException) {
-            ToolResult(name, false, e.message ?: "不支持的单位换算。")
+            // P1-12 修复：原 3 参数调用（NoteSaveTool/ReminderTool 的 catch 分支早已是
+            // 4 参数写法），error 字段落空，LLM 端读到的是兜底文案"未知错误"。
+            ToolResult(name, false, "", e.message ?: "不支持的单位换算。")
         }
     }
 
@@ -394,80 +400,88 @@ class UnitConvertTool : AgentTool {
         val tempUnits = setOf("celsius", "fahrenheit", "kelvin", "c", "f", "k")
         if (from in tempUnits || to in tempUnits) return convertTemp(value, from, to)
 
-        // 其他单位：找到同类别的基准倍率
-        val fromRate = unitToBase(from) ?: throw IllegalArgumentException("不认识单位「$from」，请用英文单位名称。")
-        val toRate   = unitToBase(to)   ?: throw IllegalArgumentException("不认识单位「$to」，请用英文单位名称。")
-        return value * fromRate / toRate
+        // 其他单位：找到同类别的基准倍率 + 类别标签
+        val fromInfo = unitInfo(from) ?: throw IllegalArgumentException("不认识单位「$from」，请用英文单位名称。")
+        val toInfo   = unitInfo(to)   ?: throw IllegalArgumentException("不认识单位「$to」，请用英文单位名称。")
+        // P1-11 修复：原逻辑只按各自基准倍率做乘除，from/to 属于不同类别时
+        // （如 meter→kilogram）会算出无意义数值且不报错，误导 LLM。
+        // 现要求 from 和 to 必须属于同一类别，否则拒绝换算。
+        if (fromInfo.second != toInfo.second) {
+            throw IllegalArgumentException(
+                "「$from」（${fromInfo.second}）和「$to」（${toInfo.second}）不是同一类别单位，无法互相换算。"
+            )
+        }
+        return value * fromInfo.first / toInfo.first
     }
 
-    /** 转换为该类别基准单位的倍率。不同类别的基准单位不可互转（自动检测）。 */
-    private fun unitToBase(unit: String): Double? = when (unit) {
+    /** 转换为该类别基准单位的倍率 + 所属类别标签（Pair(倍率, 类别)）。不同类别的基准单位不可互转（自动检测）。 */
+    private fun unitInfo(unit: String): Pair<Double, String>? = when (unit) {
         // 长度（基准：m）
-        "m","meter","meters"            -> 1.0
-        "km","kilometer","kilometers"   -> 1000.0
-        "cm","centimeter","centimeters" -> 0.01
-        "mm","millimeter","millimeters" -> 0.001
-        "inch","inches","in"            -> 0.0254
-        "foot","feet","ft"              -> 0.3048
-        "yard","yards","yd"             -> 0.9144
-        "mile","miles","mi"             -> 1609.344
-        "nautical_mile","nmi"           -> 1852.0
+        "m","meter","meters"            -> 1.0 to "长度"
+        "km","kilometer","kilometers"   -> 1000.0 to "长度"
+        "cm","centimeter","centimeters" -> 0.01 to "长度"
+        "mm","millimeter","millimeters" -> 0.001 to "长度"
+        "inch","inches","in"            -> 0.0254 to "长度"
+        "foot","feet","ft"              -> 0.3048 to "长度"
+        "yard","yards","yd"             -> 0.9144 to "长度"
+        "mile","miles","mi"             -> 1609.344 to "长度"
+        "nautical_mile","nmi"           -> 1852.0 to "长度"
         // 重量（基准：kg）
-        "kg","kilogram","kilograms"     -> 1.0
-        "g","gram","grams"              -> 0.001
-        "mg","milligram","milligrams"   -> 0.000001
-        "lb","lbs","pound","pounds"     -> 0.453592
-        "oz","ounce","ounces"           -> 0.028350
-        "ton","metric_ton","tonnes"     -> 1000.0
+        "kg","kilogram","kilograms"     -> 1.0 to "重量"
+        "g","gram","grams"              -> 0.001 to "重量"
+        "mg","milligram","milligrams"   -> 0.000001 to "重量"
+        "lb","lbs","pound","pounds"     -> 0.453592 to "重量"
+        "oz","ounce","ounces"           -> 0.028350 to "重量"
+        "ton","metric_ton","tonnes"     -> 1000.0 to "重量"
         // 面积（基准：m²）
-        "m2","sqm","square_meter"       -> 1.0
-        "km2","sqkm","square_km"        -> 1_000_000.0
-        "cm2","sqcm","square_cm"        -> 0.0001
-        "mm2","sqmm","square_mm"        -> 0.000001
-        "ha","hectare","hectares"       -> 10_000.0
-        "acre","acres"                  -> 4046.856
-        "ft2","sqft","square_foot"      -> 0.092903
-        "inch2","sqin","square_inch"    -> 0.000645
+        "m2","sqm","square_meter"       -> 1.0 to "面积"
+        "km2","sqkm","square_km"        -> 1_000_000.0 to "面积"
+        "cm2","sqcm","square_cm"        -> 0.0001 to "面积"
+        "mm2","sqmm","square_mm"        -> 0.000001 to "面积"
+        "ha","hectare","hectares"       -> 10_000.0 to "面积"
+        "acre","acres"                  -> 4046.856 to "面积"
+        "ft2","sqft","square_foot"      -> 0.092903 to "面积"
+        "inch2","sqin","square_inch"    -> 0.000645 to "面积"
         // 体积（基准：L）
-        "l","liter","liters","litre"    -> 1.0
-        "ml","milliliter","milliliters" -> 0.001
-        "m3","cubic_meter"              -> 1000.0
-        "gallon","gallons","gal"        -> 3.78541
-        "fl_oz","fluid_ounce"           -> 0.029574
-        "cup","cups"                    -> 0.236588
-        "tbsp","tablespoon"             -> 0.014787
-        "tsp","teaspoon"                -> 0.004929
+        "l","liter","liters","litre"    -> 1.0 to "体积"
+        "ml","milliliter","milliliters" -> 0.001 to "体积"
+        "m3","cubic_meter"              -> 1000.0 to "体积"
+        "gallon","gallons","gal"        -> 3.78541 to "体积"
+        "fl_oz","fluid_ounce"           -> 0.029574 to "体积"
+        "cup","cups"                    -> 0.236588 to "体积"
+        "tbsp","tablespoon"             -> 0.014787 to "体积"
+        "tsp","teaspoon"                -> 0.004929 to "体积"
         // 速度（基准：m/s）
-        "m/s","mps","meters_per_second" -> 1.0
-        "km/h","kph","kmh"              -> 1.0 / 3.6
-        "mph","miles_per_hour"          -> 0.44704
-        "knot","knots","kt"             -> 0.514444
+        "m/s","mps","meters_per_second" -> 1.0 to "速度"
+        "km/h","kph","kmh"              -> (1.0 / 3.6) to "速度"
+        "mph","miles_per_hour"          -> 0.44704 to "速度"
+        "knot","knots","kt"             -> 0.514444 to "速度"
         // 数据（基准：bit）
-        "bit","bits"                    -> 1.0
-        "byte","bytes","b"              -> 8.0
-        "kb","kilobyte","kilobytes"     -> 8.0 * 1024
-        "mb","megabyte","megabytes"     -> 8.0 * 1024 * 1024
-        "gb","gigabyte","gigabytes"     -> 8.0 * 1024 * 1024 * 1024
-        "tb","terabyte","terabytes"     -> 8.0 * 1024 * 1024 * 1024 * 1024
+        "bit","bits"                    -> 1.0 to "数据"
+        "byte","bytes","b"              -> 8.0 to "数据"
+        "kb","kilobyte","kilobytes"     -> (8.0 * 1024) to "数据"
+        "mb","megabyte","megabytes"     -> (8.0 * 1024 * 1024) to "数据"
+        "gb","gigabyte","gigabytes"     -> (8.0 * 1024 * 1024 * 1024) to "数据"
+        "tb","terabyte","terabytes"     -> (8.0 * 1024 * 1024 * 1024 * 1024) to "数据"
         // 时间（基准：秒）
-        "s","sec","second","seconds"    -> 1.0
-        "min","minute","minutes"        -> 60.0
-        "hour","hours","h","hr"         -> 3600.0
-        "day","days","d"                -> 86400.0
-        "week","weeks","wk"             -> 604800.0
-        "month","months"                -> 2_629_800.0  // 平均月（365.25/12天）
-        "year","years","yr"             -> 31_557_600.0 // 儒略年
+        "s","sec","second","seconds"    -> 1.0 to "时间"
+        "min","minute","minutes"        -> 60.0 to "时间"
+        "hour","hours","h","hr"         -> 3600.0 to "时间"
+        "day","days","d"                -> 86400.0 to "时间"
+        "week","weeks","wk"             -> 604800.0 to "时间"
+        "month","months"                -> 2_629_800.0 to "时间"  // 平均月（365.25/12天）
+        "year","years","yr"             -> 31_557_600.0 to "时间" // 儒略年
         // 汇率（基准：CNY）
-        "cny","rmb","yuan"              -> 1.0
-        "usd","dollar","dollars"        -> 7.24
-        "eur","euro","euros"            -> 7.88
-        "gbp","pound_sterling"          -> 9.18
-        "jpy","yen"                     -> 0.048
-        "hkd","hk_dollar"              -> 0.927
-        "cad","canadian_dollar"         -> 5.32
-        "aud","australian_dollar"       -> 4.71
-        "krw","won"                     -> 0.0053
-        "sgd","singapore_dollar"        -> 5.41
+        "cny","rmb","yuan"              -> 1.0 to "汇率"
+        "usd","dollar","dollars"        -> 7.24 to "汇率"
+        "eur","euro","euros"            -> 7.88 to "汇率"
+        "gbp","pound_sterling"          -> 9.18 to "汇率"
+        "jpy","yen"                     -> 0.048 to "汇率"
+        "hkd","hk_dollar"              -> 0.927 to "汇率"
+        "cad","canadian_dollar"         -> 5.32 to "汇率"
+        "aud","australian_dollar"       -> 4.71 to "汇率"
+        "krw","won"                     -> 0.0053 to "汇率"
+        "sgd","singapore_dollar"        -> 5.41 to "汇率"
         else                            -> null
     }
 
@@ -519,15 +533,25 @@ class CountdownTool : AgentTool {
         }
 
         try {
-            val fmt  = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault())
-            val toDate   = fmt.parse(toStr)   ?: return@withContext ToolResult(name, false, "日期格式错误，请用 yyyy-MM-dd 格式。")
+            // [重构-01] 收敛到 TimeFormatUtils.parseIsoDateToEpochMillis：原实现用 SimpleDateFormat.parse
+            // 拿到 Date 后只取 .time，直接用工具类返回的 epoch 毫秒即可，无需 Date 中间对象。
+            val toMs   = TimeFormatUtils.parseIsoDateToEpochMillis(toStr)
+                // P1-11 修复：同 UnitConvertTool，补上 error 参数
+                ?: return@withContext ToolResult(name, false, "", "日期格式错误，请用 yyyy-MM-dd 格式。")
             // P3审查批次1修复：原写法 `if (fromStr != null) fmt.parse(fromStr) else Date()` 的 if 分支
             // 本身可能返回 null（fromStr 格式错误时），但外层 `?:` 只在整个 if 表达式为 null 时才兜底，
             // 而此处的 else 分支永远非 null，导致 `?:` 实际上从未生效，fromStr 格式错误时会直接 NPE。
-            // 改为 `?.let` 写法后，fromStr 为 null 或解析失败（let 内返回 null）时均能正确落到 `?:` 兜底。
-            val fromDate = fromStr?.let { fmt.parse(it) } ?: java.util.Date()
+            // 注意：parseIsoDateToEpochMillis 对非法输入返回 null 而非抛异常（与旧 fmt.parse 行为不同），
+            // 若在此沿用 `fromStr?.let { parse(it) } ?: now` 会让"from 格式错误"被静默吞掉、误当作"今天"，
+            // 而不是像 to 参数一样报错。因此 fromStr 非空时显式区分"解析失败"与"未提供"两种情况。
+            val fromMs = if (fromStr.isNullOrEmpty()) {
+                System.currentTimeMillis()
+            } else {
+                TimeFormatUtils.parseIsoDateToEpochMillis(fromStr)
+                    ?: return@withContext ToolResult(name, false, "", "日期格式错误，请用 yyyy-MM-dd 格式（from 参数）。")
+            }
 
-            val diffMs    = toDate.time - fromDate.time
+            val diffMs    = toMs - fromMs
             val diffDays  = diffMs / (1000L * 60 * 60 * 24)
             val diffWeeks = diffDays / 7
             val diffMonths = diffDays / 30
@@ -545,7 +569,8 @@ class CountdownTool : AgentTool {
                 userHint = "正在计算日期差…",
             )
         } catch (e: Exception) {
-            ToolResult(name, false, "日期计算出错：${e.message?.take(60)}")
+            // P1-12 修复：补上 error 参数，与其余工具的 catch 分支写法统一
+            ToolResult(name, false, "", "日期计算出错：${e.message?.take(60)}")
         }
     }
 }

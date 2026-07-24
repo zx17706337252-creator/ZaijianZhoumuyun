@@ -18,11 +18,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material.icons.automirrored.outlined.Assignment
-import androidx.compose.material.icons.automirrored.outlined.Notes
-import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import kotlinx.coroutines.flow.map
@@ -48,13 +43,16 @@ import com.zaijian.zhoumuyun.data.db.entity.ProjectEntity
 import com.zaijian.zhoumuyun.data.db.entity.TaskEntity
 import com.zaijian.zhoumuyun.data.db.entity.TaskStatus
 import com.zaijian.zhoumuyun.data.model.DefaultCharacters
+import com.zaijian.zhoumuyun.domain.DistillationEngine
+import com.zaijian.zhoumuyun.ui.component.DetailTopBar
+import com.zaijian.zhoumuyun.ui.component.RootTabTopBar
 import com.zaijian.zhoumuyun.ui.theme.*
 import com.zaijian.zhoumuyun.ui.viewmodel.GoalWithRules
 import com.zaijian.zhoumuyun.ui.viewmodel.GrowthSummaryData
 import com.zaijian.zhoumuyun.ui.viewmodel.LearningGoalViewModel
 import com.zaijian.zhoumuyun.ui.viewmodel.ProjectGrowthData
-import java.text.SimpleDateFormat
-import java.util.*
+import com.zaijian.zhoumuyun.util.TimeFormatUtils
+import com.zaijian.zhoumuyun.ui.design.AppIcons
 
 // ─────────────────────────────────────────────────────────────
 //  LearningGoalScreen（Phase 23 新增，Phase 27 扩展）
@@ -132,10 +130,10 @@ fun LearningGoalScreen(
                 containerColor     = colors.accent,
                 contentColor       = colors.bgBase,
                 shape              = CircleShape,
-                elevation          = FloatingActionButtonDefaults.elevation(4.dp),
+                elevation          = FloatingActionButtonDefaults.elevation(Elevation.elevated),
                 modifier           = Modifier.offset(y = -(bottomBarHeight + Spacing.sm)),
             ) {
-                Icon(Icons.Outlined.Add, contentDescription = "新建学习目标")
+                Icon(AppIcons.Add, contentDescription = "新建学习目标")
             }
         },
     ) { paddingValues ->
@@ -147,37 +145,14 @@ fun LearningGoalScreen(
         ) {
 
             // ── 顶部栏 ─────────────────────────────────────────
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .statusBarsPadding()
-                    .height(Spacing.topBarHeight)
-                    .padding(horizontal = Spacing.screenHorizontal),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                if (showBackButton) {
-                    IconButton(onClick = onBack) {
-                        Icon(
-                            imageVector        = Icons.AutoMirrored.Outlined.ArrowBack,
-                            contentDescription = "返回",
-                            tint               = colors.textPrimary,
-                        )
-                    }
-                    Spacer(Modifier.width(Spacing.sm))
-                }
-                Text(
-                    text  = "学习目标",
-                    style = type.titleLarge.copy(fontWeight = FontWeight.Bold),
-                    color = colors.textPrimary,
-                )
-                Spacer(Modifier.weight(1f))
+            // D-2 统一顶栏：内联 Row → DetailTopBar / RootTabTopBar
+            val activeCount = remember(uiState.goals) {
+                uiState.goals.count { it.isActive && it.status != LearningGoalStatus.COMPLETED.name }
+            }
+            val allExpanded = uiState.goals.isNotEmpty() &&
+                uiState.goals.all { it.id in uiState.expandedRulePanels }
+            val topBarActions: @Composable RowScope.() -> Unit = {
                 // 目标数量徽章
-                // W10问题7修复：原先每次 uiState 变化（含与 goals 无关的字段，如
-                // selectedCharacterId）都会重新 count 遍历。改用 remember(goals) 按
-                // 列表引用缓存，goals 引用不变时跳过重算。
-                val activeCount = remember(uiState.goals) {
-                    uiState.goals.count { it.isActive && it.status != LearningGoalStatus.COMPLETED.name }
-                }
                 if (activeCount > 0) {
                     Box(
                         modifier = Modifier
@@ -188,19 +163,13 @@ fun LearningGoalScreen(
                     ) {
                         Text(
                             text  = "$activeCount",
-                            // P3-32 修复：移除硬编码 fontSize
                             style = type.caption.copy(fontWeight = FontWeight.Bold),
                             color = colors.accent,
                         )
                     }
                 }
-
-                // 展开全部/折叠全部规则面板（审查报告问题10配套：expandAllRulePanels/
-                // collapseAllRulePanels 此前在 ViewModel 中已实现但没有 UI 入口，现补上）。
-                // 仅当存在目标时才显示，且按钮态跟随「是否已全部展开」切换。
+                // 展开全部/折叠全部规则面板
                 if (uiState.goals.isNotEmpty()) {
-                    val allExpanded = uiState.goals.isNotEmpty() &&
-                        uiState.goals.all { it.id in uiState.expandedRulePanels }
                     IconButton(
                         onClick = {
                             if (allExpanded) viewModel.collapseAllRulePanels()
@@ -209,15 +178,29 @@ fun LearningGoalScreen(
                     ) {
                         Icon(
                             imageVector = if (allExpanded) {
-                                Icons.Outlined.UnfoldLess
+                                AppIcons.UnfoldLess
                             } else {
-                                Icons.Outlined.UnfoldMore
+                                AppIcons.UnfoldMore
                             },
                             contentDescription = if (allExpanded) "折叠全部规则" else "展开全部规则",
                             tint = colors.textSecondary,
                         )
                     }
                 }
+            }
+            if (showBackButton) {
+                DetailTopBar(
+                    title    = "学习目标",
+                    onBack   = onBack,
+                    headerBg = colors.bgBase,
+                    actions  = topBarActions,
+                )
+            } else {
+                RootTabTopBar(
+                    title    = "学习目标",
+                    headerBg = colors.bgBase,
+                    actions  = topBarActions,
+                )
             }
 
             // ── 角色选择器（横向滚动） ─────────────────────────
@@ -262,7 +245,7 @@ fun LearningGoalScreen(
                     // ── 进化项目区块标题 ───────────────────────
                     item(key = "project_header") {
                         GrowthSectionHeader(
-                            icon  = Icons.Outlined.Spa,
+                            icon  = AppIcons.Spa,
                             label = "进化项目",
                             color = Palette.GrowthGreen,
                         )
@@ -286,7 +269,7 @@ fun LearningGoalScreen(
                     item(key = "goal_header") {
                         Spacer(Modifier.height(Spacing.xs))
                         GrowthSectionHeader(
-                            icon  = Icons.Outlined.EmojiEvents,
+                            icon  = AppIcons.EmojiEvents,
                             label = "学习目标",
                             color = colors.accent,
                         )
@@ -393,7 +376,7 @@ private fun GrowthSummaryCard(
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(
-                    imageVector        = Icons.Outlined.Spa,
+                    imageVector        = AppIcons.Spa,
                     contentDescription = null,
                     tint               = growthGreen,
                     modifier           = Modifier.size(16.dp),
@@ -413,25 +396,25 @@ private fun GrowthSummaryCard(
                 horizontalArrangement = Arrangement.SpaceEvenly,
             ) {
                 SummaryStatItem(
-                    icon  = Icons.Outlined.Spa,
+                    icon  = AppIcons.Spa,
                     label = "活跃项目",
                     value = summary.activeProjectCount.toString(),
                     color = growthGreen,
                 )
                 SummaryStatItem(
-                    icon  = Icons.AutoMirrored.Outlined.Assignment,
+                    icon  = AppIcons.Assignment,
                     label = "今日任务",
                     value = summary.todayTaskTotal.toString(),
                     color = colors.accent,
                 )
                 SummaryStatItem(
-                    icon  = Icons.Outlined.CheckCircle,
+                    icon  = AppIcons.CheckCircle,
                     label = "已完成",
                     value = summary.todayTaskDone.toString(),
                     color = Palette.SemanticSuccess,
                 )
                 SummaryStatItem(
-                    icon  = Icons.Outlined.EmojiEvents,
+                    icon  = AppIcons.EmojiEvents,
                     label = "学习目标",
                     value = summary.activeGoalCount.toString(),
                     color = colors.accent,
@@ -457,6 +440,8 @@ private fun SummaryStatItem(
             tint               = color,
             modifier           = Modifier.size(18.dp),
         )
+        // 2dp 是图标与数值间的贴近间距，比最小档 Spacing.xs(4dp) 更紧，
+        // 套用会让间距翻倍、视觉变松，故保留裸值
         Spacer(Modifier.height(2.dp))
         Text(
             text  = value,
@@ -551,7 +536,7 @@ private fun ProjectGrowthCard(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 com.zaijian.zhoumuyun.ui.design.IconBadge(
-                    icon               = Icons.Outlined.Spa,
+                    icon               = AppIcons.Spa,
                     contentDescription = null,
                     tint               = growthGreen,
                     size               = 14.dp,
@@ -566,7 +551,7 @@ private fun ProjectGrowthCard(
                     modifier = Modifier.weight(1f),
                 )
                 Icon(
-                    imageVector        = Icons.Outlined.ChevronRight,
+                    imageVector        = AppIcons.ChevronRight,
                     contentDescription = null,
                     tint               = colors.textDisabled,
                     modifier           = Modifier.size(16.dp),
@@ -589,15 +574,17 @@ private fun ProjectGrowthCard(
                     val isDone = task.status == TaskStatus.COMPLETED.name
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
+                        // 1dp 用于2条任务预览间的极窄行距，同上，小于 Spacing.xs
+                        // 且换成token会让预览区变高，保留裸值
                         modifier          = Modifier.padding(vertical = 1.dp),
                     ) {
                         Icon(
-                            imageVector        = if (isDone) Icons.Outlined.CheckBox else Icons.Outlined.CheckBoxOutlineBlank,
+                            imageVector        = if (isDone) AppIcons.CheckBox else AppIcons.CheckBoxOutlineBlank,
                             contentDescription = null,
                             tint               = if (isDone) Palette.SemanticSuccess else colors.textDisabled,
                             modifier           = Modifier.size(14.dp),
                         )
-                        Spacer(Modifier.width(4.dp))
+                        Spacer(Modifier.width(Spacing.xs))
                         Text(
                             text  = task.title,
                             style = type.small.copy(
@@ -631,7 +618,8 @@ private fun ProjectGrowthCard(
                         modifier   = Modifier
                             .weight(1f)
                             .height(3.dp)
-                            .clip(RoundedCornerShape(2.dp)),
+                            // Radius.xs(6dp) ≥ 高度一半，clip 效果与原裸值 2dp 一致（都是胶囊形），故可安全替换
+                            .clip(RoundedCornerShape(Radius.xs)),
                         color      = growthGreen,
                         trackColor = colors.border,
                         strokeCap  = androidx.compose.ui.graphics.StrokeCap.Round,
@@ -666,7 +654,7 @@ private fun ProjectEmptyHint(characterName: String) {
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(
-                imageVector        = Icons.Outlined.Spa,
+                imageVector        = AppIcons.Spa,
                 contentDescription = null,
                 tint               = colors.textDisabled,
                 modifier           = Modifier.size(16.dp),
@@ -715,6 +703,8 @@ private fun CharacterSelectorRow(
                     modifier = Modifier
                         .size(52.dp)
                         .border(2.dp, borderColor, CircleShape)
+                        // 2dp 内边距与上面2dp边框宽度对应，做出等宽的头像内缩效果，
+                        // 换成 Spacing.xs(4dp) 会让缩进比边框宽一倍、视觉不对称，保留裸值
                         .padding(2.dp)
                         .clip(CircleShape),
                 ) {
@@ -724,7 +714,7 @@ private fun CharacterSelectorRow(
                         modifier           = Modifier.fillMaxSize(),
                     )
                 }
-                Spacer(Modifier.height(4.dp))
+                Spacer(Modifier.height(Spacing.xs))
                 Text(
                     text  = char.name,
                     // P3-32 修复：移除硬编码 fontSize，11.sp 改用 type.label
@@ -868,7 +858,7 @@ private fun GoalCard(
                 Spacer(Modifier.weight(1f))
 
                 val dateStr = remember(goal.updatedAt) {
-                    SimpleDateFormat("MM/dd HH:mm", Locale.getDefault()).format(Date(goal.updatedAt))
+                    TimeFormatUtils.formatMonthDaySlashTime(goal.updatedAt)
                 }
                 Text(
                     text  = dateStr,
@@ -883,12 +873,12 @@ private fun GoalCard(
                 Spacer(Modifier.height(Spacing.xs))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(
-                        imageVector        = Icons.AutoMirrored.Outlined.Notes,
+                        imageVector        = AppIcons.Notes,
                         contentDescription = null,
                         tint               = colors.textDisabled,
                         modifier           = Modifier.size(12.dp),
                     )
-                    Spacer(Modifier.width(4.dp))
+                    Spacer(Modifier.width(Spacing.xs))
                     Text(
                         text     = goal.lastUpdateNote,
                         // P3-32 修复：移除硬编码 fontSize，11.sp 改用 type.label
@@ -960,12 +950,12 @@ private fun RulePanelToggleRow(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(
-            imageVector        = Icons.Outlined.Shield,
+            imageVector        = AppIcons.Shield,
             contentDescription = null,
             tint               = if (lockedCount > 0) colors.accent else colors.textDisabled,
             modifier           = Modifier.size(14.dp),
         )
-        Spacer(Modifier.width(4.dp))
+        Spacer(Modifier.width(Spacing.xs))
         Text(
             text  = when {
                 totalCount == 0  -> "暂无规则"
@@ -978,7 +968,7 @@ private fun RulePanelToggleRow(
             modifier = Modifier.weight(1f),
         )
         Icon(
-            imageVector        = Icons.Outlined.ExpandMore,
+            imageVector        = AppIcons.ExpandMore,
             contentDescription = if (isExpanded) "收起" else "展开",
             tint               = colors.textDisabled,
             modifier           = Modifier
@@ -1012,12 +1002,12 @@ private fun RulePanel(
         if (lockedRules.isNotEmpty()) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(
-                    imageVector        = Icons.Outlined.Lock,
+                    imageVector        = AppIcons.Lock,
                     contentDescription = null,
                     tint               = colors.accent,
                     modifier           = Modifier.size(12.dp),
                 )
-                Spacer(Modifier.width(4.dp))
+                Spacer(Modifier.width(Spacing.xs))
                 Text(
                     text  = "已锁定规则（已注入 System Prompt）",
                     // P3-32 修复：移除硬编码 fontSize，11.sp 改用 type.label
@@ -1039,7 +1029,7 @@ private fun RulePanel(
                         isLocked = true,
                         importance = rule.importance,
                     )
-                    if (i < lockedRules.lastIndex) Spacer(Modifier.height(4.dp))
+                    if (i < lockedRules.lastIndex) Spacer(Modifier.height(Spacing.xs))
                 }
             }
         }
@@ -1058,14 +1048,18 @@ private fun RulePanel(
         if (candidateRules.isNotEmpty()) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(
-                    imageVector        = Icons.Outlined.Pending,
+                    imageVector        = AppIcons.Pending,
                     contentDescription = null,
                     tint               = colors.textSecondary,
                     modifier           = Modifier.size(12.dp),
                 )
-                Spacer(Modifier.width(4.dp))
+                Spacer(Modifier.width(Spacing.xs))
                 Text(
-                    text  = "候选规则（积累 ${4 - (candidateRules.firstOrNull()?.importance ?: 3).coerceAtMost(3)} 次后锁定）",
+                    // P2-21 修复（返工）：原方案只在组标题统一显示一个"剩余次数"，
+                    // 取的是 candidateRules.firstOrNull()?.importance，列表中不同重要度
+                    // 的规则看到的是同一个数字，没有真正解决问题。现将组标题简化为
+                    // 纯标题，剩余次数移入每条 RuleItem 内部按各自 importance 逐条计算。
+                    text  = "候选规则",
                     // P3-32 修复：移除硬编码 fontSize，11.sp 改用 type.label
                     style = type.label.copy(fontWeight = FontWeight.SemiBold),
                     color = colors.textSecondary,
@@ -1080,7 +1074,7 @@ private fun RulePanel(
                         isLocked   = false,
                         importance = rule.importance,
                     )
-                    if (i < candidateRules.lastIndex) Spacer(Modifier.height(4.dp))
+                    if (i < candidateRules.lastIndex) Spacer(Modifier.height(Spacing.xs))
                 }
             }
         }
@@ -1092,7 +1086,7 @@ private fun RulePanel(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Icon(
-                    imageVector        = Icons.Outlined.AutoAwesome,
+                    imageVector        = AppIcons.AutoAwesome,
                     contentDescription = null,
                     tint               = colors.textDisabled,
                     modifier           = Modifier.size(14.dp),
@@ -1126,6 +1120,12 @@ private fun RuleItem(
     val colors = ZaijianTheme.colors
     val type   = ZaijianTheme.typography
 
+    // P2-21 修复（返工）：每条候选规则按各自 importance 计算剩余锁定次数，
+    // 不再依赖组标题统一显示一个数字。
+    val remainingToLock = if (!isLocked) {
+        (DistillationEngine.LOCK_CONFIDENCE_THRESHOLD.toInt() - importance).coerceAtLeast(0)
+    } else 0
+
     Row(
         modifier          = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.Top,
@@ -1138,16 +1138,26 @@ private fun RuleItem(
             modifier = Modifier.padding(top = 1.dp),
         )
         Spacer(Modifier.width(6.dp))
-        Text(
-            text     = content,
-            // P3-32 修复：移除硬编码 fontSize
-            style    = type.caption,
-            color    = if (isLocked) colors.textPrimary else colors.textSecondary,
-            modifier = Modifier.weight(1f),
-        )
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text     = content,
+                // P3-32 修复：移除硬编码 fontSize
+                style    = type.caption,
+                color    = if (isLocked) colors.textPrimary else colors.textSecondary,
+            )
+            // P2-21：候选规则逐条显示剩余锁定次数
+            if (!isLocked && remainingToLock > 0) {
+                Text(
+                    text  = "还需 $remainingToLock 次后锁定",
+                    style = type.label,
+                    color = colors.textDisabled,
+                    modifier = Modifier.padding(top = 2.dp),
+                )
+            }
+        }
         // 重要度小圆点（仅候选规则显示，辅助判断距离锁定的距离）
         if (!isLocked) {
-            Spacer(Modifier.width(4.dp))
+            Spacer(Modifier.width(Spacing.xs))
             Row(modifier = Modifier.padding(top = 3.dp)) {
                 repeat(5) { i ->
                     Box(
@@ -1172,11 +1182,11 @@ private fun RuleItem(
 private fun GoalStatusIcon(status: String, isActive: Boolean) {
     val colors = ZaijianTheme.colors
     val (icon, tint) = when {
-        !isActive                                    -> Icons.Outlined.PauseCircle to colors.textDisabled
-        status == LearningGoalStatus.COMPLETED.name  -> Icons.Outlined.CheckCircle to Palette.TaskDone
-        status == LearningGoalStatus.PAUSED.name     -> Icons.Outlined.PauseCircle to Palette.TaskPaused
-        status == LearningGoalStatus.ABANDONED.name  -> Icons.Outlined.Cancel to Palette.TaskFailed
-        else                                         -> Icons.Outlined.RadioButtonUnchecked to colors.accent
+        !isActive                                    -> AppIcons.PauseCircle to colors.textDisabled
+        status == LearningGoalStatus.COMPLETED.name  -> AppIcons.CheckCircle to Palette.TaskDone
+        status == LearningGoalStatus.PAUSED.name     -> AppIcons.PauseCircle to Palette.TaskPaused
+        status == LearningGoalStatus.ABANDONED.name  -> AppIcons.Cancel to Palette.TaskFailed
+        else                                         -> AppIcons.RadioButtonUnchecked to colors.accent
     }
     Icon(
         imageVector        = icon,
@@ -1203,7 +1213,7 @@ private fun GoalStatusChip(status: String, isActive: Boolean) {
         modifier = Modifier
             .clip(RoundedCornerShape(Radius.xs))
             .background(chipBg)
-            .padding(horizontal = 8.dp, vertical = 2.dp),
+            .padding(horizontal = Spacing.sm, vertical = 2.dp),
         contentAlignment = Alignment.Center,
     ) {
         Text(
@@ -1235,7 +1245,7 @@ private fun GoalCardMenu(
                 .minimumInteractiveComponentSize(),
         ) {
             Icon(
-                imageVector        = Icons.Outlined.MoreVert,
+                imageVector        = AppIcons.MoreVert,
                 contentDescription = "更多操作",
                 tint               = colors.textSecondary,
                 modifier           = Modifier.size(18.dp),
@@ -1249,14 +1259,14 @@ private fun GoalCardMenu(
                 text    = { Text("编辑") },
                 onClick = { expanded = false; onEdit() },
                 leadingIcon = {
-                    Icon(Icons.Outlined.Edit, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Icon(AppIcons.Edit, contentDescription = null, modifier = Modifier.size(16.dp))
                 },
             )
             DropdownMenuItem(
                 text    = { Text(if (isActive) "停用" else "激活") },
                 onClick = { expanded = false; onToggle() },
                 leadingIcon = {
-                    val icon = if (isActive) Icons.Outlined.PauseCircle else Icons.Outlined.PlayCircle
+                    val icon = if (isActive) AppIcons.PauseCircle else AppIcons.PlayCircle
                     Icon(icon, contentDescription = null, modifier = Modifier.size(16.dp))
                 },
             )
@@ -1266,7 +1276,7 @@ private fun GoalCardMenu(
                 onClick = { expanded = false; onDelete() },
                 leadingIcon = {
                     Icon(
-                        Icons.Outlined.Delete,
+                        AppIcons.Delete,
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.error,
                         modifier = Modifier.size(16.dp),
@@ -1300,7 +1310,7 @@ private fun EmptyGoalHint(characterName: String) {
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Icon(
-                imageVector        = Icons.Outlined.EmojiEvents,
+                imageVector        = AppIcons.EmojiEvents,
                 contentDescription = null,
                 tint               = colors.textDisabled,
                 modifier           = Modifier.size(48.dp),
@@ -1443,7 +1453,7 @@ private fun GoalEditSheet(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Icon(
-                        imageVector        = Icons.Outlined.Info,
+                        imageVector        = AppIcons.Info,
                         contentDescription = null,
                         tint               = colors.accent,
                         modifier           = Modifier.size(16.dp),

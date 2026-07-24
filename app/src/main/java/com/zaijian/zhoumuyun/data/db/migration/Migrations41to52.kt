@@ -367,12 +367,16 @@ internal val MIGRATION_51_52 = object : Migration(51, 52) {
     }
 }
 
-internal val MIGRATIONS_41_48 = arrayOf(
+internal val MIGRATIONS_41_52 = arrayOf(
     MIGRATION_41_42,
     MIGRATION_42_43,
     MIGRATION_43_44,
     MIGRATION_44_45,
     MIGRATION_45_46,
     MIGRATION_46_47,
-    MIGRATION_47_48
+    MIGRATION_47_48,
+    MIGRATION_48_49,
+    MIGRATION_49_50,
+    MIGRATION_50_51,
+    MIGRATION_51_52
 )

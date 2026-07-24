@@ -41,7 +41,7 @@ object ChatTagParser {
     )
 
     // v1.36 问题2（三层分离）：心理感受描写，中文全角圆括号（　）包裹的独立成句内容。
-    // 与旁白模式既有的动作/神情标注不强制做语义区分——两者都用圆括号，本次改动
+    // 与既有动作/神情标注不强制做语义区分——两者都用圆括号，本次改动
     // 只按"是否被圆括号包裹"统一抽取渲染为心理感受小卡，不细分是心理活动还是动作提示。
     // 用懒惰匹配（不含括号本身）而非 THINKING_TAG_REGEX 那种贪婪跨越写法，避免相邻两段
     // 心理描写被错误合并成一段——这个差异是有意为之，不要照抄 thinking 的正则模式。
@@ -111,9 +111,8 @@ object ChatTagParser {
     /**
      * 剥离回复末尾的 `[mood:情绪词]` 系统标记，返回（净文本, 解析出的 MoodType?）。
      *
-     * 背景（Fix-MoodLeak）：COMPANION / NARRATIVE 模式的 Output Layer
-     * （见 PromptOrchestrator.COMPANION_OUTPUT_CONSTRAINTS /
-     * NARRATIVE_OUTPUT_CONSTRAINTS）要求 LLM 在正文末尾另起一行输出
+     * 背景（Fix-MoodLeak）：COMPANION 模式的 Output Layer
+     * （见 PromptOrchestrator.COMPANION_OUTPUT_CONSTRAINTS）要求 LLM 在正文末尾另起一行输出
      * `[mood:情绪词]`，注释明确写"系统使用，不展示给用户"，但此前全项目
      * 没有任何代码解析或剥离它——用户在这两种模式下每条回复末尾都会看到
      * 裸露的 `[mood:平静]` 这类内部标记，且 PresenceEngine.updateMoodFromReply()
@@ -132,7 +131,7 @@ object ChatTagParser {
      * 剥离正文中所有 `[thinking:...]` 内心推理标签，返回（净文本, 合并后的思考内容或null）。
      *
      * 背景（Fix-ThinkingLeak）：Output Layer（PromptOrchestrator.WORK_OUTPUT_CONSTRAINTS /
-     * COMPANION_OUTPUT_CONSTRAINTS / NARRATIVE_OUTPUT_CONSTRAINTS）新增规则，要求 LLM 把
+     * COMPANION_OUTPUT_CONSTRAINTS）新增规则，要求 LLM 把
      * 内心推理、收到的指令原文、工具调用意图包进 `[thinking:...]` 标签，不能直接写进标签外的
      * 正文——这套"结构化标记 + 客户端剥离"完全复用 stripMoodTag 已验证过的技术路径。
      *
@@ -187,7 +186,7 @@ object ChatTagParser {
     }
 
     /**
-     * Fix⑥：COMPANION_OUTPUT_CONSTRAINTS / NARRATIVE_OUTPUT_CONSTRAINTS 里
+     * Fix⑥：COMPANION_OUTPUT_CONSTRAINTS 里
      * 给 LLM 的情绪词枚举（中文）与 MoodType（英文枚举）做对应——
      * 两边在设计时本就是按顺序一一对应的（平静/专注/好奇/满足/担忧/兴奋/疲惫/沉思
      * ↔ CALM/FOCUSED/CURIOUS/SATISFIED/CONCERNED/EXCITED/TIRED/REFLECTIVE），

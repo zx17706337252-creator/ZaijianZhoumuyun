@@ -90,6 +90,8 @@ class ProactiveMessageWorker(
                 // Tier3 的记忆衰减在 Worker 路径静默降级，无日志无报错。
                 memoryDao          = db.memoryDao(),
                 candidateDao       = db.memoryCandidateDao(),
+                memoryTagDao       = db.memoryTagDao(),     // Bugfix：与 ZaijianApp 前台实例保持一致，
+                                                              // 否则后台路径 memoryRepo 懒加载条件不满足，静默为 null
                 projectDao         = db.projectDao(),      // Tier2 项目驱动行为
                 eventDao           = db.worldEventDao(),   // Tier3 写入 PROJECT_UPDATED 事件
             )

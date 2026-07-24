@@ -14,6 +14,7 @@ import com.zaijian.zhoumuyun.data.db.entity.TaskEntity
 import com.zaijian.zhoumuyun.data.db.entity.TaskStatus
 import com.zaijian.zhoumuyun.data.repository.ProjectRepository
 import com.zaijian.zhoumuyun.data.model.CharacterConfig
+import com.zaijian.zhoumuyun.util.TimeFormatUtils
 import com.zaijian.zhoumuyun.util.ZLog
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -27,9 +28,6 @@ import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import java.text.SimpleDateFormat
-import java.util.Calendar
-import java.util.Locale
 import java.util.concurrent.TimeUnit
 
 // ─────────────────────────────────────────────────────────────
@@ -257,7 +255,7 @@ class ProjectViewModel(application: Application) : AndroidViewModel(application)
             taskRepo.observeByProjectAndSourceAfter(
                 projectId = projectId,
                 source    = "project_growth",
-                after     = startOfToday(),
+                after     = TimeFormatUtils.startOfDay(),
             ).collect { tasks ->
                 val byChar = tasks.groupBy { it.characterId }
                 _detailState.update { it.copy(todayGrowthByCharacter = byChar) }
@@ -318,21 +316,13 @@ class ProjectViewModel(application: Application) : AndroidViewModel(application)
      * 结果按日期倒序（最近的在前）。
      */
     private fun buildGrowthSummaries(tasks: List<TaskEntity>): List<DayGrowthSummary> {
-        val fmt = SimpleDateFormat("M月d日", Locale.CHINESE)
         // 先按"天"分组，Key = 当天 00:00:00 的时间戳（便于排序）
-        val byDay = tasks.groupBy { task ->
-            val cal = Calendar.getInstance().apply { timeInMillis = task.createdAt }
-            cal.set(Calendar.HOUR_OF_DAY, 0)
-            cal.set(Calendar.MINUTE, 0)
-            cal.set(Calendar.SECOND, 0)
-            cal.set(Calendar.MILLISECOND, 0)
-            cal.timeInMillis
-        }
+        val byDay = tasks.groupBy { task -> TimeFormatUtils.startOfDay(task.createdAt) }
         return byDay.entries
             .sortedByDescending { it.key }   // 最近的天排在前
             .map { (dayTs, dayTasks) ->
                 DayGrowthSummary(
-                    dateLabel       = fmt.format(dayTs),
+                    dateLabel       = TimeFormatUtils.formatChineseShortDate(dayTs),
                     countByCharacter = dayTasks.groupBy { it.characterId }
                         .mapValues { (_, list) -> list.size },
                 )
@@ -642,19 +632,19 @@ class ProjectViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    // 成长规划日程注册\uff08角色加入项目时自动触发\uff09
+    // 成长规划日程注册（角色加入项目时自动触发）
     private suspend fun scheduleDailyPlannerJob(
         projectTitle: String,
         projectId: String,
         characterId: Int,
     ) {
-        // 计算今晒21:00的时间戳
+        // 计算今天21:00的时间戳
         val cal = java.util.Calendar.getInstance().apply {
             set(java.util.Calendar.HOUR_OF_DAY, 21)
             set(java.util.Calendar.MINUTE, 0)
             set(java.util.Calendar.SECOND, 0)
             set(java.util.Calendar.MILLISECOND, 0)
-            // 如果当前时间已过 21:00\uff0c排到明日
+            // 如果当前时间已过 21:00，排到明日
             if (timeInMillis <= System.currentTimeMillis()) {
                 add(java.util.Calendar.DAY_OF_MONTH, 1)
             }
@@ -662,7 +652,7 @@ class ProjectViewModel(application: Application) : AndroidViewModel(application)
         runCatching {
             scheduleRepo.createJob(
                 characterId      = characterId,
-                title            = "\u300c$projectTitle\u300d成长规划",
+                title            = "「$projectTitle」成长规划",
                 toolName         = "project_daily_planner",
                 toolParams       = mapOf("project_id" to projectId, "character_id" to characterId.toString()),
                 repeatIntervalMs = java.util.concurrent.TimeUnit.HOURS.toMillis(24),
@@ -685,14 +675,4 @@ class ProjectViewModel(application: Application) : AndroidViewModel(application)
     }
 
     // ── 内部工具 ─────────────────────────────────────────────
-
-    private fun startOfToday(): Long {
-        val cal = Calendar.getInstance().apply {
-            set(Calendar.HOUR_OF_DAY, 0)
-            set(Calendar.MINUTE, 0)
-            set(Calendar.SECOND, 0)
-            set(Calendar.MILLISECOND, 0)
-        }
-        return cal.timeInMillis
-    }
 }

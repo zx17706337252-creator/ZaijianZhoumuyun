@@ -34,6 +34,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.compose.material3.Icon
+import com.zaijian.zhoumuyun.BuildConfig
 import com.zaijian.zhoumuyun.R
 import com.zaijian.zhoumuyun.data.model.PresenceState
 import com.zaijian.zhoumuyun.data.model.StatusType
@@ -70,7 +71,7 @@ import com.zaijian.zhoumuyun.domain.TaskCompletionMessage
 //  层级（从后到前）：
 //    [0] 书架插图背景（日/夜随主题切换，FillBounds 坐标系）
 //    [1] BoxWithConstraints — BookCard 绝对定位到书本位置
-//    [2] ShelfHeader（顶部毛玻璃）
+//    [2] ShelfHeader 已删除（书架页无顶栏，见窗口4报告 3.2 节）
 //    [3] CharacterPreviewSheet（长按弹出）
 //
 //  ── 背景图坐标系说明 ──────────────────────────────────────────
@@ -100,15 +101,16 @@ import com.zaijian.zhoumuyun.domain.TaskCompletionMessage
 //      关系仍然成立（同一套 colX 间距、rowY 间距套到所有 9 格全部
 //      吻合），故沿用"首格坐标 + 固定间距"的参数结构，只更新首格
 //      坐标和椭圆尺寸这四个数：
-//        cx: 0.255 → 0.248   cy: 0.256 → 0.252
-//        ovalWFrac: 0.150 → 0.138   ovalHFrac: 0.132 → 0.122
-//      列间距（0.256/0.512）、行间距（0.233/0.472）保持不变。
+//        cx: 0.255 → 0.2543   cy: 0.256 → 0.2121
+//        ovalWFrac: 0.150 → 0.1307   ovalHFrac: 0.132 → 0.1202
+//      列间距（0.2567/0.5187）、行间距（0.2365/0.4715）保持不变。
+//      注：深色模式 colX/rowY/ovalHFrac 使用各自独立校准值，见代码。
 //
-//  书本格位坐标（cx/cy 为内容区宽/高比例，FillBounds 坐标系）：
+//  书本格位坐标（cx/cy 为内容区宽/高比例，FillBounds 坐标系，浅色模式）：
 //
-//      Row1  [0.248] [0.504] [0.760]   cy=0.252  ← 上层书架椭圆框中心
-//      Row2  [0.248] [0.504] [0.760]   cy=0.485  ← 中层书架椭圆框中心
-//      Row3  [0.248] [0.504] [0.760]   cy=0.724  ← 下层书架椭圆框中心
+//      Row1  [0.2543] [0.5110] [0.7630]   cy=0.2121  ← 上层书架椭圆框中心
+//      Row2  [0.2543] [0.5110] [0.7630]   cy=0.4486  ← 中层书架椭圆框中心
+//      Row3  [0.2543] [0.5110] [0.7630]   cy=0.6836  ← 下层书架椭圆框中心
 //
 //  ── 校准工具 ─────────────────────────────────────────────────
 //  长按背景空白处（非书本区域）2 秒可切换"调试网格"，用高亮色框
@@ -197,7 +199,8 @@ fun CharacterScreen(
                 .pointerInput(Unit) {
                     detectTapGestures(
                         onLongPress = {
-                            showDebugGrid = !showDebugGrid
+                            // P2-37 修复：调试网格仅 debug build 可用，防止调试色值泄漏到 release。
+                            if (BuildConfig.DEBUG) showDebugGrid = !showDebugGrid
                         },
                     )
                 },
@@ -397,7 +400,9 @@ fun CharacterScreen(
                     }
 
                     // ── 调试网格：高亮框精确画出当前 cx/cy/ovalWidth/ovalHeight ──
-                    if (showDebugGrid) {
+                    // P2-37 修复：双重守卫——showDebugGrid 只在 debug build 可被置 true，
+                    // 此处再检查 BuildConfig.DEBUG 做防御性编程。
+                    if (showDebugGrid && BuildConfig.DEBUG) {
                         Box(
                             modifier = Modifier
                                 .offset(
@@ -451,7 +456,7 @@ fun CharacterScreen(
             ),
             modifier = Modifier
                 .align(Alignment.BottomCenter)
-                .padding(bottom = 80.dp, start = 16.dp, end = 16.dp),
+                .padding(bottom = 80.dp, start = Spacing.md, end = Spacing.md),
         ) {
             val toast = taskCompletionToast
             if (toast != null) {
@@ -545,9 +550,9 @@ private fun TaskCompletionToast(
                 color = colors.bgCard,
                 shape = RoundedCornerShape(16.dp),
             )
-            .padding(horizontal = 16.dp, vertical = 14.dp),
+            .padding(horizontal = Spacing.md, vertical = 14.dp),
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
 
             Row(
                 modifier          = Modifier.fillMaxWidth(),
@@ -607,7 +612,7 @@ private fun TaskCompletionToast(
                         color = colors.textSecondary,
                     )
                 }
-                Spacer(Modifier.width(8.dp))
+                Spacer(Modifier.width(Spacing.sm))
                 Button(
                     onClick = { onViewResult(message.jobResultId) },
                     colors  = ButtonDefaults.buttonColors(containerColor = accentColor),

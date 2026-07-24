@@ -33,6 +33,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.zaijian.zhoumuyun.BuildConfig
 
 /**
  * v20 新增——坐标探针，从 WorldScreen.kt 和 CharacterScreen.kt 两份几乎
@@ -100,6 +101,9 @@ private val ProbeIndicatorMinY = 4.dp
 fun CalibrationProbeOverlay(
     modifier: Modifier = Modifier,
 ) {
+    // P2-43 修复：校准探针仅 debug build 可用，防止调试色值泄漏到 release。
+    if (!BuildConfig.DEBUG) return
+
     var probePoints by remember { mutableStateOf(listOf<Pair<Float, Float>>()) }
     var dragPreview by remember { mutableStateOf<Pair<Float, Float>?>(null) }
     val clipboard = LocalClipboardManager.current

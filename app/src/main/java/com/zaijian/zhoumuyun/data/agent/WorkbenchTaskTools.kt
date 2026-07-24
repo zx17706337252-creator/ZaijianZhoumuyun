@@ -113,6 +113,7 @@ class TaskUpdateTool(
     override val name      = "task_update"
     override val description = "更新进行中任务的进度百分比和备注，不改变任务状态"
     override val paramKeys = listOf("title", "progress", "note")
+    override val usageNotes = "progress 须为 0~1 之间的小数（如 0.6 代表60%），不是整数或百分数"
 
     override suspend fun execute(params: Map<String, String>): ToolResult {
         val titleHint = params["title"]?.trim()?.takeIf { it.isNotBlank() }

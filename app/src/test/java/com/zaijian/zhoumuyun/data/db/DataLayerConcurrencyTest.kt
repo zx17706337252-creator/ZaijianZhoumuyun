@@ -40,6 +40,16 @@ import org.junit.Test
  *
  * 注意：MenstrualCycleDao 没有 advancePhase 方法，
  * 测试 7 改为验证 resetAnchorToToday 的字段保留行为。
+ *
+ * P2-05 说明：本测试类使用 kotlinx.coroutines.test.runTest（默认
+ * StandardTestDispatcher），协程在单线程上顺序调度，async 块并非真正
+ * 并发执行。这里的"并发测试"验证的是 Room 事务/唯一索引的**最终一致性
+ * 保证**（而非线程竞态本身）——即多个逻辑上并发的写入在 Room 事务隔离
+ * 下产生的最终状态是否符合预期。Room 的 @Transaction 和唯一索引在真实
+ * 多线程环境下同样生效，此处单线程验证覆盖的是"同一逻辑路径的冲突
+ * 处理语义"，不依赖真并发才能触发。
+ * 若未来需要验证真并发下的竞态行为，应改用 Dispatchers.IO + 真实线程池
+ * 驱动，并接受测试的非确定性（多次运行取概率统计）。
  */
 class DataLayerConcurrencyTest {
 
@@ -224,7 +234,7 @@ class DataLayerConcurrencyTest {
      */
     @Test
     fun memoryRepository_saveOrMerge_concurrentDeduplication() = runTest {
-        val repo = MemoryRepository(memoryDao, candidateDao)
+        val repo = MemoryRepository(memoryDao, candidateDao, db.memoryTagDao())
         val now = System.currentTimeMillis()
 
         // 两个内容相似（共享关键词"银发"）的记忆

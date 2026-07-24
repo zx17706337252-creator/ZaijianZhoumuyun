@@ -47,17 +47,6 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material.icons.outlined.Add
-import androidx.compose.material.icons.outlined.AutoMode
-import androidx.compose.material.icons.outlined.Check
-import androidx.compose.material.icons.outlined.Close
-import androidx.compose.material.icons.outlined.Send
-import androidx.compose.material.icons.outlined.Settings
-import androidx.compose.material.icons.outlined.SmartToy
-import androidx.compose.material.icons.outlined.Speed
-import androidx.compose.material.icons.outlined.Person
 import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -107,8 +96,12 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import coil.request.CachePolicy
 import coil.request.ImageRequest
+import com.zaijian.zhoumuyun.data.AppContainer
 import com.zaijian.zhoumuyun.data.model.CharacterConfig
 import com.zaijian.zhoumuyun.data.model.DefaultCharacters
+import com.zaijian.zhoumuyun.ui.component.ContentBlockAdapter
+import com.zaijian.zhoumuyun.ui.component.ContentBlockRenderer
+import com.zaijian.zhoumuyun.ui.component.DetailTopBar
 import com.zaijian.zhoumuyun.ui.theme.AnimDuration
 import com.zaijian.zhoumuyun.ui.theme.AppTheme
 import com.zaijian.zhoumuyun.ui.theme.AvatarSize
@@ -127,6 +120,7 @@ import com.zaijian.zhoumuyun.ui.viewmodel.ScheduleMode
 import com.zaijian.zhoumuyun.util.TimeFormatUtils
 import kotlinx.coroutines.launch
 import androidx.compose.runtime.snapshotFlow
+import com.zaijian.zhoumuyun.ui.design.AppIcons
 
 
 // ─────────────────────────────────────────────────────────────
@@ -134,7 +128,7 @@ import androidx.compose.runtime.snapshotFlow
 //
 //  Phase 14 后半升级：
 //  ① 圆桌设置面板（ModalBottomSheet）：动态成员管理 + 调度模式切换
-//  ② RoundtableHeader 接入设置按钮
+//  ② DetailTopBar 接入设置按钮（原 RoundtableHeader，窗口4统一）
 //
 //  设计方案 §6 + §9.3（圆桌模式）：
 //
@@ -211,6 +205,8 @@ fun RoundtableScreen(
     var inputText by rememberSaveable { mutableStateOf("") }
     // Step 5：@ 候选弹窗——记录触发时的 '@' 在文本中的位置，null = 未触发
     var atTriggerIndex by remember { mutableStateOf<Int?>(null) }
+    // D-2 圆桌 ContentBlock 入口：心迹面板开关
+    var showActivityPanel by remember { mutableStateOf(false) }
 
     // 输入框内容变化时，判断当前是否处于"刚输入 @ 后，还没打完名字/没打空格"的片段中。
     // 简化策略（纯文本协议，不依赖真实光标位置）：只看输入框末尾——
@@ -509,14 +505,33 @@ fun RoundtableScreen(
         }
 
         // ── [2] 顶部栏 ────────────────────────────────────────
-        RoundtableHeader(
-            memberCount    = members.size,
-            headerBg       = headerBg,
-            onBack         = onBack,
-            onOpenSettings = { viewModel.toggleSettingsSheet(true) },
-            modifier       = Modifier
+        DetailTopBar(
+            title     = "圆桌讨论",
+            subtitle  = if (members.size > 0) "${members.size} 位成员" else null,
+            onBack    = onBack,
+            headerBg  = headerBg,
+            modifier  = Modifier
                 .fillMaxWidth()
                 .align(Alignment.TopCenter),
+            actions   = {
+                // D-2 圆桌 ContentBlock 入口：心迹面板
+                IconButton(onClick = { showActivityPanel = true }) {
+                    Icon(
+                        imageVector        = AppIcons.History,
+                        contentDescription = "圆桌心迹",
+                        tint               = colors.textSecondary,
+                        modifier           = Modifier.size(22.dp),
+                    )
+                }
+                IconButton(onClick = { viewModel.toggleSettingsSheet(true) }) {
+                    Icon(
+                        imageVector        = AppIcons.Settings,
+                        contentDescription = "圆桌设置",
+                        tint               = colors.textSecondary,
+                        modifier           = Modifier.size(22.dp),
+                    )
+                }
+            },
         )
 
         // ── [3] Bot 成员切换栏（粘性，紧贴 Header 下方）────────
@@ -696,6 +711,77 @@ fun RoundtableScreen(
                     },
                     onClose               = { viewModel.toggleSettingsSheet(false) },
                 )
+            }
+        }
+    }
+
+    // ── [7] 心迹面板（D-2 圆桌 ContentBlock 入口）────────────────
+    // 多角色合并时间线：observeTimelineForCharacters → ContentBlockAdapter
+    // → ContentBlockRenderer，与 AgentActivityTimelinePanel 同一套渲染管线，
+    // 区别是数据源为多角色合并 Flow（observeTimelineForCharacters）。
+    if (showActivityPanel) {
+        // E0 分层收口：原 AppContainer.instance.agentActivityRepo
+        // .observeTimelineForCharacters()，改走 RoundtableViewModel。
+        // P2-13 修复：原 remember(characterIds) 用 List 实例做 key，
+        // 同文件上方已踩过坑——直接拿 List 当 key 不可靠（成员相同但顺序
+        // 不同时会被误判为"变化"）。改用 memberKey（排序后拼接的字符串），
+        // 与同文件 snackbar/listState/LaunchedEffect 的 key 策略一致。
+        val timelineItems by remember(memberKey) {
+            viewModel.observeTimelineForCharacters(characterIds)
+        }.collectAsStateWithLifecycle(initialValue = emptyList())
+        val activityBlocks = remember(timelineItems) {
+            ContentBlockAdapter.fromTimelineItems(timelineItems)
+        }
+
+        Dialog(
+            onDismissRequest = { showActivityPanel = false },
+            properties = DialogProperties(
+                usePlatformDefaultWidth = false,
+                decorFitsSystemWindows  = false,
+            ),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(colors.bgCard)
+                    .statusBarsPadding(),
+            ) {
+                DetailTopBar(
+                    title    = "圆桌心迹",
+                    subtitle = if (members.size > 0) "${members.size} 位成员" else null,
+                    onBack   = { showActivityPanel = false },
+                    headerBg = colors.bgCard,
+                )
+
+                if (activityBlocks.isEmpty()) {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            text  = "暂无心迹记录",
+                            style = type.body,
+                            color = colors.textSecondary,
+                        )
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(
+                            horizontal = Spacing.screenHorizontal,
+                            vertical   = Spacing.md,
+                        ),
+                        verticalArrangement = Arrangement.spacedBy(Spacing.sm),
+                    ) {
+                        item {
+                            ContentBlockRenderer(
+                                blocks    = activityBlocks,
+                                textColor = colors.textPrimary,
+                                style     = type.body,
+                            )
+                        }
+                    }
+                }
             }
         }
     }

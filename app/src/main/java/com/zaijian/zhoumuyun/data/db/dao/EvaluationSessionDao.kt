@@ -92,6 +92,20 @@ interface EvaluationSessionDao {
     """)
     suspend fun countHighScoreByGoal(goalId: String, threshold: Float = 3.5f): Int
 
+    /** P1-27 修复：获取指定目标的高分 Session（SQL 层过滤 compositeScore ≥ threshold）。
+     * 原 getScoredByGoal 只取最近 N 条 SCORED Session 再内存 filter，
+     * 当高分 Session 不在最近 N 条时会被截断，导致蒸馏上下文为空、静默失效。
+     * 本方法在 SQL 层直接按 compositeScore 过滤，保证取到的是最近 N 条高分 Session。 */
+    @Query("""
+        SELECT * FROM evaluation_sessions
+        WHERE goalId = :goalId
+          AND status = 'SCORED'
+          AND compositeScore >= :threshold
+        ORDER BY createdAt DESC
+        LIMIT :limit
+    """)
+    suspend fun getHighScoreByGoal(goalId: String, threshold: Float, limit: Int): List<EvaluationSessionEntity>
+
     // ── 状态更新：PENDING → REVIEWED ─────────────────────────
 
     @Query("""

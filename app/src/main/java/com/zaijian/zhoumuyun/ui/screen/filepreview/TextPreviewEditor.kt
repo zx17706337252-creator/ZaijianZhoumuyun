@@ -9,8 +9,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
-import com.zaijian.zhoumuyun.ui.component.MarkdownText
+import com.zaijian.zhoumuyun.domain.ContentBlockParser
+import com.zaijian.zhoumuyun.ui.component.ContentBlockRenderer
 import com.zaijian.zhoumuyun.ui.design.WorldCard
+import com.zaijian.zhoumuyun.ui.theme.Spacing
 import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
 
 /**
@@ -43,8 +45,8 @@ internal fun TextPreviewEditor(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                .padding(horizontal = Spacing.screenHorizontal, vertical = Spacing.sm),
+            horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
         ) {
             FilterChip(
                 selected = !isEditing,
@@ -76,7 +78,7 @@ internal fun TextPreviewEditor(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp),
+                    .padding(horizontal = Spacing.screenHorizontal),
                 textStyle = type.body.copy(fontFamily = FontFamily.Monospace),
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedContainerColor = colors.surface,
@@ -88,22 +90,25 @@ internal fun TextPreviewEditor(
                 onClick = { onSave(editText) },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(16.dp),
+                    .padding(Spacing.md),
             ) {
                 Text("保存")
             }
         } else {
             // 预览模式
             if (isMarkdown) {
-                MarkdownText(
-                    markdown  = text,
+                // E2 统一内容渲染接入：Markdown 预览走 ContentBlockParser → ContentBlockRenderer，
+                // 支持标题/列表/代码块/表格等结构化渲染。
+                val blocks = remember(text) { ContentBlockParser.parse(text) }
+                ContentBlockRenderer(
+                    blocks    = blocks,
                     textColor = colors.textPrimary,
                     style     = type.body,
                     modifier  = Modifier
                         .weight(1f)
                         .fillMaxWidth()
                         .verticalScroll(scrollState)
-                        .padding(16.dp),
+                        .padding(horizontal = Spacing.screenHorizontal, vertical = Spacing.md),
                 )
             } else {
                 Text(
@@ -114,7 +119,7 @@ internal fun TextPreviewEditor(
                         .weight(1f)
                         .fillMaxWidth()
                         .verticalScroll(scrollState)
-                        .padding(16.dp),
+                        .padding(horizontal = Spacing.screenHorizontal, vertical = Spacing.md),
                 )
             }
         }

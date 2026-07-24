@@ -79,7 +79,7 @@ fun OnboardingTooltip(
                    slideOutVertically(tween(AnimDuration.fast)) { it / 3 },
         modifier = modifier,
     ) {
-        // 整体左对齐，指针指向底部导航栏 书架 Tab（第 2 个 Tab，约 x ≈ screenWidth * 0.375）
+        // 整体左对齐，指针指向底部导航栏 书架 Tab（第 2 个 Tab，共 5 个，约 x ≈ screenWidth * 0.3）
         // 我们用 padding(start) 让三角对准该位置（约 88dp）
         Column(
             horizontalAlignment = Alignment.Start,
@@ -109,10 +109,11 @@ fun OnboardingTooltip(
             }
 
             // ── 三角指针（向下，对齐「书架」Tab）─────────────
-            // 书架 Tab 是第 2 个（共 4 个），左边距约 screenWidth * 0.25 - 8dp
+            // 书架 Tab 是第 2 个（共 5 个），左边距约 screenWidth * 0.3 - 8dp
             // P3-27 修复（重做）：改用屏幕宽度比例计算，而非对 390dp 屏幕的固定估算值
+            // P2-42 修复：Tab 总数由 4 更正为 5，指针比例由 0.25 调整为 0.3
             val screenWidthDp = LocalConfiguration.current.screenWidthDp
-            val pointerIndent = (screenWidthDp * 0.25f).dp - 8.dp
+            val pointerIndent = (screenWidthDp * 0.3f).dp - 8.dp
             Canvas(
                 modifier = Modifier
                     .padding(start = pointerIndent)

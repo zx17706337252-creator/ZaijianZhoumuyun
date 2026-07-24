@@ -15,8 +15,6 @@ import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.ui.unit.dp
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -34,6 +32,7 @@ import com.zaijian.zhoumuyun.ui.component.SendButton
 import com.zaijian.zhoumuyun.ui.theme.Palette
 import com.zaijian.zhoumuyun.ui.theme.Spacing
 import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
+import com.zaijian.zhoumuyun.ui.design.AppIcons
 
 
 
@@ -133,7 +132,7 @@ internal fun ChatInputBar(
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(
-                    imageVector        = Icons.Outlined.FolderOpen,
+                    imageVector        = AppIcons.FolderOpen,
                     contentDescription = "导入文件",
                     tint               = colors.textSecondary,
                     modifier           = Modifier.size(18.dp),

@@ -7,6 +7,7 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
 import com.zaijian.zhoumuyun.data.AppContainer
 import com.zaijian.zhoumuyun.data.agent.CandidatePromotionChecker
+import com.zaijian.zhoumuyun.data.agent.DailyPracticeScheduler
 import com.zaijian.zhoumuyun.data.agent.IdentityPromotionEvaluator
 import com.zaijian.zhoumuyun.data.db.AppDatabase
 import com.zaijian.zhoumuyun.data.db.entity.EvolutionPlanEntity
@@ -214,6 +215,12 @@ class SpecialtyEvolutionViewModel(
         viewModelScope.launch {
             repo.setActive(profileId, active)
             _snackbarMessage.value = if (active) "已重新启用" else "已暂停（每日修炼会跳过这个方向）"
+            // 漏调用-01 修复：停用后若已无任何启用中的专长，停掉每日修炼闹钟，
+            // 否则闹钟会持续每日唤醒设备、启动 Worker 做无用功（DailyPracticeWorker
+            // 内部逐一遍历 active profiles，全空时什么也不做但流程仍会跑一遍）。
+            if (!active && repo.getAllActiveProfiles().isEmpty()) {
+                DailyPracticeScheduler.cancel(getApplication())
+            }
         }
     }
 
@@ -222,6 +229,10 @@ class SpecialtyEvolutionViewModel(
             repo.deleteProfile(profileId)
             if (_selectedProfileId.value == profileId) _selectedProfileId.value = null
             _snackbarMessage.value = "已删除「$domain」"
+            // 漏调用-01 修复：同 setActive，删除后若已无任何启用中的专长则停掉闹钟。
+            if (repo.getAllActiveProfiles().isEmpty()) {
+                DailyPracticeScheduler.cancel(getApplication())
+            }
         }
     }
 

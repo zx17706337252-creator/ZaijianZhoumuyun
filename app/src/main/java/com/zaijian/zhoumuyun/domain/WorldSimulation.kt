@@ -76,6 +76,11 @@ class WorldSimulation(
     private val context: Context? = null,
     // Phase 4（zaijian）新增：情境感知主动消息
     private val messageDao: MessageRepository? = null,
+    // Bugfix：memoryRepo 内部构建 MemoryRepository 需要 MemoryTagDao，
+    // 原代码误引用了类作用域内不存在的 db 变量（db.memoryTagDao()），
+    // 编译期报"未解析的引用"。改为与其余各 Dao 一致的显式构造参数注入，
+    // 不引入 AppDatabase 整体依赖（保持与本文件其他 Dao 参数一致的最小改动面）。
+    private val memoryTagDao: com.zaijian.zhoumuyun.data.db.dao.MemoryTagDao? = null,
     // 审查报告问题11修复：daughters 覆盖修复引入本参数时给了可空默认值 null，
     // 全项目排查后确认唯一两个实例化调用方（ZaijianApp.kt 前台常驻实例、
     // ProactiveMessageWorker.kt 后台周期检查实例）一直都在传入非空的
@@ -116,8 +121,8 @@ class WorldSimulation(
     // 调用，不会同时持有两把锁），不引入锁顺序反转导致死锁的风险。
 
     private val memoryRepo: MemoryRepository? by lazy {
-        if (memoryDao != null && candidateDao != null)
-            MemoryRepository(memoryDao, candidateDao)
+        if (memoryDao != null && candidateDao != null && memoryTagDao != null)
+            MemoryRepository(memoryDao, candidateDao, memoryTagDao)
         else null
     }
 
@@ -299,8 +304,8 @@ class WorldSimulation(
                 saveTimestamp(KEY_LAST_TIER3)
             } else {
                 val elapsedTier3Ms = now - lastTier3
-                val tier3Rounds = (elapsedTier3Ms / TIER3_INTERVAL_MS)
-                    .toInt().coerceIn(0, MAX_OFFLINE_ROUNDS)
+                val rawTier3Rounds = (elapsedTier3Ms / TIER3_INTERVAL_MS).toInt()
+                val tier3Rounds = rawTier3Rounds.coerceIn(0, MAX_OFFLINE_ROUNDS)
                 if (tier3Rounds > 0) {
                     ZLog.d(TAG, "Offline compensation: Tier3 × $tier3Rounds rounds")
                     // 批次1 1-2修复：移除 applyTrustDecayByElapsed，只保留 repeat(runTier3())。
@@ -308,9 +313,43 @@ class WorldSimulation(
                     // applyTrustDecayByElapsed 按时间差一次性给累加器加 cappedDecay，
                     // repeat(runTier3()) 每轮又给累加器加 TRUST_DECAY_PER_TIER3，合计≈2倍。
                     // runTier3() 内部第594-627行已完整处理 trust 累积衰减，且还含 curiosity
-                    // 衰减、suppression 松动等逻辑，保留它即可覆盖所有离线补偿需求。
+                    // 衰减、suppression 松动等逻辑，保留它即可覆盖 MAX_OFFLINE_ROUNDS 以内的补偿需求。
                     repeat(tier3Rounds) {
                         try { runTier3() } catch (e: Exception) { ZLog.w(TAG, "Tier3 compensate error", e) }
+                    }
+                }
+                // P1-29 修复（验收后重修）：rawTier3Rounds 可能远超 MAX_OFFLINE_ROUNDS，上面
+                // repeat 只补了 MAX_OFFLINE_ROUNDS 轮。curiosity/suppression 等逐轮效应超出
+                // 上限的部分按设计本就不做长尾补偿（避免冷启动阻塞），但 trust 是线性累积量，
+                // 长期离线不做补偿会导致离线越久、trust 衰减占比越失真（3天少44%，30天少94%）。
+                // 这里单独对被截断的轮次（rawTier3Rounds - tier3Rounds）按 TRUST_DECAY_PER_TIER3
+                // 补进 trustDecayAccumulator，且总补偿天数受 MAX_OFFLINE_TRUST_DECAY_DAYS 上限
+                // 保护，不放大到无限。只累加到累加器，不直接调用 applyTrustDecayForCharacter，
+                // 避免和上面 repeat(runTier3()) 已计入的 tier3Rounds 部分重复计算（历史
+                // 1-2修复要规避的正是这个双重计算问题）。
+                val overflowRounds = (rawTier3Rounds - tier3Rounds).coerceAtLeast(0)
+                if (overflowRounds > 0) {
+                    val maxCompensatedRounds = MAX_OFFLINE_TRUST_DECAY_DAYS *
+                        (24 * 60 * 60 * 1000L / TIER3_INTERVAL_MS).toInt()
+                    val boundedOverflowRounds = overflowRounds
+                        .coerceAtMost((maxCompensatedRounds - tier3Rounds).coerceAtLeast(0))
+                    if (boundedOverflowRounds > 0) {
+                        val supplementalDecay = boundedOverflowRounds * TRUST_DECAY_PER_TIER3
+                        ZLog.d(
+                            TAG,
+                            "Offline compensation: Tier3 overflow rounds=$overflowRounds " +
+                                "(bounded=$boundedOverflowRounds), supplemental trust decay=$supplementalDecay"
+                        )
+                        DefaultCharacters.forEach { char ->
+                            try {
+                                trustDecayAccumulator.compute(char.id) { _, v ->
+                                    (v ?: 0.0) + supplementalDecay
+                                }
+                            } catch (e: Exception) {
+                                ZLog.w(TAG, "Trust overflow compensate failed for char=${char.id}", e)
+                            }
+                        }
+                        saveTrustAccumulator()
                     }
                 }
                 // 方案 3-9：不再保存时间戳，由 tier3Job 常规循环负责
@@ -406,6 +445,7 @@ class WorldSimulation(
                         relAffection       = rel?.affection  ?: 50,
                         relTrust           = rel?.trust      ?: 50,
                         relDependence      = rel?.dependence ?: 50,
+                        lastMsgAt          = lastMsgAt,
                     )
                 }
                 // 若 messageDao 未注入（降级），refreshPresence 内部的原有目标触发逻辑保持不变
