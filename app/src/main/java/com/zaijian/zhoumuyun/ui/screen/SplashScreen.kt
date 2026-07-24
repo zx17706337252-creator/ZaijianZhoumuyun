@@ -218,7 +218,7 @@ fun SplashScreen(onFinished: () -> Unit) {
                 }
 
                 Image(
-                    painter            = bgPainter,
+                    painter            = bgPainter!!,
                     contentDescription = null,
                     contentScale       = ContentScale.Fit,
                     modifier           = Modifier
