@@ -292,7 +292,14 @@ fun ChatScreen(
             ctx2.contentResolver.openInputStream(uri)?.use { input ->
                 dest.outputStream().use { output -> input.copyTo(output) }
             }
-            chatViewModel.notifyFileImported(safeName, dest.absolutePath)
+            // Fix-FileImportCard：探测真实 MIME 类型（优先问 ContentResolver，
+            // 拿不到再按扩展名猜），连同实际写盘后的文件大小一起传下去，
+            // 供聊天气泡渲染文件卡片（图标/大小/打开预览）用。
+            val mimeType = ctx2.contentResolver.getType(uri)
+                ?: android.webkit.MimeTypeMap.getSingleton()
+                    .getMimeTypeFromExtension(safeName.substringAfterLast('.', "").lowercase())
+                ?: "*/*"
+            chatViewModel.notifyFileImported(safeName, dest.absolutePath, mimeType, dest.length())
         } catch (e: Exception) {
             // UI M13 修复：原 catch (_: Exception) { } 完全静默吞掉异常——
             // 文件选择器返回 uri 后，复制失败时用户毫无反馈，只会觉得"点了没反应"。

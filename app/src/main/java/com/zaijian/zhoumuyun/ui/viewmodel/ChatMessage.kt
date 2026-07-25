@@ -64,6 +64,55 @@ data class ChatMessage(
      * `MessageBubble` 在 `message.tablePayload != null` 时渲染 [TableCard]。
      */
     val tablePayload: TablePayload? get() = tableDataJson?.let { TablePayload.fromJson(it) }
+
+    /**
+     * UI卡片预览修复（Fix-FileImportCard）：ChatMessageActionsDelegate.notifyFileImported()
+     * 写入的"用户导入文件"通知，role="system"（这个 role 值本身不能改——LLM 上下文管线
+     * 和 ToolCallInterceptor 的 file_read 强制锁死机制都依赖它现在的写入方式，见两处的
+     * 对应注释），content 固定格式"用户导入了一个文件：X（路径：Y）"。此前这条消息落到
+     * MessageBubble 的角色气泡分支里当纯文本显示——不仅左对齐头像显得像是角色说的话，
+     * 还直接把内部绝对路径糊在用户脸上，也没有可点开预览的入口。
+     * 这个属性只是"识别出这是这一类通知"，不改变它的存储方式。
+     */
+    val isUserFileImportNotice: Boolean get() =
+        role == "system" &&
+            content.startsWith(USER_FILE_IMPORT_PREFIX) &&
+            content.contains(USER_FILE_IMPORT_PATH_TAG)
+
+    /**
+     * 用户导入的文件列表，供 MessageBubble 渲染成 FileExportCard（用户侧右对齐）。
+     * 优先用 exportedFiles（v1.x 起 notifyFileImported() 已同步写入结构化元数据，
+     * mimeType/sizeBytes 都是真实值）；旧数据只有纯文本通知、没有 exportedFilesJson
+     * 时，从文本里把文件名和路径抠出来兜底合成一张卡片——mimeType 按扩展名猜测，
+     * sizeBytes 未知场景置 0（toChatMessage() 是同步映射，这里不做磁盘 IO 判断
+     * 文件是否还在/多大，旧消息卡片上的"0 B"是已知的展示层面折衷，不影响能否点开预览）。
+     */
+    val userImportedFiles: List<ExportedFile> get() {
+        if (!isUserFileImportNotice) return emptyList()
+        exportedFiles.takeIf { it.isNotEmpty() }?.let { return it }
+        val body = content.removePrefix(USER_FILE_IMPORT_PREFIX)
+        val idx = body.indexOf(USER_FILE_IMPORT_PATH_TAG)
+        if (idx < 0) return emptyList()
+        val fileName = body.substring(0, idx)
+        val path = body.substring(idx + USER_FILE_IMPORT_PATH_TAG.length).removeSuffix("）")
+        if (fileName.isBlank() || path.isBlank()) return emptyList()
+        val ext = fileName.substringAfterLast('.', "").lowercase()
+        val guessedMime = android.webkit.MimeTypeMap.getSingleton()
+            .getMimeTypeFromExtension(ext) ?: "*/*"
+        return listOf(
+            ExportedFile(
+                fileName = fileName,
+                mimeType = guessedMime,
+                sizeBytes = 0L,
+                absolutePath = path,
+            )
+        )
+    }
+
+    private companion object {
+        const val USER_FILE_IMPORT_PREFIX = "用户导入了一个文件："
+        const val USER_FILE_IMPORT_PATH_TAG = "（路径："
+    }
 }
 
 /**

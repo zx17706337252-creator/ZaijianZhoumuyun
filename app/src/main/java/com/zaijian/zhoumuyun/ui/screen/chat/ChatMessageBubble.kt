@@ -122,7 +122,7 @@ internal fun MessageBubble(
     val screenWidth    = LocalConfiguration.current.screenWidthDp.dp
     val maxBubbleWidth = screenWidth * BubbleDimen.maxWidthFraction
 
-    if (message.role == "user") {
+    if (message.role == "user" || message.isUserFileImportNotice) {
         // ── 用户气泡（右对齐）──────────────────────────────
         // 修复：原用 accentColor（对方角色专属色）填充，导致用户气泡显示角色色、
         // 角色气泡反而显示默认色。改为用主题默认 accent 色（非任何角色专属色），
@@ -133,54 +133,75 @@ internal fun MessageBubble(
             horizontalArrangement = Arrangement.End,
             verticalAlignment = Alignment.Bottom,
         ) {
-            // 2.1：长按复制。interactionSource 驱动按压缩放（抄 BookCard.kt 的
-            // combinedClickable + collectIsPressedAsState 手感），indication 关掉
-            // 默认 ripple——缩放本身已经是按压反馈，两层叠加会显得脏。
-            val userInteraction = remember { MutableInteractionSource() }
-            val userPressed by userInteraction.collectIsPressedAsState()
-            val userScale by animateFloatAsState(
-                targetValue   = if (userPressed) 0.97f else 1f,
-                animationSpec = if (userPressed) snapSpring else appSpring,
-                label         = "userBubblePressScale",
-            )
-            Box(
-                modifier = Modifier
-                    .widthIn(max = maxBubbleWidth)
-                    .graphicsLayer { scaleX = userScale; scaleY = userScale }
-                    .clip(
-                        RoundedCornerShape(
-                            topStart    = Radius.md,
-                            topEnd      = Radius.md,
-                            bottomStart = Radius.md,
-                            bottomEnd   = Radius.xs,
+            if (message.isUserFileImportNotice) {
+                // Fix-FileImportCard：这条是"用户导入了一个文件"通知（role="system"，
+                // 存储格式不变，见 ChatMessage.isUserFileImportNotice 注释），不当纯文本
+                // 显示——内部路径不该直接糊给用户看，改成 FileExportCard 同款文件卡，
+                // 右对齐挂在用户这一侧，点击复用 onOpenFile（应用内预览优先，
+                // 不支持的类型走系统应用打开，逻辑与角色发的文件完全一致）。
+                Column(
+                    horizontalAlignment   = Alignment.End,
+                    verticalArrangement   = Arrangement.spacedBy(Spacing.xs),
+                ) {
+                    message.userImportedFiles.forEach { file ->
+                        FileExportCard(
+                            file        = file,
+                            accentColor = userBubbleColor,
+                            maxWidth    = maxBubbleWidth,
+                            onOpen      = { onOpenFile(file) },
                         )
-                    )
-                    .background(userBubbleColor)
-                    .combinedClickable(
-                        interactionSource = userInteraction,
-                        indication        = null,
-                        onClick           = {},
-                        onLongClick       = {
-                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                            onCopyMessage(message.content)
-                        },
-                        onLongClickLabel  = "复制这条消息",
-                    )
-                    // 用户反馈：聊天气泡文字上下贴边过紧，纵向 padding 从
-                    // Spacing.sm(8dp) 加大到 12dp，横向维持 Spacing.md(16dp) 不变。
-                    .padding(horizontal = Spacing.md, vertical = 12.dp),
-            ) {
-                Text(
-                    text     = message.content,
-                    style    = type.body,
-                    color    = Color.White,
-                    // P2-6 修复（重做）：maxLines 是 overflow 生效的前提，
-                    // 无行数上限时 Ellipsis 不会触发。设高限值兼容长文本，
-                    // 超长无空格字符串（如 URL）在足够行数内自然换行。
-                    softWrap = true,
-                    maxLines = 12,
-                    overflow = TextOverflow.Ellipsis,
+                    }
+                }
+            } else {
+                // 2.1：长按复制。interactionSource 驱动按压缩放（抄 BookCard.kt 的
+                // combinedClickable + collectIsPressedAsState 手感），indication 关掉
+                // 默认 ripple——缩放本身已经是按压反馈，两层叠加会显得脏。
+                val userInteraction = remember { MutableInteractionSource() }
+                val userPressed by userInteraction.collectIsPressedAsState()
+                val userScale by animateFloatAsState(
+                    targetValue   = if (userPressed) 0.97f else 1f,
+                    animationSpec = if (userPressed) snapSpring else appSpring,
+                    label         = "userBubblePressScale",
                 )
+                Box(
+                    modifier = Modifier
+                        .widthIn(max = maxBubbleWidth)
+                        .graphicsLayer { scaleX = userScale; scaleY = userScale }
+                        .clip(
+                            RoundedCornerShape(
+                                topStart    = Radius.md,
+                                topEnd      = Radius.md,
+                                bottomStart = Radius.md,
+                                bottomEnd   = Radius.xs,
+                            )
+                        )
+                        .background(userBubbleColor)
+                        .combinedClickable(
+                            interactionSource = userInteraction,
+                            indication        = null,
+                            onClick           = {},
+                            onLongClick       = {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                onCopyMessage(message.content)
+                            },
+                            onLongClickLabel  = "复制这条消息",
+                        )
+                        // 用户反馈：聊天气泡文字上下贴边过紧，纵向 padding 从
+                        // Spacing.sm(8dp) 加大到 12dp，横向维持 Spacing.md(16dp) 不变。
+                        .padding(horizontal = Spacing.md, vertical = 12.dp),
+                ) {
+                    Text(
+                        text     = message.content,
+                        style    = type.body,
+                        color    = Color.White,
+                        // P2-6 修复（重做）：maxLines 是 overflow 生效的前提，
+                        // 无行数上限时 Ellipsis 不会触发。设高限值兼容长文本，
+                        // 超长无空格字符串（如 URL）在足够行数内自然换行。
+                        softWrap = true,
+                        maxLines = 12,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             }
         }
     } else {

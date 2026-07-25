@@ -295,8 +295,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     fun sendMessage(text: String) = messageOrchestrator.sendMessage(text)
 
-    fun notifyFileImported(fileName: String, absolutePath: String) =
-        messageActionsDelegate.notifyFileImported(fileName, absolutePath)
+    fun notifyFileImported(fileName: String, absolutePath: String, mimeType: String, sizeBytes: Long) =
+        messageActionsDelegate.notifyFileImported(fileName, absolutePath, mimeType, sizeBytes)
 
     fun exportConversation() = exportDelegate.exportConversation()
 

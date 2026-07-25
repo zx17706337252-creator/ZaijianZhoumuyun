@@ -185,14 +185,30 @@ object ToolCallInterceptor {
         // file_read，然后重新发给 LLM 生成——程序锁死，不依赖 prompt 是否被执行。
         val pendingFilePaths = mutableSetOf<String>()
         for (msg in messages) {
-            if (msg.role == "system" && msg.content.contains("用户导入了一个文件")) {
+            // Bug-fix（file_read 锁死失效）：ChatMessageOrchestrator.kt 的
+            // Fix-FileImportBlindSpot 已把这条通知的 role 由 "system" 改成了
+            // "user"——因为 OpenAICompatProvider.buildRequestBody 会把 role="system"
+            // 的消息统一过滤掉（只放行 user/assistant），不改成 "user" 模型根本收不到
+            // 这条通知。但这里的判断条件当时没有同步更新，一直卡在 msg.role == "system"，
+            // 而实际传进来的 messages 里这条消息 role 已经是 "user"，导致条件恒为假——
+            // pendingFilePaths 永远是空集合，file_read 强制锁死机制形同虚设：AI 不主动
+            // 读文件时不会被打回重试，也不会有兜底自动读取，直接回复"看不到文件内容"。
+            // 改为只按内容匹配，不再要求特定 role，兼容通知被上游包装成任意角色的情况。
+            if (msg.content.contains("用户导入了一个文件")) {
                 val pathMatch = Regex("""路径[：:]\s*([^\s)）]+)""").find(msg.content)
                 if (pathMatch != null) {
                     val filePath = pathMatch.groupValues[1]
+                    // Bug-fix（alreadyRead 误判）：file_read 成功时工具结果的表头只写
+                    // "[文件内容: ${file.name}]"（纯文件名，见 BuiltinTools.FileReadTool），
+                    // 不含目录前缀；这里原来却拿完整绝对路径 filePath 去匹配结果内容，
+                    // 实际上永远匹配不上——文件哪怕已经被读过，也会被判定为"还没读"，
+                    // 导致之后每条新消息都重新强制读一遍（重试或兜底）。改成用路径里的
+                    // 文件名去匹配，与工具结果表头的实际格式对齐。
+                    val fileNameOnly = filePath.substringAfterLast('/').substringAfterLast('\\')
                     // 只注入还没被读过的文件路径（检查消息历史里有没有对应的工具结果）
                     val alreadyRead = messages.any { m ->
                         m.role == "user" && m.content.contains("[工具执行结果]") &&
-                        m.content.contains(filePath)
+                        m.content.contains(fileNameOnly)
                     }
                     if (!alreadyRead) pendingFilePaths.add(filePath)
                 }
