@@ -535,8 +535,14 @@ class FileReadTool(private val context: Context) : AgentTool {
     private suspend fun readZipContents(zipFile: java.io.File, maxLines: Int): ToolResult =
         withContext(Dispatchers.IO) {
             try {
-                val zip = java.util.zip.ZipFile(zipFile)
-                val entries = zip.entries().toList()
+                // 修复（ZipFile 资源泄漏 + zip 闪退根因）：
+                // 原实现 `val zip = ZipFile(file)` 靠末尾 `zip.close()` 手动关闭，
+                // 一旦中途抛异常（文件损坏、编码异常等），close() 走不到，
+                // ZipFile 持有的文件描述符泄漏——多次触发后可能导致后续文件操作
+                // 失败甚至 "Too many open files"。改用 .use{} 保证无论正常返回
+                // 还是异常都关闭。
+                java.util.zip.ZipFile(zipFile).use { zip ->
+                    val entries = zip.entries().toList()
 
                 val allNames = entries.map { it.name }.take(100)
                 val dirTree = allNames.joinToString("\n") { "  $it" }
@@ -591,7 +597,7 @@ class FileReadTool(private val context: Context) : AgentTool {
                     }
                 }
 
-                zip.close()
+                // zip.close() 已由 .use{} 自动执行
 
                 ToolResult(
                     toolName = name,
@@ -599,6 +605,7 @@ class FileReadTool(private val context: Context) : AgentTool {
                     content  = contentBuilder.toString().take(MAX_CHARS),
                     userHint = "正在分析 ZIP 文件内容…",
                 )
+                }  // .use { zip -> }
             } catch (e: Exception) {
                 ToolResult(
                     toolName = name,
@@ -621,51 +628,56 @@ class FileReadTool(private val context: Context) : AgentTool {
     private suspend fun readDocxContents(docxFile: java.io.File, maxLines: Int): ToolResult =
         withContext(Dispatchers.IO) {
             try {
-                val zip = java.util.zip.ZipFile(docxFile)
-                val docEntry = zip.getEntry("word/document.xml")
-                    ?: return@withContext ToolResult(
-                        name, false, "无法解析 docx：找不到 word/document.xml（可能不是标准 docx 格式）",
-                    )
+                // 修复（ZipFile 资源泄漏，与 readZipContents 同款问题）：
+                // 原实现手动 zip.close()，且 docEntry==null 分支直接 return@withContext，
+                // 连这行手动 close() 都走不到，句柄必然泄漏。改用 .use{} 包裹整个函数体，
+                // 保证无论正常返回、提前 return 还是抛异常都会关闭（return@withContext
+                // 在 inline 的 use{} 内部是合法的非局部返回，finally 里的 close 仍会执行）。
+                java.util.zip.ZipFile(docxFile).use { zip ->
+                    val docEntry = zip.getEntry("word/document.xml")
+                        ?: return@withContext ToolResult(
+                            name, false, "无法解析 docx：找不到 word/document.xml（可能不是标准 docx 格式）",
+                        )
 
-                val xmlContent = zip.getInputStream(docEntry).use { it.readBytes().toString(Charsets.UTF_8) }
-                zip.close()
+                    val xmlContent = zip.getInputStream(docEntry).use { it.readBytes().toString(Charsets.UTF_8) }
 
-                // 提取 <w:t> 标签内的文本（正文文字）
-                // <w:p> 是段落，用换行分隔
-                val textBuilder = StringBuilder()
-                val wTPattern = Regex("<w:t[^>]*>([^<]*)</w:t>")
-                val wPPattern = Regex("<w:p[^>]*>")
-                var pos = 0
-                while (pos < xmlContent.length) {
-                    val wPMatch = wPPattern.find(xmlContent, pos)
-                    if (wPMatch == null) {
-                        // 剩余文本
-                        wTPattern.findAll(xmlContent, pos).forEach { textBuilder.append(it.groupValues[1]) }
-                        break
+                    // 提取 <w:t> 标签内的文本（正文文字）
+                    // <w:p> 是段落，用换行分隔
+                    val textBuilder = StringBuilder()
+                    val wTPattern = Regex("<w:t[^>]*>([^<]*)</w:t>")
+                    val wPPattern = Regex("<w:p[^>]*>")
+                    var pos = 0
+                    while (pos < xmlContent.length) {
+                        val wPMatch = wPPattern.find(xmlContent, pos)
+                        if (wPMatch == null) {
+                            // 剩余文本
+                            wTPattern.findAll(xmlContent, pos).forEach { textBuilder.append(it.groupValues[1]) }
+                            break
+                        }
+                        // 段落前的 <w:t>
+                        wTPattern.findAll(xmlContent, pos).takeWhile { it.range.first < wPMatch.range.first }
+                            .forEach { textBuilder.append(it.groupValues[1]) }
+                        textBuilder.append('\n')  // 段落分隔
+                        pos = wPMatch.range.last + 1
                     }
-                    // 段落前的 <w:t>
-                    wTPattern.findAll(xmlContent, pos).takeWhile { it.range.first < wPMatch.range.first }
-                        .forEach { textBuilder.append(it.groupValues[1]) }
-                    textBuilder.append('\n')  // 段落分隔
-                    pos = wPMatch.range.last + 1
-                }
 
-                val extractedText = textBuilder.toString().trim()
-                if (extractedText.isEmpty()) {
-                    return@withContext ToolResult(
-                        name, true,
-                        "[docx 文件: ${docxFile.name}]\n文档为空或正文无可提取文本（可能是图片型文档或加密文档）。",
+                    val extractedText = textBuilder.toString().trim()
+                    if (extractedText.isEmpty()) {
+                        return@withContext ToolResult(
+                            name, true,
+                            "[docx 文件: ${docxFile.name}]\n文档为空或正文无可提取文本（可能是图片型文档或加密文档）。",
+                        )
+                    }
+
+                    val lineCount = extractedText.lines().size
+                    val preview = extractedText.lines().take(maxLines).joinToString("\n")
+                    ToolResult(
+                        toolName = name,
+                        success  = true,
+                        content  = "[docx 文件: ${docxFile.name}]\n── 正文内容（共 ${lineCount} 行，显示前 ${minOf(maxLines, lineCount)} 行）──\n$preview",
+                        userHint = "正在解析 Word 文档…",
                     )
                 }
-
-                val lineCount = extractedText.lines().size
-                val preview = extractedText.lines().take(maxLines).joinToString("\n")
-                ToolResult(
-                    toolName = name,
-                    success  = true,
-                    content  = "[docx 文件: ${docxFile.name}]\n── 正文内容（共 ${lineCount} 行，显示前 ${minOf(maxLines, lineCount)} 行）──\n$preview",
-                    userHint = "正在解析 Word 文档…",
-                )
             } catch (e: Exception) {
                 com.zaijian.zhoumuyun.util.AgentLog.error("FileRead", "解析 docx 失败：${docxFile.name}", e)
                 ToolResult(
@@ -689,75 +701,77 @@ class FileReadTool(private val context: Context) : AgentTool {
     private suspend fun readXlsxContents(xlsxFile: java.io.File, maxLines: Int): ToolResult =
         withContext(Dispatchers.IO) {
             try {
-                val zip = java.util.zip.ZipFile(xlsxFile)
-
-                // 1. 提取共享字符串表
-                val sharedStrings = mutableListOf<String>()
-                val ssEntry = zip.getEntry("xl/sharedStrings.xml")
-                if (ssEntry != null) {
-                    val ssXml = zip.getInputStream(ssEntry).use { it.readBytes().toString(Charsets.UTF_8) }
-                    // <si> 是一个字符串项，内含一个或多个 <t> 标签（富文本可能有多个）
-                    val siPattern = Regex("<si>(.*?)</si>", RegexOption.DOT_MATCHES_ALL)
-                    val tPattern = Regex("<t[^>]*>([^<]*)</t>")
-                    siPattern.findAll(ssXml).forEach { siMatch ->
-                        val text = tPattern.findAll(siMatch.groupValues[1])
-                            .joinToString("") { it.groupValues[1] }
-                        sharedStrings.add(text)
-                    }
-                }
-
-                // 2. 读取第一个工作表
-                val sheetEntry = zip.getEntry("xl/worksheets/sheet1.xml")
-                    ?: return@withContext ToolResult(
-                        name, false, "无法解析 xlsx：找不到 xl/worksheets/sheet1.xml",
-                    )
-                val sheetXml = zip.getInputStream(sheetEntry).use { it.readBytes().toString(Charsets.UTF_8) }
-                zip.close()
-
-                // 3. 解析行和单元格
-                // <row> 是行，<c r="A1" t="s"><v>0</v></c> 是单元格
-                // t="s" 表示值是共享字符串索引（查 sharedStrings），无 t 属性是数字
-                val rowPattern = Regex("<row[^>]*>(.*?)</row>", RegexOption.DOT_MATCHES_ALL)
-                val cellPattern = Regex("""<c\s+r="([A-Z]+)\d+"([^>]*)>\s*(?:<v>([^<]*)</v>)?""")
-                val colPattern = Regex("[A-Z]+")
-
-                val rows = mutableListOf<List<String>>()
-                for (rowMatch in rowPattern.findAll(sheetXml)) {
-                    val rowContent = rowMatch.groupValues[1]
-                    val cells = cellPattern.findAll(rowContent).map { cellMatch ->
-                        val attrs = cellMatch.groupValues[2]
-                        val value = cellMatch.groupValues[3]
-                        if (attrs.contains("t=\"s\"") && value.isNotEmpty()) {
-                            // 共享字符串索引
-                            val idx = value.toIntOrNull() ?: -1
-                            if (idx in sharedStrings.indices) sharedStrings[idx] else value
-                        } else {
-                            value
+                // 修复（ZipFile 资源泄漏，与 readZipContents/readDocxContents 同款问题）：
+                // sheetEntry==null 分支原先直接 return@withContext，手动 close() 走不到。
+                // 改用 .use{} 包裹整个函数体，任何路径都会关闭。
+                java.util.zip.ZipFile(xlsxFile).use { zip ->
+                    // 1. 提取共享字符串表
+                    val sharedStrings = mutableListOf<String>()
+                    val ssEntry = zip.getEntry("xl/sharedStrings.xml")
+                    if (ssEntry != null) {
+                        val ssXml = zip.getInputStream(ssEntry).use { it.readBytes().toString(Charsets.UTF_8) }
+                        // <si> 是一个字符串项，内含一个或多个 <t> 标签（富文本可能有多个）
+                        val siPattern = Regex("<si>(.*?)</si>", RegexOption.DOT_MATCHES_ALL)
+                        val tPattern = Regex("<t[^>]*>([^<]*)</t>")
+                        siPattern.findAll(ssXml).forEach { siMatch ->
+                            val text = tPattern.findAll(siMatch.groupValues[1])
+                                .joinToString("") { it.groupValues[1] }
+                            sharedStrings.add(text)
                         }
-                    }.toList()
-                    if (cells.isNotEmpty()) rows.add(cells)
-                }
+                    }
 
-                if (rows.isEmpty()) {
-                    return@withContext ToolResult(
-                        name, true,
-                        "[xlsx 文件: ${xlsxFile.name}]\n工作表为空或无数据。",
+                    // 2. 读取第一个工作表
+                    val sheetEntry = zip.getEntry("xl/worksheets/sheet1.xml")
+                        ?: return@withContext ToolResult(
+                            name, false, "无法解析 xlsx：找不到 xl/worksheets/sheet1.xml",
+                        )
+                    val sheetXml = zip.getInputStream(sheetEntry).use { it.readBytes().toString(Charsets.UTF_8) }
+
+                    // 3. 解析行和单元格
+                    // <row> 是行，<c r="A1" t="s"><v>0</v></c> 是单元格
+                    // t="s" 表示值是共享字符串索引（查 sharedStrings），无 t 属性是数字
+                    val rowPattern = Regex("<row[^>]*>(.*?)</row>", RegexOption.DOT_MATCHES_ALL)
+                    val cellPattern = Regex("""<c\s+r="([A-Z]+)\d+"([^>]*)>\s*(?:<v>([^<]*)</v>)?""")
+                    val colPattern = Regex("[A-Z]+")
+
+                    val rows = mutableListOf<List<String>>()
+                    for (rowMatch in rowPattern.findAll(sheetXml)) {
+                        val rowContent = rowMatch.groupValues[1]
+                        val cells = cellPattern.findAll(rowContent).map { cellMatch ->
+                            val attrs = cellMatch.groupValues[2]
+                            val value = cellMatch.groupValues[3]
+                            if (attrs.contains("t=\"s\"") && value.isNotEmpty()) {
+                                // 共享字符串索引
+                                val idx = value.toIntOrNull() ?: -1
+                                if (idx in sharedStrings.indices) sharedStrings[idx] else value
+                            } else {
+                                value
+                            }
+                        }.toList()
+                        if (cells.isNotEmpty()) rows.add(cells)
+                    }
+
+                    if (rows.isEmpty()) {
+                        return@withContext ToolResult(
+                            name, true,
+                            "[xlsx 文件: ${xlsxFile.name}]\n工作表为空或无数据。",
+                        )
+                    }
+
+                    // 4. 格式化输出为文本表格
+                    val preview = rows.take(maxLines).joinToString("\n") { it.joinToString(" | ") }
+                    // 复核意见三：暂不支持多 sheet，必须在返回内容里显式提示，
+                    // 不能让用户/AI 以为读到的是完整表格数据而实际读漏了其他 sheet。
+                    // 未来若支持多 sheet（解析 xl/workbook.xml 的 sheet 列表），
+                    // 移除此提示并改为列出可用 sheet 供 AI 选择读取。
+                    val multiSheetHint = "（仅读取工作簿的第一个工作表 sheet1，如需其他工作表请说明）"
+                    ToolResult(
+                        toolName = name,
+                        success  = true,
+                        content  = "[xlsx 文件: ${xlsxFile.name}]\n── 表格内容（共 ${rows.size} 行，显示前 ${minOf(maxLines, rows.size)} 行）──\n$multiSheetHint\n$preview",
+                        userHint = "正在解析 Excel 文档…",
                     )
                 }
-
-                // 4. 格式化输出为文本表格
-                val preview = rows.take(maxLines).joinToString("\n") { it.joinToString(" | ") }
-                // 复核意见三：暂不支持多 sheet，必须在返回内容里显式提示，
-                // 不能让用户/AI 以为读到的是完整表格数据而实际读漏了其他 sheet。
-                // 未来若支持多 sheet（解析 xl/workbook.xml 的 sheet 列表），
-                // 移除此提示并改为列出可用 sheet 供 AI 选择读取。
-                val multiSheetHint = "（仅读取工作簿的第一个工作表 sheet1，如需其他工作表请说明）"
-                ToolResult(
-                    toolName = name,
-                    success  = true,
-                    content  = "[xlsx 文件: ${xlsxFile.name}]\n── 表格内容（共 ${rows.size} 行，显示前 ${minOf(maxLines, rows.size)} 行）──\n$multiSheetHint\n$preview",
-                    userHint = "正在解析 Excel 文档…",
-                )
             } catch (e: Exception) {
                 com.zaijian.zhoumuyun.util.AgentLog.error("FileRead", "解析 xlsx 失败：${xlsxFile.name}", e)
                 ToolResult(
@@ -1049,17 +1063,28 @@ class UrlFetchTool : AgentTool {
 // ─────────────────────────────────────────────────────────────
 
 /**
- * 检测文件编码，解决中文 CSV 乱码问题。
+ * 检测文件编码，解决中文 CSV/文本乱码问题。
  *
  * 背景：Windows 下 Excel 导出的 CSV 默认是 GBK 编码，但 [FileReadTool] 和
  * [com.zaijian.zhoumuyun.data.agent.TableExportTool] 原来硬编码用 UTF-8 读取，
  * 导致中文内容变成乱码（AI 看到"鏉傞繝鍧?”之类的 GBK 字节被 UTF-8 误解码的产物）。
  *
+ * v148 修复（4096 字节采样截断误判 bug）：旧实现"读前 4096 字节按 UTF-8 解码，
+ * 出现 U+FFFD 替换字符就判定 GBK"。问题在于 4096 是硬截断点——如果正好切在一个
+ * 多字节 UTF-8 字符（中文字符是 3 字节）中间，被切断的那个字符解码时必然出现
+ * U+FFFD，但这不代表文件真的不是 UTF-8，只是采样点切得不巧。只要 md/txt/csv 等
+ * 文本文件超过 4KB 且中文内容较多，大概率（约 2/3 概率）会被误判成 GBK，导致
+ * 全篇乱码。[FilePreviewParser]（预览）和本文件的 [FileReadTool]（agent 读取）
+ * 共用这个函数，一旦误判两边同时乱码。
+ *
+ * 修复方法：改用真正的流式 [java.nio.charset.CharsetDecoder]，并把 endOfInput
+ * 设为 false——这样解码器会把"样本末尾看起来不完整的多字节序列"当成正常的
+ * "数据还没读完"（underflow），而不是"编码错误"，就不会再被采样边界坑。
+ *
  * 检测策略（按优先级）：
- * 1. **BOM 检测**：前 3 字节 `EF BB BF` → UTF-8 BOM；前 2 字节 `FF FE` → UTF-16 LE
- * 2. **UTF-8 验证**：无 BOM 时，读前 4KB 尝试 UTF-8 解码，如果出现替换字符
- *    （U+FFFD）说明不是合法 UTF-8 → 判定为 GBK
- * 3. **回退 UTF-8**：UTF-8 解码无替换字符 → 判定为 UTF-8
+ * 1. **BOM 检测**：前 3 字节 `EF BB BF` → UTF-8 BOM；前 2 字节 `FF FE`/`FE FF` → UTF-16
+ * 2. **流式 UTF-8 校验**：无 BOM 时，用 CharsetDecoder（非 endOfInput）校验样本
+ * 3. **回退 UTF-8**：校验通过 → 判定为 UTF-8；否则判定为 GBK
  *
  * @return 检测到的 [Charset]（UTF-8 / GBK / UTF-16）
  */
@@ -1068,44 +1093,67 @@ fun detectFileCharset(file: java.io.File): Charset {
 
     return try {
         file.inputStream().use { fis ->
-            val bom = ByteArray(3)
-            val read = fis.read(bom)
-
-            // 1. BOM 检测
-            if (read >= 3 && bom[0] == 0xEF.toByte() && bom[1] == 0xBB.toByte() && bom[2] == 0xBF.toByte()) {
-                return Charsets.UTF_8  // UTF-8 BOM
-            }
-            if (read >= 2 && bom[0] == 0xFF.toByte() && bom[1] == 0xFE.toByte()) {
-                return Charset.forName("UTF-16LE")  // UTF-16 LE BOM
-            }
-            if (read >= 2 && bom[0] == 0xFE.toByte() && bom[1] == 0xFF.toByte()) {
-                return Charset.forName("UTF-16BE")  // UTF-16 BE BOM
-            }
-
-            // 2. UTF-8 验证：读前 4KB 尝试 UTF-8 解码
-            // 重新从头读（BOM 那 3 字节也包含进来，UTF-8 无 BOM 时不影响解码）
-            fis.channel.position(0)
             val sample = ByteArray(4096)
             val sampleLen = fis.read(sample)
-            if (sampleLen <= 0) return Charsets.UTF_8
-
-            val sampleStr = String(sample, 0, sampleLen, Charsets.UTF_8)
-            // U+FFFD 是 UTF-8 解码失败时的替换字符，出现说明不是合法 UTF-8
-            if (sampleStr.contains('\uFFFD')) {
-                // 不是 UTF-8 → 大概率是 GBK（中文 Windows 默认编码）
-                return try {
-                    Charset.forName("GBK")
-                } catch (_: Exception) {
-                    Charsets.UTF_8  // GBK 不可用时回退
-                }
-            }
-
-            // 3. 合法 UTF-8
-            Charsets.UTF_8
+            detectCharsetFromBytes(sample, sampleLen.coerceAtLeast(0))
         }
     } catch (_: Exception) {
         Charsets.UTF_8  // 检测失败时安全回退
     }
+}
+
+/**
+ * 从内存中的字节内容检测编码，逻辑与 [detectFileCharset] 完全一致，供只有
+ * `InputStream`/`ByteArray`（没有 [java.io.File] 对象）的场景复用——例如
+ * [com.zaijian.zhoumuyun.data.repository.ProjectRepository.importFile] 从
+ * `ContentResolver` 拿到的文件选择器 `InputStream`，无法像 [detectFileCharset]
+ * 那样直接 seek 文件。避免出现"同一个乱码 bug 只在部分入口修了一半"的情况。
+ *
+ * @param bytes 文件的原始字节内容（或至少包含开头一段的字节数组）
+ * @param len 实际有效字节数（默认整个数组）；只会取其中前 4096 字节做采样
+ */
+fun detectCharsetFromBytes(bytes: ByteArray, len: Int = bytes.size): Charset {
+    if (len <= 0) return Charsets.UTF_8
+
+    // 1. BOM 检测
+    if (len >= 3 && bytes[0] == 0xEF.toByte() && bytes[1] == 0xBB.toByte() && bytes[2] == 0xBF.toByte()) {
+        return Charsets.UTF_8  // UTF-8 BOM
+    }
+    if (len >= 2 && bytes[0] == 0xFF.toByte() && bytes[1] == 0xFE.toByte()) {
+        return Charset.forName("UTF-16LE")  // UTF-16 LE BOM
+    }
+    if (len >= 2 && bytes[0] == 0xFE.toByte() && bytes[1] == 0xFF.toByte()) {
+        return Charset.forName("UTF-16BE")  // UTF-16 BE BOM
+    }
+
+    // 2. 流式 UTF-8 校验（采样最多前 4096 字节，与旧逻辑采样量保持一致）
+    val sampleLen = minOf(len, 4096)
+    return if (isValidUtf8Sample(bytes, sampleLen)) {
+        Charsets.UTF_8
+    } else {
+        // 不是合法 UTF-8 → 大概率是 GBK（中文 Windows 默认编码）
+        try {
+            Charset.forName("GBK")
+        } catch (_: Exception) {
+            Charsets.UTF_8  // GBK 不可用时回退
+        }
+    }
+}
+
+/**
+ * 用真正的流式 CharsetDecoder 校验样本是否合法 UTF-8。
+ * 关键：endOfInput = false —— 把样本末尾"看似不完整"的多字节序列当作
+ * underflow（数据不够，不是错误），避免采样截断点切在字符中间导致的误判。
+ */
+private fun isValidUtf8Sample(bytes: ByteArray, len: Int): Boolean {
+    val decoder = Charsets.UTF_8.newDecoder().apply {
+        onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+        onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+    }
+    val input = java.nio.ByteBuffer.wrap(bytes, 0, len)
+    val output = java.nio.CharBuffer.allocate(len)
+    val result = decoder.decode(input, output, false)
+    return !result.isError
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1364,10 +1412,17 @@ class DiagLogExportTool(private val context: Context) : AgentTool {
         try {
             val logFile = com.zaijian.zhoumuyun.util.AgentLog.exportLog(context)
             if (logFile == null || !logFile.exists() || logFile.length() == 0L) {
+                // 修复（diag_export_log 说发了但没落盘）：
+                // 此前 success=true 让 LLM 误以为"导出成功"，回复用户"已发送"，
+                // 但 content 里没有 metaJson，extractExportedFileJson 返回 null，
+                // 文件卡片不显示——用户看到"说了发了但没文件"。
+                // 改为 success=false，让 LLM 明确知道没有导出成功，不会误导用户。
                 return@withContext ToolResult(
                     toolName = name,
-                    success  = true,
-                    content  = "诊断日志为空（没有记录到任何工具调用或异常）。如果用户反馈了问题但日志为空，说明问题发生在 AgentLog 覆盖范围之外（如 UI 层或数据库层）。",
+                    success  = false,
+                    content  = "[诊断日志为空，无法导出。可能原因：应用刚启动日志尚未生成，" +
+                               "或问题发生在 AgentLog 覆盖范围之外（如 UI 层或数据库层）。]",
+                    error    = "诊断日志为空",
                 )
             }
 

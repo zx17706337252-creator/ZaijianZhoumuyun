@@ -105,6 +105,24 @@ sealed class StreamEvent {
 
     /** 一轮工具执行结束，第二次 LLM 调用即将开始 */
     object RoundDone : StreamEvent()
+
+    /**
+     * v1.49 修复（file_read 锁死机制复发性触发）：pendingFilePaths 的"已读"凭证
+     * 此前只存在于本次 streamWithTools() 调用的局部变量里，函数返回后即丢失——
+     * ChatMessageOrchestrator 只把最终 assistant 回复落库，中间的工具调用/工具
+     * 结果消息从未写回数据库。导致下一条新消息重新组装 messages 时，alreadyRead
+     * 检测永远找不到"已读过"的证据，每条新消息都会把两轮强制重试 + 兜底自动读取
+     * 整套流程重新跑一遍——这正是"系统反复强制要求读取文件"这个复发bug的根因。
+     *
+     * 拦截器本身不持有 messageRepo（保持与具体持久化方式解耦，圆桌等场景复用同一
+     * 拦截器），改为发出这个事件，由调用方（ChatMessageOrchestrator 等）决定
+     * 如何把"文件已读取"这件事持久化，从而让下一轮 alreadyRead 检测能查到证据。
+     *
+     * 无论是 AI 主动调用 file_read，还是重试耗尽后程序兜底自动读取，都会发出这个
+     * 事件——只要这个文件路径被处理过一次（不管成功与否），就不该无限期反复强制，
+     * 与原有 pendingFilePaths.remove()/clear() 的"处理过一次就不再追"语义保持一致。
+     */
+    data class FileReadConfirmed(val filePath: String, val fileName: String) : StreamEvent()
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -220,14 +238,26 @@ object ToolCallInterceptor {
             val pendingCalls = mutableListOf<ToolCall>()
             val roundText = StringBuilder()
 
+            // v1.49 修复（出戏念旁白）：round<2 且还有未读文件时，本轮属于"文件强制
+            // 锁死"的重试阶段——下面会给模型注入"不要回复任何其他内容，直接调用
+            // file_read"的强制指令。但模型不一定听话，如果它没有老实吐工具标签、
+            // 而是用大段文字复述/解释这条强制指令（如角色第一人称念出"系统要求我…"），
+            // 这段文字此前会被 Phase 1 实时流式送到 UI、还会拼进最终存库的回复里，
+            // 让用户看到的是"内部调度文字"而不是角色台词。这里在本轮开始前，按
+            // pendingFilePaths 在本轮开始时的状态（还未被本轮结果修改）先判断是否
+            // 处于锁死阶段，是的话本轮文字只内部保留（供下面拼 currentMessages 用），
+            // 不再实时推给用户、也不拼进最终回复——真正的回复要等文件问题解决后
+            // 的下一轮才展示。
+            val isForcedLockRound = pendingFilePaths.isNotEmpty() && round < 2
+
             // ── Phase 1：流式接收 LLM 输出 ─────────────────────
             try {
                 provider.chat(currentMessages, systemPrompt, config).collect { delta ->
                     val result = parser.feed(delta)
 
-                    // 立即输出纯文本（打字机效果）
+                    // 立即输出纯文本（打字机效果）——锁死阶段不展示给用户
                     if (result.cleanText.isNotEmpty()) {
-                        send(StreamEvent.TextDelta(result.cleanText))
+                        if (!isForcedLockRound) send(StreamEvent.TextDelta(result.cleanText))
                         roundText.append(result.cleanText)
                     }
 
@@ -249,14 +279,14 @@ object ToolCallInterceptor {
             // 改为先再 feed 一次空串让 processBuf 扫尽 buffer，再 flush 截断尾部碎片。
             val preFeedResult = parser.feed("")
             if (preFeedResult.cleanText.isNotEmpty()) {
-                send(StreamEvent.TextDelta(preFeedResult.cleanText))
+                if (!isForcedLockRound) send(StreamEvent.TextDelta(preFeedResult.cleanText))
                 roundText.append(preFeedResult.cleanText)
             }
             pendingCalls.addAll(preFeedResult.detectedCalls)
 
             val flushResult = parser.flush()
             if (flushResult.cleanText.isNotEmpty()) {
-                send(StreamEvent.TextDelta(flushResult.cleanText))
+                if (!isForcedLockRound) send(StreamEvent.TextDelta(flushResult.cleanText))
                 roundText.append(flushResult.cleanText)
             }
 
@@ -391,6 +421,17 @@ object ToolCallInterceptor {
                     // 追加兜底工具结果消息
                     currentMessages.add(LLMMessage("user", fallbackContent))
 
+                    // v1.49 修复：兜底读取（不管每个文件成功与否）也要通知调用方持久化
+                    // "已处理过"的凭证——原先只在本次调用的 pendingFilePaths.clear() 里
+                    // "记住"了，函数一返回就丢失，下条新消息又会从零重新判定"还没读"，
+                    // 是"系统反复强制要求读取文件"这个复发bug的根因之一。
+                    for (filePath in pendingFilePaths) {
+                        send(StreamEvent.FileReadConfirmed(
+                            filePath = filePath,
+                            fileName = filePath.substringAfterLast('/').substringAfterLast('\\'),
+                        ))
+                    }
+
                     // 清空 pendingFilePaths，避免兜底重复触发
                     pendingFilePaths.clear()
 
@@ -407,11 +448,16 @@ object ToolCallInterceptor {
             for (call in pendingCalls) {
                 if (call.toolName == "file_read") {
                     val readPath = call.params["path"]
-                    if (readPath != null) {
-                        pendingFilePaths.remove(readPath)
+                    if (readPath != null && pendingFilePaths.remove(readPath)) {
                         com.zaijian.zhoumuyun.util.AgentLog.info(
                             "FileReadLock", "✅ AI 主动调用了 file_read 读取：$readPath",
                         )
+                        // v1.49 修复：通知调用方持久化"已读"凭证，避免下条新消息
+                        // 重新判定这个文件"还没读"、重新触发强制锁死流程。
+                        send(StreamEvent.FileReadConfirmed(
+                            filePath = readPath,
+                            fileName = readPath.substringAfterLast('/').substringAfterLast('\\'),
+                        ))
                     }
                 }
             }
@@ -922,6 +968,7 @@ fun Flow<StreamEvent>.asTextFlow(showHints: Boolean = false): Flow<String> =
                 if (showHints && event.hint != null) "\n[⚙ ${event.hint}]\n" else ""
             is StreamEvent.ToolDone   -> ""
             is StreamEvent.RoundDone  -> ""
+            is StreamEvent.FileReadConfirmed -> ""
         }
     }.let { mappedFlow ->
         flow {

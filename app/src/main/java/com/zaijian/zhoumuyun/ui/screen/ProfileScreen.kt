@@ -173,11 +173,21 @@ fun ProfileScreen(
                     onClick = { showChangelogDialog = true }),
                 SettingItem("隐私政策",
                     onClick = {
-                        val intent = android.content.Intent(
-                            android.content.Intent.ACTION_VIEW,
-                            android.net.Uri.parse("https://zaijian.app/privacy")
-                        )
-                        context.startActivity(intent)
+                        // 非文字内容点击闪退排查：startActivity 此前完全没有保护——
+                        // 设备上没有能处理 ACTION_VIEW + http(s) 的应用时（极少见但
+                        // 并非不可能，如精简定制系统）会抛 ActivityNotFoundException
+                        // 直接崩溃。补 try-catch + Toast，与项目内其余外部跳转
+                        // （FileVaultScreen.shareFile / ChatScreen.openFile 等）统一风格。
+                        try {
+                            val intent = android.content.Intent(
+                                android.content.Intent.ACTION_VIEW,
+                                android.net.Uri.parse("https://zaijian.app/privacy")
+                            )
+                            context.startActivity(intent)
+                        } catch (e: Exception) {
+                            com.zaijian.zhoumuyun.util.ZLog.e("ProfileScreen", "打开隐私政策链接失败", e)
+                            android.widget.Toast.makeText(context, "无法打开链接，请检查是否安装浏览器", android.widget.Toast.LENGTH_LONG).show()
+                        }
                     }),
             ),
         )

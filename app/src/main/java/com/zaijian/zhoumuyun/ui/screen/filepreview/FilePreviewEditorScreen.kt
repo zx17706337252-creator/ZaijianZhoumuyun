@@ -191,6 +191,9 @@ fun FilePreviewEditorScreen(
                                 columns = content.columns,
                                 rows = content.rows,
                                 editable = content.editable,
+                                // Excel 闪退修复：把解析层的截断标记透传给渲染层，
+                                // 让用户知道"看到的不是全部数据"而不是以为文件本身只有这么点内容。
+                                isTruncated = content.isTruncated,
                                 onSave = { cols, rows -> viewModel.saveTable(cols, rows) },
                             )
                         }
@@ -206,6 +209,7 @@ fun FilePreviewEditorScreen(
                         is PreviewContent.Unsupported -> {
                             UnsupportedView(
                                 fileName = content.fileName,
+                                reason = content.reason,
                                 onExport = {
                                     viewModel.exportToDownloads(content.filePath, content.fileName)
                                 },
@@ -263,6 +267,10 @@ fun FilePreviewEditorScreen(
 @Composable
 private fun UnsupportedView(
     fileName: String,
+    // Excel 闪退修复：大文件场景（超过 FilePreviewParser.MAX_PARSE_FILE_BYTES）
+    // 现在会带上具体原因（如"文件过大（20MB）"），reason 为 null 时才回退到
+    // 笼统的"该文件类型暂不支持应用内预览"文案。
+    reason: String? = null,
     onExport: () -> Unit,
     onOpenExternal: () -> Unit,
 ) {
@@ -277,7 +285,7 @@ private fun UnsupportedView(
         verticalArrangement = Arrangement.Center,
     ) {
         Text(
-            text = "该文件类型暂不支持应用内预览",
+            text = reason ?: "该文件类型暂不支持应用内预览",
             style = type.body,
             color = colors.textSecondary,
         )

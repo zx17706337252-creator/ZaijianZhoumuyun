@@ -1,6 +1,7 @@
 package com.zaijian.zhoumuyun.ui.screen
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -11,6 +12,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -100,6 +102,10 @@ fun ProjectDetailScreen(
 
     var showAddMilestoneDialog by remember { mutableStateOf(false) }
     var showAddKnowledgeDialog by remember { mutableStateOf(false) }
+    // 知识条目预览/编辑弹窗：持有当前点开的条目，null = 不展示。
+    // 复用同一个弹窗承担"预览"和"编辑"——点开就能看到未截断的完整内容，
+    // 顺手改完直接保存，不单独做一个只读预览态。
+    var editingKnowledgeEntry  by remember { mutableStateOf<ProjectKnowledgeEntity?>(null) }
     var showAddMemberPicker    by remember { mutableStateOf(false) }
     // Audit-v1.33 P1-3 修复：项目标题/描述编辑对话框显示状态
     var showEditProjectDialog  by remember { mutableStateOf(false) }
@@ -436,6 +442,7 @@ fun ProjectDetailScreen(
             items(displayedKnowledge, key = { "k_${it.id}" }) { entry ->
                 KnowledgeRow(
                     entry = entry,
+                    onClick = { editingKnowledgeEntry = entry },
                     onDelete = { viewModel.deleteKnowledge(entry.id) },
                 )
             }
@@ -542,6 +549,17 @@ fun ProjectDetailScreen(
                 showAddKnowledgeDialog = false
             },
             onDismiss = { showAddKnowledgeDialog = false },
+        )
+    }
+    // 知识条目预览/编辑：点击 KnowledgeRow 打开，entry 非空即展示。
+    editingKnowledgeEntry?.let { entry ->
+        KnowledgeEditDialog(
+            entry = entry,
+            onConfirm = { title, content, importance ->
+                viewModel.updateKnowledge(entry.id, title, content, importance)
+                editingKnowledgeEntry = null
+            },
+            onDismiss = { editingKnowledgeEntry = null },
         )
     }
 
@@ -935,9 +953,132 @@ private fun KnowledgeSearchField(
     )
 }
 
+// ─────────────────────────────────────────────────────────────
+//  KnowledgeEditDialog — 知识条目预览/编辑
+//
+//  点击 KnowledgeRow 打开。之前知识条目导入/添加后只有删除入口，
+//  KnowledgeRow 里 content 又 maxLines=4 截断，长文本既看不全也改不了——
+//  这里复用同一个弹窗承担"预览"和"编辑"：打开就是未截断的完整内容，
+//  顺手改完直接保存，不单独做一个只读预览态。
+//  content 输入框不设 maxLength：文件导入的条目可能有几千字，
+//  与 ProjectRepository.updateKnowledge()"content 不截断"的约定一致，
+//  截断等于丢数据。改用 heightIn 限制可视高度，超出部分交给
+//  OutlinedTextField 自带的内部滚动。
+// ─────────────────────────────────────────────────────────────
+@Composable
+private fun KnowledgeEditDialog(
+    entry: ProjectKnowledgeEntity,
+    onConfirm: (title: String, content: String, importance: Int) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val colors = ZaijianTheme.colors
+    val type   = ZaijianTheme.typography
+
+    // remember(entry.id)：弹窗是同一个 Composable 实例在不同 entry 间复用
+    // （editingKnowledgeEntry 状态切换时不会重新创建这个函数调用），必须按
+    // entry.id 重新初始化，否则切换到另一条目时会残留上一条的编辑内容。
+    var title      by remember(entry.id) { mutableStateOf(entry.title) }
+    var content    by remember(entry.id) { mutableStateOf(entry.content) }
+    var importance by remember(entry.id) { mutableStateOf(entry.importance) }
+    var isConfirming by remember(entry.id) { mutableStateOf(false) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("知识条目", color = colors.onBackground) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
+                OutlinedTextField(
+                    value = title,
+                    onValueChange = { title = it },
+                    label = { Text("标题（可选）") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = colors.onBackground,
+                        unfocusedTextColor = colors.onBackground,
+                    ),
+                )
+                OutlinedTextField(
+                    value = content,
+                    onValueChange = { content = it },
+                    label = { Text("知识内容（将注入 AI 上下文）") },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 160.dp, max = 280.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = colors.onBackground,
+                        unfocusedTextColor = colors.onBackground,
+                    ),
+                    supportingText = {
+                        Text(
+                            text = "${content.length} 字",
+                            modifier = Modifier.fillMaxWidth(),
+                            textAlign = androidx.compose.ui.text.style.TextAlign.End,
+                        )
+                    },
+                )
+                Column {
+                    Text(
+                        text  = "重要度",
+                        color = colors.onBackground.copy(alpha = 0.45f),
+                        style = type.caption,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(Spacing.xs)) {
+                        for (level in 1..5) {
+                            val selected = level == importance
+                            // 与 KnowledgeRow 重要度圆点同一套配色（5红橙/4橙/3蓝/其余灰），
+                            // 保持列表和编辑弹窗里"重要度"的视觉语言一致。
+                            val levelColor = when (level) {
+                                5    -> Palette.SemanticDanger
+                                4    -> Palette.SemanticWarning
+                                3    -> Palette.SemanticInfo
+                                else -> colors.onBackground.copy(alpha = 0.4f)
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .size(28.dp)
+                                    .clip(CircleShape)
+                                    .background(if (selected) levelColor.copy(alpha = 0.18f) else Color.Transparent)
+                                    .border(
+                                        width = if (selected) 1.5.dp else 1.dp,
+                                        color = if (selected) levelColor else colors.onBackground.copy(alpha = 0.15f),
+                                        shape = CircleShape,
+                                    )
+                                    .clickable { importance = level },
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Text(
+                                    text  = level.toString(),
+                                    color = if (selected) levelColor else colors.onBackground.copy(alpha = 0.5f),
+                                    style = type.label,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    if (isConfirming || content.isBlank()) return@TextButton
+                    isConfirming = true
+                    onConfirm(title.trim(), content.trim(), importance)
+                },
+            ) { Text("保存", color = colors.primary) }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("取消", color = colors.onBackground.copy(alpha = 0.5f)) }
+        },
+        containerColor = colors.bgCard,
+    )
+}
+
 @Composable
 private fun KnowledgeRow(
     entry: ProjectKnowledgeEntity,
+    onClick: () -> Unit,
     onDelete: () -> Unit,
 ) {
     val colors = ZaijianTheme.colors
@@ -949,6 +1090,10 @@ private fun KnowledgeRow(
             .padding(horizontal = Spacing.screenHorizontal, vertical = Spacing.xs)
             .clip(RoundedCornerShape(8.dp))
             .background(colors.bgCard.copy(alpha = GlassOpacity.low)) // P3-17 修复：统一使用 bgCard 替代 surface
+            // 整行可点开预览/编辑（原来只有删除入口，内容截断成4行后既看不全
+            // 也改不了）。删除按钮自己也是可点击区域，Compose 里子元素的
+            // clickable 会拦截住点击、不会被这里的行级 clickable 抢先消费。
+            .clickable { onClick() }
             .padding(Spacing.sm),
         verticalAlignment = Alignment.Top,
     ) {

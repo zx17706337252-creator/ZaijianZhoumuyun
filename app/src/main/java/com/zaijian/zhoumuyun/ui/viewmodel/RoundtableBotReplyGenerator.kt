@@ -442,6 +442,12 @@ class RoundtableBotReplyGenerator(
                             event.result.tablePayloadJson?.let { pendingTablePayloadJson = it }
                         }
                         is StreamEvent.RoundDone -> Unit
+                        // v1.49 新增：file_read 锁死凭证持久化事件。圆桌场景的消息落库
+                        // 路径与私聊（ChatMessageOrchestrator）不同，这里暂不处理——
+                        // 如果圆桌场景也出现"反复强制要求读取文件"的同类问题，需要
+                        // 参照 ChatMessageOrchestrator 里 FileReadConfirmed 分支的做法
+                        // 在这里补一条同样的落库逻辑。
+                        is StreamEvent.FileReadConfirmed -> Unit
                     }
                 }
                 } // withVaultContext

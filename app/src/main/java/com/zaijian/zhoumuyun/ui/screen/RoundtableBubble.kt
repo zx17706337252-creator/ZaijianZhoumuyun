@@ -73,8 +73,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -100,7 +98,10 @@ import coil.request.CachePolicy
 import coil.request.ImageRequest
 import com.zaijian.zhoumuyun.data.model.CharacterConfig
 import com.zaijian.zhoumuyun.data.model.DefaultCharacters
+import com.zaijian.zhoumuyun.domain.ContentBlockParser
+import com.zaijian.zhoumuyun.ui.component.ContentBlockRenderer
 import com.zaijian.zhoumuyun.ui.design.WorldBubble
+import com.zaijian.zhoumuyun.ui.design.contentOnFill
 import com.zaijian.zhoumuyun.ui.screen.chat.PsychCard
 import com.zaijian.zhoumuyun.ui.screen.chat.ThoughtCard
 import com.zaijian.zhoumuyun.ui.theme.AnimDuration
@@ -200,6 +201,9 @@ internal fun BotBubble(
     // v1.39 圆桌工具调用接入：文件卡片"打开"回调，默认空实现——
     // 未传参的既有调用点行为不变（文件卡片仍会渲染，只是点击不响应）。
     onOpenFile: (com.zaijian.zhoumuyun.ui.viewmodel.ExportedFile) -> Unit = {},
+    // v1.48 圆桌 openFile 缺应用内预览分支修复配套：表格卡片"查看完整表格"
+    // 回调（与私聊 ChatMessageBubble 的 onOpenTable 同构），默认空实现。
+    onOpenTable: (List<String>, List<List<String>>) -> Unit = { _, _ -> },
     // 2.1 补齐：与私聊 MessageBubble 同一套长按复制交互。
     onCopyMessage: (String) -> Unit = {},
 ) {
@@ -294,12 +298,14 @@ internal fun BotBubble(
                 )
             }
 
-            // 气泡（W12问题1修复：容器改用 WorldOSComponents.kt 的 WorldBubble，
-            // 接入 L0 纸面底 + L1 光斑 + L2 黄铜描边三层视觉规则，取代此前手写的
-            // clip+background+border 组合。四角圆角、描边色沿用原值不变（borderColor
-            // 显式传入 Gold 系而非 WorldBubble 默认的 accent，保持与此前视觉一致）。
-            // 左侧 4dp 主题色条不是 WorldBubble 的能力，在 content 内部用内层 Box
-            // 的 drawBehind 补回。）
+            // 气泡改版：纯专属色填充，同步私聊 ChatMessageBubble 的两处变化——
+            // ① 容器不再是"accentColor/Gold 描边 + WorldBubble 纸面底"，改传
+            //   fillColor = accentColor，气泡本身就是该角色的颜色；
+            // ② 正文改用 ContentBlockRenderer（此前圆桌一直是裸 Text，从未解析
+            //   过 Markdown/块级结构，和私聊气泡的富文本渲染不是同一套管线——
+            //   现在补齐，接同一份 ContentBlockParser → ContentBlockRenderer）。
+            // 左侧 4dp 主题色条随之移除：气泡纯色填充后，同色的条在同色的底上
+            // 已经不可见，留着没有意义。
             // 2.1 补齐：长按复制。流式打字中（isStreaming）内容会持续变化，
             // 此时长按拿到的是当次重组时的 msg.content 快照，不去特殊拦截——
             // 用户此刻长按大概率也不是为了复制半截还没说完的话，交给
@@ -330,24 +336,14 @@ internal fun BotBubble(
                 topEnd      = Radius.md,
                 bottomStart = Radius.md,
                 bottomEnd   = Radius.md,
-                borderColor = if (colors.isDark) Palette.Gold.copy(alpha = 0.18f) else Palette.Gold.copy(alpha = 0.28f),
-                borderWidth = 0.5.dp,
+                fillColor   = accentColor,
             ) {
                 Box(
                     modifier = Modifier
-                        // 左侧 4dp Bot 主题色条
-                        .drawBehind {
-                            drawLine(
-                                color       = accentColor,
-                                start       = Offset(0f, 0f),
-                                end         = Offset(0f, size.height),
-                                strokeWidth = 4.dp.toPx(),
-                            )
-                        }
-                        .padding(start = 12.dp, end = Spacing.md, top = Spacing.sm, bottom = Spacing.sm),
+                        .padding(start = Spacing.md, end = Spacing.md, top = Spacing.sm, bottom = Spacing.sm),
                 ) {
                     Column(verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
-                        // 引用气泡（↩ 回应另一个 Bot）
+                        // 引用气泡（↩ 回应另一个 Bot）——自带纸面底色块，独立于气泡填色，不受影响
                         if (msg.replyTargetName != null) {
                             ReplyQuoteBlock(
                                 targetName  = msg.replyTargetName,
@@ -355,16 +351,20 @@ internal fun BotBubble(
                             )
                         }
 
-                        // 正文 + 流式光标
+                        // 正文 + 流式光标：与私聊角色气泡同一套 ContentBlockParser
+                        // → ContentBlockRenderer 管线，取代此前的裸 Text。
                         val displayContent = when {
                             msg.isStreaming && msg.content.isEmpty() -> "…"
                             msg.isStreaming -> msg.content + "▌"
                             else            -> msg.content
                         }
-                        Text(
-                            text  = displayContent,
-                            style = type.body,
-                            color = colors.textPrimary,
+                        val contentBlocks = remember(displayContent) {
+                            ContentBlockParser.parse(displayContent)
+                        }
+                        ContentBlockRenderer(
+                            blocks    = contentBlocks,
+                            textColor = accentColor.contentOnFill(),
+                            style     = type.body,
                         )
                     }
                 }
@@ -395,6 +395,13 @@ internal fun BotBubble(
                     accentColor = accentColor,
                     maxWidth    = maxW,
                     onOpenExcel = excelFile?.let { ef -> { onOpenFile(ef) } },
+                    // v1.48 圆桌 openFile 缺应用内预览分支修复配套：此前圆桌的
+                    // TableCard 没有接 onOpenFullTable，表格气泡点了没反应
+                    // （私聊 ChatMessageBubble 早就有这个能力）。现在补齐，
+                    // ≤500 行场景（没有 xlsx 附件）也能点开全屏查看完整表格。
+                    onOpenFullTable = {
+                        onOpenTable(payload.columns, payload.rows)
+                    },
                 )
             }
         }

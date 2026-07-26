@@ -41,6 +41,16 @@ object Palette {
     val Gold     = Color(0xFFC4A46A)
     val GoldSoft = Color(0xFFF0E8D0)
 
+    // 文件类型图标重设计（icon_redesign_renders 新配色方案）：此前 PDF/文档/
+    // 压缩包全部落在 Ink600 同一色上，观感单一。现按类型分派独立暖色系色相，
+    // 降过饱和度，彼此有区分度又不出戏（非 Material 默认红蓝绿黄撞色）。
+    // 链接类型沿用既有 Gold，不新增色号。
+    val FileTypePdf   = Color(0xFFB5654A)  // PDF · 赭红
+    val FileTypeDoc   = Color(0xFF6B7A99)  // 文档/MD · 靛蓝灰
+    val FileTypeTable = Color(0xFF5C8A82)  // 表格 · 青竹
+    val FileTypeZip   = Color(0xFF8C7A5C)  // 压缩包 · 橄榄棕
+    val FileTypeImage = Color(0xFFC98B4A)  // 图片 · 琥珀
+
     val Online  = Color(0xFF6BCB8B)
     val Idle    = Color(0xFFF6C858)
     val Focused = Color(0xFF8FA8C9)

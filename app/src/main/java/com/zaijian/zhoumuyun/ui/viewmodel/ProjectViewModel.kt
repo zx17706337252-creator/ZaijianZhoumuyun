@@ -553,6 +553,24 @@ class ProjectViewModel(application: Application) : AndroidViewModel(application)
         return uri.lastPathSegment ?: "imported_file"
     }
 
+    /**
+     * 编辑知识条目（标题/内容/重要度）。
+     * UI 侧知识库条目原来只有删除入口，点开看不到完整内容也改不了——
+     * 这个方法配合 KnowledgeRow 点击进详情弹窗，一并解决"无法预览"和
+     * "无法编辑"两个问题（预览就是把未截断的 content 显示在弹窗里）。
+     */
+    fun updateKnowledge(id: String, title: String, content: String, importance: Int) {
+        viewModelScope.launch {
+            runCatching {
+                repo.updateKnowledge(id, title, content, importance)
+            }
+                .onFailure { e ->
+                    ZLog.e("ProjectViewModel", "知识库条目更新失败（id=$id）", e)
+                    _detailState.update { it.copy(error = e.message ?: "更新失败") }
+                }
+        }
+    }
+
     fun deleteKnowledge(id: String) {
         viewModelScope.launch {
             // 第8窗口问题8修复：原先无异常处理。

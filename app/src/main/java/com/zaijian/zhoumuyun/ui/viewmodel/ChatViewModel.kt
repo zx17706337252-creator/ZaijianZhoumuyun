@@ -7,6 +7,7 @@ import com.zaijian.zhoumuyun.data.AppContainer
 import com.zaijian.zhoumuyun.data.agent.CalendarSyncHelper
 import com.zaijian.zhoumuyun.data.datastore.ChatBackgroundDataStore
 import com.zaijian.zhoumuyun.data.datastore.D3AskAttemptDataStore
+import com.zaijian.zhoumuyun.data.datastore.FileDeliveryDataStore
 import com.zaijian.zhoumuyun.data.datastore.GithubConfigDataStore
 import com.zaijian.zhoumuyun.data.db.AppDatabase
 import com.zaijian.zhoumuyun.data.db.entity.RelationshipEntity
@@ -21,6 +22,7 @@ import com.zaijian.zhoumuyun.domain.pregnancy.PregnancyAnswerConsistencyChecker
 import com.zaijian.zhoumuyun.domain.pregnancy.PregnancyAnswerIntentDetector
 import com.zaijian.zhoumuyun.util.ZLog
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -147,10 +149,21 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         evaluationDelegate.rebuildEngines()
         ProviderManager.instance.addOnProviderConfigChangedListener(evaluationDelegate.providerConfigListener)
         toolRegistrar.registerStaticTools()
+        // 文档发送方式：启动时订阅持久化值，覆盖 ChatUiState 默认值（true=合并）。
+        viewModelScope.launch {
+            fileDeliveryStore.attachTogetherFlow.collect { together ->
+                _uiState.update { it.copy(attachFilesTogether = together) }
+            }
+        }
     }
 
     // ── 孕期 + 背景图 + 女儿注册 ────────────────────────────────
     private val chatBgStore = ChatBackgroundDataStore(getApplication())
+
+    // 文档发送方式（默认文字+文件合并进同一气泡）：全局开关，跟随 App 生命周期
+    // 持久化，不随角色切换或 ViewModel 重建丢失——ChatViewModel 本身是 App 内
+    // 单例（见类头注释），init 里订阅一次即可覆盖整个 App 生命周期。
+    private val fileDeliveryStore = FileDeliveryDataStore(getApplication())
 
     // [AUDIT-RETAIN S8-窗口01] 以下 4 项为 ChatViewModel 专用、构造参数有功能性
     // 依赖链，不适合收敛到容器。
@@ -337,6 +350,16 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     fun clearApiKeyMissingFlag() { _uiState.update { it.copy(isApiKeyMissing = false) } }
     fun setKnowledgeInjectMode(mode: KnowledgeInjectMode) { _uiState.update { it.copy(knowledgeInjectMode = mode) } }
     fun triggerManualKnowledgeInject() { _uiState.update { it.copy(manualKnowledgeTriggerPending = true) } }
+
+    /**
+     * 文档发送方式切换（ChatSettingsSheet 入口）。
+     * 先乐观更新 UI（切换即生效，不用等磁盘写完），持久化写入放后台协程——
+     * 与本文件其余 DataStore 写入点（如 confirmChatBackgroundCrop）同一模式。
+     */
+    fun setAttachFilesTogether(together: Boolean) {
+        _uiState.update { it.copy(attachFilesTogether = together) }
+        viewModelScope.launch { fileDeliveryStore.setAttachTogether(together) }
+    }
 
     companion object {
         /** 单次请求按字符预算保留的历史消息（DeepSeek V4 Flash 1M 上下文约 28.6%）。 */

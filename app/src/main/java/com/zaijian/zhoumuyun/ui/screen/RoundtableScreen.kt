@@ -152,6 +152,11 @@ import com.zaijian.zhoumuyun.ui.design.AppIcons
 fun RoundtableScreen(
     characterIds: List<Int> = DefaultCharacters.take(9).map { it.id },
     onBack: () -> Unit = {},
+    // v1.48 应用内预览编辑接入圆桌（与 ChatScreen 同构）：
+    // - onNavigateToFilePreview：文件卡片点开支持类型（xlsx/docx/csv/...）时走应用内预览
+    // - onNavigateToFilePreviewMemory：表格气泡（table_export payload，未落盘）点开全屏查看
+    onNavigateToFilePreview: (String) -> Unit = {},
+    onNavigateToFilePreviewMemory: (String) -> Unit = {},
     viewModel: RoundtableViewModel = viewModel(),
 ) {
     val colors   = ZaijianTheme.colors
@@ -286,30 +291,51 @@ fun RoundtableScreen(
     val backgroundImageUri = uiState.backgroundImageUri
     val ctxBg = LocalContext.current
 
-    // v1.39 圆桌工具调用接入：文件卡片"打开"回调，与 ChatScreen.openFile
-    // 完全同构——FileProvider 授权 + ACTION_VIEW 隐式 Intent 唤起系统应用。
+    // v1.39 圆桌工具调用接入：文件卡片"打开"回调。
+    // v1.48 圆桌 openFile 缺应用内预览分支修复（诊断确认属实）：此前这里无条件
+    // FileProvider + ACTION_VIEW 跳外部应用——同一个 xlsx/docx 文件在私聊
+    // （ChatScreen.openFile）点开会走应用内预览，圆桌点开却直接甩给系统选择器，
+    // 行为不一致。现改为与 ChatScreen.openFile 完全同构：先查
+    // FilePreviewParser.isPreviewable，命中则走应用内预览（在 FilePreviewParser
+    // 完成 Excel 闪退修复后，这条路径现在是安全的），不支持的类型才兜底外部打开。
     val openFile: (com.zaijian.zhoumuyun.ui.viewmodel.ExportedFile) -> Unit = { ef ->
-        try {
-            val file = java.io.File(ef.absolutePath)
-            if (file.exists()) {
-                val uri = androidx.core.content.FileProvider.getUriForFile(
-                    ctxBg,
-                    "${ctxBg.packageName}.fileprovider",
-                    file,
-                )
-                val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
-                    setDataAndType(uri, ef.mimeType)
-                    addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        val ext = ef.fileName.substringAfterLast('.', "").lowercase()
+        if (com.zaijian.zhoumuyun.data.agent.FilePreviewParser.isPreviewable(ext)) {
+            onNavigateToFilePreview(ef.absolutePath)
+        } else {
+            try {
+                val file = java.io.File(ef.absolutePath)
+                if (file.exists()) {
+                    val uri = androidx.core.content.FileProvider.getUriForFile(
+                        ctxBg,
+                        "${ctxBg.packageName}.fileprovider",
+                        file,
+                    )
+                    val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
+                        setDataAndType(uri, ef.mimeType)
+                        addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }
+                    ctxBg.startActivity(android.content.Intent.createChooser(intent, "打开 ${ef.fileName}"))
+                } else {
+                    android.widget.Toast.makeText(ctxBg, "文件不存在：${ef.fileName}", android.widget.Toast.LENGTH_SHORT).show()
                 }
-                ctxBg.startActivity(android.content.Intent.createChooser(intent, "打开 ${ef.fileName}"))
-            } else {
-                android.widget.Toast.makeText(ctxBg, "文件不存在：${ef.fileName}", android.widget.Toast.LENGTH_SHORT).show()
+            } catch (e: Exception) {
+                // v147 vault 改造修复：与 ChatScreen.openFile 同步修复（见该文件注释）。
+                com.zaijian.zhoumuyun.util.ZLog.e("RoundtableScreen", "打开文件失败：${ef.absolutePath}", e)
+                android.widget.Toast.makeText(ctxBg, "无法打开文件：${e.message?.take(60)}", android.widget.Toast.LENGTH_LONG).show()
             }
-        } catch (e: Exception) {
-            // v147 vault 改造修复：与 ChatScreen.openFile 同步修复（见该文件注释）。
-            com.zaijian.zhoumuyun.util.ZLog.e("RoundtableScreen", "打开文件失败：${ef.absolutePath}", e)
-            android.widget.Toast.makeText(ctxBg, "无法打开文件：${e.message?.take(60)}", android.widget.Toast.LENGTH_LONG).show()
         }
+    }
+
+    // v1.48 圆桌表格气泡全屏查看：table_export payload 本身在内存里（没有落盘的
+    // xlsx 附件时，excelFile 为 null，onOpenFullTable 无法走上面的 openFile），
+    // 与 ChatScreen 的 onOpenTable 同构——暂存进 PreviewMemoryCache 后跳转
+    // memory 模式的预览页，用完即焚。
+    val openTable: (List<String>, List<List<String>>) -> Unit = { columns, rows ->
+        val tempKey = com.zaijian.zhoumuyun.ui.screen.filepreview.PreviewMemoryCache.put(
+            com.zaijian.zhoumuyun.ui.screen.filepreview.PreviewMemoryCache.MemoryItem.MemoryTable(columns, rows),
+        )
+        onNavigateToFilePreviewMemory(tempKey)
     }
 
     // 圆桌背景图选择器：持久化 URI 权限 + 触发裁剪弹窗，与
@@ -493,6 +519,7 @@ fun RoundtableScreen(
                         bot    = bot,
                         isLast = index == uiState.messages.lastIndex,
                         onOpenFile = openFile,
+                        onOpenTable = openTable,
                         onCopyMessage = { text ->
                             clipboardManager.setText(AnnotatedString(text))
                             scope.launch {

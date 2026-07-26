@@ -87,19 +87,48 @@ internal fun HtmlPreviewEditor(
             }
         } else {
             // WebView 渲染
+            // Fix-预览闪退（html 专属风险排查）：WebView() 构造函数在部分设备上
+            // （未安装/被冻结/被卸载了系统 WebView 组件，国产 ROM 上并不罕见）
+            // 会直接抛出 MissingWebViewPackageException，这与 html 文件内容本身
+            // 无关，是设备环境问题——但同样会让"打开预览"这个动作直接崩溃退出。
+            // 用 try-catch 兜底：构造失败就退化成显示源码的纯文本视图。
             AndroidView(
                 factory = { ctx ->
-                    WebView(ctx).apply {
-                        layoutParams = ViewGroup.LayoutParams(
-                            ViewGroup.LayoutParams.MATCH_PARENT,
-                            ViewGroup.LayoutParams.MATCH_PARENT,
+                    try {
+                        WebView(ctx).apply {
+                            layoutParams = ViewGroup.LayoutParams(
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                            )
+                            webViewClient = WebViewClient()
+                            settings.javaScriptEnabled = false
+                        }
+                    } catch (e: Throwable) {
+                        com.zaijian.zhoumuyun.util.ZLog.e(
+                            "HtmlPreviewEditor",
+                            "WebView 初始化失败，设备可能未安装/禁用了 WebView 组件",
+                            e,
                         )
-                        webViewClient = WebViewClient()
-                        settings.javaScriptEnabled = false
+                        android.widget.TextView(ctx).apply {
+                            layoutParams = ViewGroup.LayoutParams(
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                            )
+                            text = "当前设备无法渲染网页预览（缺少 WebView 组件），以下是源码：\n\n" + source
+                            setPadding(24, 24, 24, 24)
+                        }
                     }
                 },
-                update = { webView ->
-                    webView.loadDataWithBaseURL(null, source, "text/html", "UTF-8", null)
+                update = { view ->
+                    // factory 失败时会返回 TextView，只有真的拿到 WebView 才继续加载，
+                    // 避免类型不匹配再次触发异常。
+                    if (view is WebView) {
+                        try {
+                            view.loadDataWithBaseURL(null, source, "text/html", "UTF-8", null)
+                        } catch (e: Throwable) {
+                            com.zaijian.zhoumuyun.util.ZLog.e("HtmlPreviewEditor", "加载 HTML 内容失败", e)
+                        }
+                    }
                 },
                 modifier = Modifier
                     .weight(1f)

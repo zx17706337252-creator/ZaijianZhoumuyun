@@ -540,6 +540,27 @@ class ChatMessageOrchestrator(
                                 event.result.tablePayloadJson?.let { pendingTablePayloadJson = it }
                             }
                             is StreamEvent.RoundDone -> Unit
+                            is StreamEvent.FileReadConfirmed -> {
+                                // v1.49 修复：见 FILE_READ_MARK_PREFIX 处的详细说明——
+                                // 这里落库一条标记消息，让下一条新消息组装 LLM 上下文时，
+                                // ToolCallInterceptor 的 alreadyRead 检测能查到"已读过"的
+                                // 证据，不再无限期反复触发强制读取流程。
+                                try {
+                                    messageRepo.insert(
+                                        MessageEntity(
+                                            id = UUID.randomUUID().toString(),
+                                            characterId = getCurrentCharacterId(),
+                                            role = "system",
+                                            content = "$FILE_READ_MARK_PREFIX[工具执行结果] 文件已读取：${event.fileName}",
+                                            createdAt = System.currentTimeMillis(),
+                                        )
+                                    )
+                                } catch (e: CancellationException) {
+                                    throw e
+                                } catch (e: Exception) {
+                                    ZLog.w("ChatViewModel", "文件已读标记落库失败（不影响主流程，但下条消息可能重新触发强制读取）", e)
+                                }
+                            }
                         }
                     }
                     } // withVaultContext
@@ -619,7 +640,22 @@ class ChatMessageOrchestrator(
                     // 乐观更新已足够，删除此处全量重查是安全的。
                     val latestMessages = (_uiState.value.messages + ChatTagParser.toChatMessage(assistantMsg))
                         .toImmutableList()
-                    _uiState.update { it.copy(messages = latestMessages) }
+                    // Fix-闪烁：messages 写入真实消息（含 exportedFiles/tablePayload）与
+                    // isTyping 置 false + streamingContent 清空必须在同一批状态更新里原子完成。
+                    // 此前 isTyping=false 挪到本函数最末尾的 finally 块，中间夹着
+                    // relationshipEngine.applyDelta / eventRepo 写入等同步 IO 操作
+                    // （耗时随设备 I/O 状况波动，不是恒定 0ms）——这段时间窗口内
+                    // messages 已经含有落库后的正式气泡（文字+文件卡），但 isTyping
+                    // 仍是 true，ChatScreen 的 "streaming" 占位气泡（冻结在最后一次
+                    // 收到的 streamingContent 内容）还挂在列表末尾没被摘掉，等价于同一条
+                    // 回复被渲染了两次；一旦 finally 里 isTyping 才翻 false，占位气泡消失，
+                    // 视觉上就是"文字先出、文件卡再补上时闪一下"。改成落库消息和
+                    // 打字机占位气泡在同一次 _uiState.update 里"一步到位"地互相替换，
+                    // 不再有两者同时可见的中间态。finally 块保留 isTyping=false 兜底
+                    // （cleanReply 为空等未进入本分支的路径仍需它收尾，重复赋值是幂等的）。
+                    _uiState.update { it.copy(messages = latestMessages, isTyping = false) }
+                    _streamingContent.value = null
+                    _streamingPsych.value = null
                     // P1-10-3 修复：原先两次 applyDelta（onConversationEnd 基础 delta +
                     // HeuristicRelTracker 语义 delta）会产生两条 RELATIONSHIP_CHANGED 事件，
                     // 导致同一轮对话的摩擦系数被重复写入。改为将两组 delta 合并后一次性提交。

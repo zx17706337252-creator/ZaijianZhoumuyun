@@ -379,6 +379,18 @@ class ExcelGenTool(
                     .replace(Regex("\\n?```\\s*$", RegexOption.MULTILINE), "")
                     .trim()
 
+                // 修复（Excel 空文件根因）：LLM 返回空内容、或被去代码块围栏正则
+                // 误删成空串时，csvData 为空。此前不校验直接往下写，POI 照常产出
+                // 一个结构合法但零行的 xlsx，工具返回"生成成功"，用户下载后发现
+                // 文件是空的。此处提前拦截，把"静默生成空文件"变成"明确报错"，
+                // 方便上游继续排查是 LLM 返回本身为空还是正则误删。
+                if (csvData.isBlank()) {
+                    return@withContext ToolResult(
+                        name, false, "",
+                        "生成的表格数据为空（LLM 未返回有效 CSV 内容），请重试或换个描述方式",
+                    )
+                }
+
                 // Step 2: POI 写入 .xlsx
                 // P1-8-1 修复：XSSFWorkbook 改用 .use{} 包裹，确保异常或超时路径也能关闭，
                 // 否则异常时 wb.close() 跳过，导致底层 ZIP 包流和临时文件句柄泄漏。
@@ -412,10 +424,25 @@ class ExcelGenTool(
                             }
                         }
 
-                    // 自动列宽（最多 20 列，避免性能问题）
+                    // 修复（autoSizeColumn 崩溃）：Apache POI 的 autoSizeColumn() 内部
+                    // 依赖 java.awt.font.FontMetrics / java.awt.Font 来测量文本宽度，
+                    // 而 Android 运行时不包含 java.awt 包——调用时抛 NoClassDefFoundError。
+                    // 此前因为"数据为空→colCount=0→循环不执行"而一直没触发；一旦 csvData
+                    // 校验通过、有真实数据写入，就会在 418 行 / 976 行直接崩溃。
+                    // 改为手动按字符长度估算列宽（中文字符按 2 个字符宽度计算），
+                    // 不依赖 java.awt，在 Android 上安全可用。
                     val colCount = sheet.getRow(0)?.lastCellNum?.toInt() ?: 0
                     for (ci in 0 until minOf(colCount, 20)) {
-                        sheet.autoSizeColumn(ci)
+                        var maxLen = 0
+                        for (ri in 0..sheet.lastRowNum) {
+                            val cell = sheet.getRow(ri)?.getCell(ci)
+                            val cellStr = cell?.toString() ?: ""
+                            // 中文字符按 2 宽度计算，其余按 1
+                            val width = cellStr.sumOf { if (it.code > 0x4E00) 2 else 1 }
+                            if (width > maxLen) maxLen = width
+                        }
+                        // POI 列宽单位约为 1/256 个字符宽度，加 2 字符 padding
+                        sheet.setColumnWidth(ci, (maxLen + 2) * 256)
                     }
 
                     // 性能 L3 修复：POI 直接写入文件流，不再先整体写入 ByteArrayOutputStream
@@ -970,10 +997,18 @@ class TableExportTool(
                         }
                     }
                 }
-                // 自动列宽（最多 20 列，避免性能问题，与 ExcelGenTool 一致）
+                // 修复（autoSizeColumn 崩溃）：与 ExcelGenTool 同款修复，
+                // 替换为手动列宽估算，避免 java.awt 依赖在 Android 上崩溃。
                 val colCount = payload.columns.size
                 for (ci in 0 until minOf(colCount, 20)) {
-                    sheet.autoSizeColumn(ci)
+                    var maxLen = 0
+                    for (ri in 0..sheet.lastRowNum) {
+                        val cell = sheet.getRow(ri)?.getCell(ci)
+                        val cellStr = cell?.toString() ?: ""
+                        val width = cellStr.sumOf { if (it.code > 0x4E00) 2 else 1 }
+                        if (width > maxLen) maxLen = width
+                    }
+                    sheet.setColumnWidth(ci, (maxLen + 2) * 256)
                 }
                 wb.write(stream)
             }

@@ -159,7 +159,12 @@ class ChatSessionDelegate(
                     .collect { msgs ->
                         try {
                             _uiState.update {
-                                it.copy(messages = msgs.map { ChatTagParser.toChatMessage(it) }.toImmutableList())
+                                it.copy(messages = msgs
+                                    // v1.49 修复：过滤掉 file_read 锁死机制用来持久化"文件已读"
+                                    // 凭证的内部标记消息——这条只是喂给下一轮 LLM 上下文看的，
+                                    // 不该在聊天界面里冒出一条奇怪的系统气泡（见 FILE_READ_MARK_PREFIX 处说明）。
+                                    .filterNot { it.content.startsWith(FILE_READ_MARK_PREFIX) }
+                                    .map { ChatTagParser.toChatMessage(it) }.toImmutableList())
                             }
                         } catch (e: Exception) {
                             ZLog.e("ChatSessionDelegate", "characterId=$characterId 消息Flow订阅处理失败", e)
@@ -202,7 +207,11 @@ class ChatSessionDelegate(
             val msgs = withContext(Dispatchers.IO) {
                 messageRepo.getByCharacter(characterId)
             }
-            _uiState.update { it.copy(messages = msgs.map { ChatTagParser.toChatMessage(it) }.toImmutableList()) }
+            _uiState.update {
+                it.copy(messages = msgs
+                    .filterNot { it.content.startsWith(FILE_READ_MARK_PREFIX) }
+                    .map { ChatTagParser.toChatMessage(it) }.toImmutableList())
+            }
         } catch (e: Exception) {
             ZLog.e("ChatSessionDelegate", "characterId=$characterId 加载消息失败", e)
             _uiState.update { it.copy(error = "加载消息失败，请重试") }

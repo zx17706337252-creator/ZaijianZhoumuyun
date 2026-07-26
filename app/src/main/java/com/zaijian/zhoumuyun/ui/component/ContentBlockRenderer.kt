@@ -54,6 +54,9 @@ import com.zaijian.zhoumuyun.ui.theme.Radius
 import com.zaijian.zhoumuyun.ui.theme.Spacing
 import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
 import com.zaijian.zhoumuyun.ui.design.AppIcons
+import com.zaijian.zhoumuyun.ui.design.WorldBubble
+import com.zaijian.zhoumuyun.ui.design.MatBadge
+import com.zaijian.zhoumuyun.ui.design.BrassBadge
 
 // ═══════════════════════════════════════════════════════════════
 //  ContentBlockRenderer — ContentBlock 渲染组件（窗口3报告 6.3/6.6 节）
@@ -227,6 +230,7 @@ private fun CodeBlockRenderer(block: ContentBlock.Code, textColor: Color) {
 
     // 等宽字体卡片，独立于普通文本流
     val scrollState = rememberScrollState()
+    val horizontalScrollState = rememberScrollState()
     val codeStyle = TextStyle(
         fontFamily = FontFamily.Monospace,
         fontSize = 12.sp,
@@ -241,9 +245,15 @@ private fun CodeBlockRenderer(block: ContentBlock.Code, textColor: Color) {
             .border(1.dp, colors.border, RoundedCornerShape(Radius.sm))
             .padding(Spacing.md),
     ) {
+        // 修复（代码块长行溢出/闪退）：
+        // 原实现只有 verticalScroll 没有 horizontalScroll，长代码行（如 minified JS、
+        // 长导入路径）会溢出卡片右边界。加上 horizontalScroll 让长行可横向滚动查看，
+        // 同时设 softWrap=false 确保代码不自动换行（保持代码可读性，靠滚动查看完整行）。
+        // 外层 Column 用 horizontalScroll + verticalScroll 实现双向滚动。
         Column(
             modifier = Modifier
-                .verticalScroll(scrollState),
+                .verticalScroll(scrollState)
+                .horizontalScroll(horizontalScrollState),
         ) {
             // 语言标签（如果有）
             if (!block.language.isNullOrBlank()) {
@@ -258,6 +268,8 @@ private fun CodeBlockRenderer(block: ContentBlock.Code, textColor: Color) {
                 text = block.content,
                 style = codeStyle,
                 color = textColor,
+                // softWrap=false 让代码行不自动换行，靠 horizontalScroll 横向滚动查看
+                softWrap = false,
             )
         }
     }
@@ -274,7 +286,17 @@ private fun TableBlockRenderer(
     val colors = ZaijianTheme.colors
     val type = ZaijianTheme.typography
 
-    // 卡片外壳 + 横向可滚动表格
+    // Markdown 表格预览闪退排查连带发现的显示 bug：原先每个单元格只有
+    // `widthIn(min = 80.dp)`，没有上限。外层 Column 套了 horizontalScroll，
+    // 会给子内容传入"无限宽"的测量约束——Text 在无限宽约束下不会自动换行
+    // （软换行只在有限宽度小于文本自然宽度时才触发），于是像"备注"这种长
+    // 文本单元格会撑成一整行，把整张表往右无限拉长，用户只能靠横向拖动看，
+    // 而不是像期望的那样自动换行、表格宽度贴合屏幕。
+    //
+    // 加上 max 上限后，即使外层约束是无限宽，widthIn 也会把传给 Text 的
+    // maxWidth 钳制在 CELL_MAX_WIDTH 以内——这是个有限值，Text 就会在这个宽度
+    // 内正常换行，单元格变高而不是整张表变宽。horizontalScroll 保留作为
+    // 兜底：真正列数很多（超过屏幕能放下的列数）时仍然可以横向滚动查看。
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -295,7 +317,7 @@ private fun TableBlockRenderer(
                         style = type.bodyBold,
                         color = colors.textPrimary,
                         modifier = Modifier
-                            .widthIn(min = 80.dp)
+                            .widthIn(min = CELL_MIN_WIDTH, max = CELL_MAX_WIDTH)
                             .padding(horizontal = Spacing.sm, vertical = Spacing.xs),
                     )
                 }
@@ -316,7 +338,7 @@ private fun TableBlockRenderer(
                             style = style,
                             color = textColor,
                             modifier = Modifier
-                                .widthIn(min = 80.dp)
+                                .widthIn(min = CELL_MIN_WIDTH, max = CELL_MAX_WIDTH)
                                 .padding(horizontal = Spacing.sm, vertical = Spacing.xs),
                         )
                     }
@@ -325,6 +347,10 @@ private fun TableBlockRenderer(
         }
     }
 }
+
+/** Markdown 表格单元格宽度区间：短内容不硬撑到 80dp 以上，长内容超过 160dp 就换行而不是把表格拉宽。 */
+private val CELL_MIN_WIDTH = 80.dp
+private val CELL_MAX_WIDTH = 160.dp
 
 // ── 引用 ────────────────────────────────────────────────────────
 
@@ -362,14 +388,10 @@ private fun QuoteBlockRenderer(
 
 @Composable
 private fun DocumentBlockRenderer(block: ContentBlock.Document, textColor: Color) {
-    val colors = ZaijianTheme.colors
-    val type = ZaijianTheme.typography
-
     FileCardShell(
         title = block.title,
         subtitle = block.previewText,
         fileType = block.fileType,
-        accentColor = colors.accent,
     )
 }
 
@@ -413,13 +435,10 @@ private fun ImageBlockRenderer(block: ContentBlock.Image, textColor: Color) {
 
 @Composable
 private fun TableFileBlockRenderer(block: ContentBlock.TableFile, textColor: Color) {
-    val colors = ZaijianTheme.colors
-
     FileCardShell(
         title = block.title,
         subtitle = block.rowCount?.let { "$it 行" },
         fileType = "table",
-        accentColor = colors.accent,
     )
 }
 
@@ -470,67 +489,76 @@ private fun LinkBlockRenderer(block: ContentBlock.Link, textColor: Color) {
 
 @Composable
 private fun FileBlockRenderer(block: ContentBlock.FileBlock, textColor: Color) {
-    val colors = ZaijianTheme.colors
-
     FileCardShell(
         title = block.title,
         subtitle = block.sizeLabel,
         fileType = block.fileType,
-        accentColor = colors.accent,
     )
 }
 
 // ── 通用文件卡片外壳 ────────────────────────────────────────────
-
+//
+// 细化方案第二节重做：
+//   外壳      bgElevated 纯色 + 1dp border → WorldBubble（L0 渐变 + L1 光斑 + L2 黄铜描边）
+//              不加投影——嵌在 WorldBubble 消息气泡内部的子元素，投影会像"贴纸糊在气泡上"
+//   类型标识  文字缩写徽标（"PDF"/"TABLE"）→ MatBadge 微立体图标槽
+//              图标取 fileIconForType，底色取 fileTypeSemanticColor（文件类型客观语义色）
+//   打开动作  无独立触发点 → 右侧 BrassBadge 黄铜圆形箭头徽章
+//   颜色语义  不再用 accentColor（原挪用聊天角色色），改用文件类型本身的语义色
 @Composable
 private fun FileCardShell(
     title: String,
     subtitle: String?,
     fileType: String,
-    accentColor: Color,
 ) {
     val colors = ZaijianTheme.colors
     val type = ZaijianTheme.typography
 
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(Radius.sm))
-            .background(colors.bgElevated)
-            .border(1.dp, colors.border, RoundedCornerShape(Radius.sm))
-            .padding(Spacing.md),
-        verticalAlignment = Alignment.CenterVertically,
+    val fileIcon = AppIcons.fileIconForType(fileType)
+    val semanticColor = AppIcons.fileTypeSemanticColor(fileType)
+
+    WorldBubble(
+        modifier = Modifier.fillMaxWidth(),
+        topStart = Radius.sm,
+        topEnd = Radius.sm,
+        bottomStart = Radius.sm,
+        bottomEnd = Radius.sm,
     ) {
-        // 文件类型标签
-        Box(
+        Row(
             modifier = Modifier
-                .clip(RoundedCornerShape(Radius.xs))
-                .background(accentColor.copy(alpha = 0.12f))
-                .padding(horizontal = Spacing.sm, vertical = Spacing.xs),
+                .fillMaxWidth()
+                .padding(Spacing.md),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(
-                text = fileType.uppercase(),
-                style = type.label,
-                color = accentColor,
-                fontWeight = FontWeight.Bold,
+            // 文件类型图标槽：MatBadge 微立体徽章（语义色 tint）
+            MatBadge(
+                icon = fileIcon,
+                contentDescription = fileType,
+                color = semanticColor,
+                badgeSize = 38.dp,
+                iconSize = 19.dp,
             )
-        }
-        Spacer(Modifier.width(Spacing.md))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = title,
-                style = type.bodyBold,
-                color = colors.textPrimary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            if (!subtitle.isNullOrBlank()) {
+            Spacer(Modifier.width(Spacing.md))
+            Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = subtitle,
-                    style = type.label,
-                    color = colors.textSecondary,
+                    text = title,
+                    style = type.bodyBold,
+                    color = colors.textPrimary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
+                if (!subtitle.isNullOrBlank()) {
+                    Text(
+                        text = subtitle,
+                        style = type.label,
+                        color = colors.textSecondary,
+                    )
+                }
             }
+            // 黄铜"打开"徽章（固定 Gold，不随文件类型色变化——动作符号与内容符号分开）
+            BrassBadge(
+                size = 32.dp,
+            )
         }
     }
 }

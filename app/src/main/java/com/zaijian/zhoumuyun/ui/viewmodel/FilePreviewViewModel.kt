@@ -67,9 +67,23 @@ class FilePreviewViewModel(
         _uiState.value = UiState.Loading
         viewModelScope.launch {
             val content = withContext(Dispatchers.IO) {
-                // P2-47 修复：收口到 resolveVaultPath 权限校验，
-                // 防止通过导航参数访问无权访问的 vault 路径。
-                val resolution = resolveVaultPath(getApplication(), path)
+                // Fix-预览闪退：resolveVaultPath 此前裸调用在 runCatching 之外——
+                // 本函数内其余 4 个入口（saveText/saveTable/saveHtml/exportToDownloads）
+                // 都把 resolveVaultPath 包在 try-catch 里，唯独这里漏了。
+                // resolveVaultPath 内部会调用 File.canonicalPath()（受环境/文件系统影响，
+                // 理论上可抛 IOException）以及协程上下文读取，一旦在某些设备/路径上抛出
+                // 未捕获异常，会从 withContext(Dispatchers.IO) 直接冒到 viewModelScope.launch，
+                // 那是个没有 CoroutineExceptionHandler 的协程——异常不会停在这个函数里，
+                // 而是直接打崩整个 App 进程。这个函数对所有可预览格式（md/txt/csv/xlsx/
+                // docx/html/json/xml/log/yml/yaml）都是唯一入口，不是 md 专属问题，
+                // 所以这里补齐 runCatching，和 parse() 一致地兜底成 Error 状态。
+                val resolution = runCatching {
+                    resolveVaultPath(getApplication(), path)
+                }.getOrElse {
+                    com.zaijian.zhoumuyun.util.ZLog.e("FilePreview", "路径解析失败: $path", it)
+                    _uiState.value = UiState.Error("加载失败：路径解析异常")
+                    return@withContext null
+                }
                 val file = when (resolution) {
                     is VaultPathResolution.Denied -> {
                         _uiState.value = UiState.Error("无权访问：${resolution.reason}")
@@ -80,6 +94,7 @@ class FilePreviewViewModel(
                 runCatching {
                     FilePreviewParser.parse(file)
                 }.getOrElse {
+                    com.zaijian.zhoumuyun.util.ZLog.e("FilePreview", "解析失败: ${file.name}", it)
                     _uiState.value = UiState.Error("加载失败：${it.message?.take(80)}")
                     return@withContext null
                 }

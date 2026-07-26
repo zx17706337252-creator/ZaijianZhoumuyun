@@ -11,7 +11,6 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
@@ -32,11 +31,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 
-import com.zaijian.zhoumuyun.data.model.StatusType
-import com.zaijian.zhoumuyun.ui.component.BreathingAvatar
-import com.zaijian.zhoumuyun.ui.theme.AvatarSize
 import com.zaijian.zhoumuyun.ui.theme.Palette
-import com.zaijian.zhoumuyun.ui.theme.RingWidth
 import com.zaijian.zhoumuyun.ui.theme.Spacing
 import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
 
@@ -54,33 +49,31 @@ import com.zaijian.zhoumuyun.ui.design.AppIcons
 
 // ─────────────────────────────────────────────────────────────
 //  ChatHeader — 毛玻璃顶栏
-//  规范 §13：返回箭头 / 头像+角色名+关系胶囊行 / 更多图标
+//  规范 §13：返回箭头 / 角色名+关系胶囊行 / 模式切换 / 更多图标
 //  v1.36：移除时间段活动文案（statusText，如"还没睡"），保留心情+关系状态胶囊。
+//  v152：去掉头像（32dp 头像+两侧 spacer 共占约 44dp，在这条本就紧张的
+//  顶栏里性价比很低——头像详情页本身已有大尺寸头像，这里纯展示意义不大）。
+//  空出的横向空间直接并入角色名（weight(1f)），"工作/陪伴"切换器仍留在
+//  主 Row 里、不下移成单独一行——下移会让顶栏从两行变三行，比头像本身
+//  更占纵向空间。原头像的"点击进详情页"入口改到角色名上（onProfileClick），
+//  保证功能不丢。
 // ─────────────────────────────────────────────────────────────
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun ChatHeader(
     name: String,
-    avatarUrl: String,
-    breathColor: Color,
     accentColor: Color,
-    statusType: StatusType,
     headerBg: Color,
     chatMode: ChatMode = ChatMode.WORK,
     onBack: () -> Unit,
-    onAvatarClick: () -> Unit,
+    onProfileClick: () -> Unit,
     onMoreClick: () -> Unit = {},
     onChatModeChange: (ChatMode) -> Unit = {},
     // 待办10：关系状态胶囊（均可为 null，null = 不展示）
     relStageLabel: String? = null,
     relMood: com.zaijian.zhoumuyun.domain.MoodType? = null,
     relSuppressionHint: String? = null,
-    // [聊天圆形头像取景修复] 详情页圆形裁剪参数（CharacterConfig.avatarCropCircle*），
-    // 默认 0f/0f/1f 与此前行为一致（居中、Crop 覆盖）。
-    avatarCropOffsetX: Float = 0f,
-    avatarCropOffsetY: Float = 0f,
-    avatarCropScale: Float = 1f,
     modifier: Modifier = Modifier,
 ) {
     val colors = ZaijianTheme.colors
@@ -103,9 +96,9 @@ internal fun ChatHeader(
     }
     val hasRelInfo = relStageLabel != null || moodLabel != null || relSuppressionHint != null
 
-    // 头像前面 back 按钮的默认触控宽度。M3 IconButton 即使图标只有 24dp，
+    // 返回按钮的默认触控宽度。M3 IconButton 即使图标只有 24dp，
     // 组件本身也会强制保留 48dp 最小触控热区，这部分空间胶囊行缩进时要算进去，
-    // 不然胶囊行会跟头像/角色名对不齐。
+    // 不然胶囊行会跟角色名对不齐。
     val backButtonWidth = 48.dp
 
     Box(
@@ -148,36 +141,16 @@ internal fun ChatHeader(
                     )
                 }
 
-                Spacer(Modifier.width(Spacing.xs))
-
-                // 头像（点击进入详情页）
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.CenterVertically)
-                        .size(AvatarSize.chat)
-                        .clickable { onAvatarClick() },
-                ) {
-                    BreathingAvatar(
-                        imageUrl    = avatarUrl,
-                        breathColor = breathColor,
-                        statusType  = statusType,
-                        modifier    = Modifier.fillMaxSize(),
-                        size        = AvatarSize.chat,
-                        ringWidth   = RingWidth.chat,
-                        glowRadius  = 4.dp,
-                        enableBreath = false,   // 顶栏不呼吸，减少干扰
-                        cropOffsetX = avatarCropOffsetX,
-                        cropOffsetY = avatarCropOffsetY,
-                        cropScale   = avatarCropScale,
-                    )
-                }
-
+                // v152：原头像与返回按钮间 xs(4dp) + 头像 32dp + 与角色名间 sm(8dp)
+                // 共 44dp 的横向空间随头像一起收回。角色名紧接返回按钮，只留一个
+                // sm(8dp) 间距——比原来贴头像那侧的 4dp 略宽，视觉上不会显得紧贴
+                // 返回箭头；空出的约 36dp 净宽度通过角色名的 weight(1f) 自动吸收。
                 Spacer(Modifier.width(Spacing.sm))
 
-                // 角色名 —— Fix-ChatHeaderTagsRow：这里现在只放名字。关系胶囊行
-                // 已经搬到这个主 Row 外面单独成行，不再挤在头像和右侧模式切换器
-                // 之间这条窄缝里，避免两个短胶囊因为可用宽度不够而被迫上下堆叠、
-                // 把整个顶栏撑得又高又宽。
+                // 角色名（点击进入详情页，承接原头像的点击入口）—— Fix-ChatHeaderTagsRow：
+                // 这里现在只放名字。关系胶囊行已经搬到这个主 Row 外面单独成行，不再
+                // 挤在名字和右侧模式切换器之间这条窄缝里，避免两个短胶囊因为可用宽度
+                // 不够而被迫上下堆叠、把整个顶栏撑得又高又宽。
                 Text(
                     text     = name,
                     style    = type.navTitle,
@@ -185,7 +158,12 @@ internal fun ChatHeader(
                     // P2 修复：maxLines 1→2，避免女儿角色自定义长昵称被过度截断。
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier
+                        .weight(1f)
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication        = null,
+                        ) { onProfileClick() },
                 )
 
                 // 模式切换（工作 / 陪伴）— Phase 30 方案一
@@ -229,7 +207,8 @@ internal fun ChatHeader(
             }
 
             // 待办10：关系状态胶囊行 —— Fix-ChatHeaderTagsRow：独立成完整一行，
-            // 左侧缩进对齐到角色名起始位置（返回按钮 + 头像 + 两个 Spacer 的宽度），
+            // 左侧缩进对齐到角色名起始位置（主 Row 的水平内边距 + 返回按钮宽度 +
+            // 返回按钮与角色名之间的 Spacer，v152 去掉头像后三项之和即为新缩进），
             // 右侧只留主 Row 同样的水平内边距。这一整行拥有顶栏的全部横向空间，
             // 不再被右侧工作/陪伴切换器挤占，"信任""平静"这类短胶囊可以稳定
             // 左右并排展示，不会再被迫各占一行、把顶栏撑高。
@@ -238,7 +217,7 @@ internal fun ChatHeader(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(
-                            start  = Spacing.sm + backButtonWidth + Spacing.xs + AvatarSize.chat + Spacing.sm,
+                            start  = Spacing.sm + backButtonWidth + Spacing.sm,
                             end    = Spacing.sm,
                             bottom = Spacing.xs,
                         ),

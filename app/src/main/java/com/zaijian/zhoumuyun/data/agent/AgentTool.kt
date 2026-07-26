@@ -238,6 +238,15 @@ object AgentToolRegistry {
             appendLine("在回复中嵌入以下格式的工具标签：")
             appendLine("<tool:工具名 参数名=\"参数值\"/>")
             appendLine()
+            appendLine("【文件优先规则】判断内容本身是否适合导出为文件，主动选用对应工具生成，")
+            appendLine("不需要等用户先明确说「发个文件」「导出」——只要内容形态符合就该主动这样做：")
+            appendLine("表格/统计数据 → table_export（真实数据）或 excel_gen（按描述生成）；")
+            appendLine("长文档/报告/纪要 → docx_gen；代码/配置/纯文本内容 → file_export；")
+            appendLine("多个文件需要一起发 → zip_export；诊断日志 → diag_export_log。")
+            appendLine("这是流程规则，不受角色性格、语气、当下情绪影响——角色可以在说话方式上")
+            appendLine("保留个性（比如嘴上不情不愿），但该调用的工具必须真实调用并等待结果，")
+            appendLine("不能只在对话里说「已经发了」却没有实际执行。")
+            appendLine()
             appendLine("可用工具：")
             visibleTools.sortedBy { it.name }.forEach { tool ->
                 val paramDesc = tool.paramKeys.joinToString(" ") { key -> "$key=\"...\"" }

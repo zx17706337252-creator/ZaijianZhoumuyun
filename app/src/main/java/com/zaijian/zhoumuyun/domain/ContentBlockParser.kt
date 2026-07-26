@@ -55,6 +55,21 @@ object ContentBlockParser {
     fun parse(text: String): List<ContentBlock> {
         if (text.isBlank()) return emptyList()
 
+        // Fix-预览闪退：本函数直接在 Compose 组合期间被调用（TextPreviewEditor 的
+        // md 预览、ChatMessageBubble 的每条角色消息），此前没有任何异常保护——
+        // 调用方传入的是文件原文或 AI 原始输出，内容完全不可控，本解析器内部任何
+        // 一处未覆盖到的边界情况（正则/索引）抛出，都会让 Compose 组合直接崩溃，
+        // 且与文档具体是 md/txt 无关。外层包一层 try-catch，解析失败时至少把原文
+        // 整段当一个普通段落兜底展示，不让用户看到白屏/闪退。
+        return try {
+            parseInternal(text)
+        } catch (e: Exception) {
+            com.zaijian.zhoumuyun.util.ZLog.e("ContentBlockParser", "解析异常，回退为纯文本段落", e)
+            listOf(ContentBlock.Paragraph(listOf(TextSegment(text, TextSegmentType.DIALOGUE))))
+        }
+    }
+
+    private fun parseInternal(text: String): List<ContentBlock> {
         val blocks = mutableListOf<ContentBlock>()
         val lines = text.lines()
         var i = 0

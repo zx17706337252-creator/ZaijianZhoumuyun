@@ -48,6 +48,10 @@ data class ChatUiState(
     // 待裁剪的背景图 URI：用户刚从相册选完图、裁剪弹窗还未确认时的中间态，
     // 非空时 UI 显示 AvatarCropDialog(shape = FULL_SCREEN)
     val pendingBackgroundCropUri: String? = null,
+    // 文档发送方式：true（默认）= 角色输出的文件卡片合并进文字气泡；
+    // false = 文件卡片各自独立成一张气泡/卡片（旧版效果）。
+    // 由 FileDeliveryDataStore 持久化，ChatViewModel.init 订阅后覆盖此默认值。
+    val attachFilesTogether: Boolean = true,
 )
 
 enum class KnowledgeInjectMode { AUTO, MANUAL }

@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -27,9 +28,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.zaijian.zhoumuyun.domain.MoodType
@@ -319,8 +326,13 @@ fun WorldCard(
  *
  * 【接入状态】W12问题1修复：已接入 ChatMessageBubble.kt 的 MessageBubble()（角色气泡，
  * 左下尖角）和 RoundtableBubble.kt 的 BotBubble()（角色气泡，左上尖角+左侧主题色条）。
- * 两处用户气泡（右对齐、accentColor 纯色填充）不接入——用户气泡的强调色填充是有意
- * 的视觉区分设计，WorldBubble 的纸面质感背景会削弱这个区分，不应替换。
+ *
+ * 角色对话气泡改版（纯专属色填充）：两处角色气泡都改传 fillColor = accentColor，
+ * 不再是"专属色描边包一层纸面底"。原先的说法——用户气泡纯色填充是有意的区分
+ * 设计、WorldBubble 纸面质感不应替换——现在角色气泡也直接纯色填充了，区分
+ * 用户/角色气泡改靠对齐方向（右/左）+ 圆角尖角方向，不再靠"纯色 vs 纸面"。
+ * fillColor 走独立分支（见下方实现），不影响仍使用默认纸面底的其他调用点
+ * （如 ContentBlockRenderer.kt 里的文件卡片、心迹面板）。
  *
  * 不复用 L3 身份脊 / L4 蜡封角标：气泡场景已有自己的角色识别方式（如左侧主题色
  * 竖条、头像旁色点），milestone 概念也不适用于单条聊天消息，引入这两层反而会
@@ -329,7 +341,7 @@ fun WorldCard(
  *
  * 新增组件而非扩展 WorldCard 签名：避免四角独立圆角参数影响已接入 WorldCard 的
  * 14 个真实页面，零回归面。两者共享同一套 L0/L1/L2 数值（精修方案 v1.3 第7节），
- * 修改配色或光斑强度时需要同步改这两处。
+ * 修改配色或光斑强度时需要同步改这两处（fillColor 分支不受影响）。
  */
 @Composable
 fun WorldBubble(
@@ -340,18 +352,15 @@ fun WorldBubble(
     bottomEnd: Dp = Radius.md,
     borderColor: Color? = null,
     borderWidth: Dp = 1.dp,
+    // 角色对话气泡新方案（纯专属色填充）：传入后气泡背景直接是这个纯色，
+    // 不再叠 L0 纸面渐变 + L1 光斑；不是"专属色描边包一层中性纸面"，是
+    // 气泡本身就是该角色的颜色。传入时默认不描边（纯色色块本身已经和页面
+    // 背景有区分，不需要再包一层边）——如仍要边，显式传 borderColor 即可。
+    fillColor: Color? = null,
     content: @Composable () -> Unit,
 ) {
     val colors = ZaijianTheme.colors
     val isDark = colors.isDark
-
-    // L1/L2 数值与 WorldCard 保持一致（精修方案 v1.3 第7节，同一套 light/dark 数值表）
-    val l1Alpha = if (isDark) 0.18f else 0.06f
-    val l1Color = if (isDark) colors.accent else Color.White
-    val l2Alpha = if (isDark) 0.22f else 0.35f
-    // borderColor 不传时，默认沿用 WorldCard 同款 accent 黄铜线；调用方可覆盖成
-    // 固定色（如圆桌气泡场景需要的金色描边，与角色 accent 解耦）
-    val resolvedBorderColor = borderColor ?: colors.accent.copy(alpha = l2Alpha)
 
     val shape = RoundedCornerShape(
         topStart    = topStart,
@@ -360,9 +369,15 @@ fun WorldBubble(
         bottomEnd   = bottomEnd,
     )
 
-    Box(
-        modifier = modifier
-            .clip(shape)
+    var boxModifier = modifier.clip(shape)
+
+    boxModifier = if (fillColor != null) {
+        boxModifier.background(fillColor)
+    } else {
+        // L1/L2 数值与 WorldCard 保持一致（精修方案 v1.3 第7节，同一套 light/dark 数值表）
+        val l1Alpha = if (isDark) 0.18f else 0.06f
+        val l1Color = if (isDark) colors.accent else Color.White
+        boxModifier
             .background(
                 Brush.linearGradient(
                     colors = listOf(colors.bgElevated, colors.bgCard),
@@ -378,15 +393,36 @@ fun WorldBubble(
                     radius = 480f,
                 )
             )
-            .border(
-                width = borderWidth,
-                color = resolvedBorderColor,
-                shape = shape,
-            )
-    ) {
+    }
+
+    // fillColor 模式下默认不描边；未传 fillColor 时保持原逻辑——borderColor
+    // 不传则默认沿用 WorldCard 同款 accent 黄铜线（不能省略描边，中性纸面
+    // 底不描边会和页面背景糊在一起）。
+    if (fillColor == null || borderColor != null) {
+        val l2Alpha = if (isDark) 0.22f else 0.35f
+        val resolvedBorderColor = borderColor ?: colors.accent.copy(alpha = l2Alpha)
+        boxModifier = boxModifier.border(
+            width = borderWidth,
+            color = resolvedBorderColor,
+            shape = shape,
+        )
+    }
+
+    Box(modifier = boxModifier) {
         content()
     }
 }
+
+/**
+ * 纯专属色气泡的内容对比色（正文文字、引用符号等）。九个角色的 accentColor
+ * 亮度跨度很大——深藏青 #34506E（luminance 0.08）到浅靛蓝 #ACC0E8（luminance
+ * 0.52）都存在，固定白字在浅色系角色气泡上会糊掉。按相对亮度阈值 0.25 自动
+ * 选深/浅：九个现有角色色实测在阈值两侧都有安全余量（最紧的 #C23A54 配白字
+ * 仍有 5.2:1 对比度，最紧的 #EC93AE 配 Ink900 仍有 7:1），均满足 WCAG AA
+ * 正文文字 4.5:1 门槛。
+ */
+fun Color.contentOnFill(): Color =
+    if (this.luminance() < 0.25f) Color.White else Palette.Ink900
 
 
 // ═════════════════════════════════════════════════════════════
@@ -875,4 +911,151 @@ fun InfoChip(text: String, color: Color, modifier: Modifier = Modifier) {
             .background(color)
             .padding(horizontal = Spacing.sm, vertical = 2.dp),
     )
+}
+
+
+// ═════════════════════════════════════════════════════════════
+//  MatBadge — 文件类型图标槽（icon_redesign_renders 方向B · 扁平风格，选定）
+//
+//  原"微立体"配方（三段渐变斜面高光 + 色晕投影 + 描边）已废弃——两版渲染
+//  对比后选定扁平方向：去掉渐变/投影/描边，纯色浅底 + 单色线性图标，
+//  类似 Notion/Files 的文件类型标签，同一套色板直接复用（不改调用接口）。
+//
+//  配方：
+//    - 底色：浅色模式 = 本色 14% + Parchment 86%；深色模式 = 本色 22% + Night 78%
+//    - 图标：浅色模式直接用本色；深色模式 = 本色 65% + 白 35%（提亮以保证在
+//      深底浅色 tint 上可读）
+// ═════════════════════════════════════════════════════════════
+
+/**
+ * 文件类型图标徽章（扁平风格）。
+ *
+ * @param icon      图标本体
+ * @param contentDescription 无障碍描述
+ * @param modifier  布局修饰符
+ * @param color     语义色（--c），决定浅底 tint 与图标色相；默认 Gold
+ * @param badgeSize 徽章整体尺寸
+ * @param iconSize  图标本身尺寸
+ * @param cornerRadius 圆角半径
+ */
+@Composable
+fun MatBadge(
+    icon: ImageVector,
+    contentDescription: String?,
+    modifier: Modifier = Modifier,
+    color: Color = Palette.Gold,
+    badgeSize: Dp = 38.dp,
+    iconSize: Dp = 19.dp,
+    cornerRadius: Dp = 11.dp,
+) {
+    val colors = ZaijianTheme.colors
+    val isDark = colors.isDark
+
+    val bgTint   = if (isDark) lerp(color, Palette.Night, 0.78f) else lerp(color, Palette.Parchment, 0.86f)
+    val iconTint = if (isDark) lerp(color, Color.White, 0.35f) else color
+
+    Box(
+        modifier = modifier
+            .size(badgeSize)
+            .clip(RoundedCornerShape(cornerRadius))
+            .background(bgTint),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = contentDescription,
+            tint = iconTint,
+            modifier = Modifier.size(iconSize),
+        )
+    }
+}
+
+
+// ═════════════════════════════════════════════════════════════
+//  BrassBadge — 黄铜"打开"徽章（细化方案第三节）
+//
+//  正圆球面高光 + 投影，固定 Gold 色（代表"打开"这个统一动作，
+//  不随文件类型色变化——动作符号和内容符号分开）。
+//  先在文件卡上落地，排行名次/紧急度点/分类角标留给后续窗口。
+// ═════════════════════════════════════════════════════════════
+
+/**
+ * 黄铜"打开"徽章。
+ *
+ * @param modifier 布局修饰符
+ * @param size     徽章直径
+ * @param onClick  点击回调（打开动作）
+ */
+@Composable
+fun BrassBadge(
+    modifier: Modifier = Modifier,
+    size: Dp = 32.dp,
+    onClick: (() -> Unit)? = null,
+) {
+    val isDark = ZaijianTheme.colors.isDark
+
+    // 球面径向渐变：左上提亮 → 右下压暗
+    val gradientColors = listOf(
+        Color(0xFFF5E6C4),  // 高光
+        Color(0xFFD9B87C),  // 中段
+        Color(0xFFA9803F),  // 暗部
+        Color(0xFF8C6A34),  // 边缘
+    )
+
+    // 外投影
+    val shadowColor = Color(0xFF8C6A52)
+    val shadowBlur = 8.dp
+
+    val sizePx = with(LocalDensity.current) { size.toPx() }
+    val radius = sizePx / 2f
+
+    Box(
+        modifier = modifier
+            .size(size)
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+            .drawBehind {
+                // 外投影（多层扩散模拟模糊）
+                val layers = 4
+                for (i in layers downTo 1) {
+                    val t = i.toFloat() / layers
+                    val expand = shadowBlur.toPx() * t
+                    val alpha = 0.55f * (1f - t) * 0.3f
+                    drawCircle(
+                        color = shadowColor.copy(alpha = alpha),
+                        radius = radius + expand / 2f,
+                        center = Offset(radius, radius + 2.dp.toPx()),
+                    )
+                }
+            }
+            .clip(CircleShape)
+            .background(
+                Brush.radialGradient(
+                    colors = gradientColors,
+                    center = Offset(sizePx * 0.30f, sizePx * 0.25f),
+                    radius = sizePx * 0.85f,
+                )
+            )
+            // 内上缘高光
+            .drawBehind {
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        colors = listOf(
+                            Color.White.copy(alpha = if (isDark) 0.15f else 0.40f),
+                            Color.White.copy(alpha = 0f),
+                        ),
+                        center = Offset(sizePx * 0.32f, sizePx * 0.28f),
+                        radius = sizePx * 0.40f,
+                    ),
+                )
+            }
+            .border(0.5.dp, Color(0xFF8C6A34).copy(alpha = 0.5f), CircleShape),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            imageVector = AppIcons.OpenInNew,
+            contentDescription = "打开",
+            tint = Color(0xFF4A3417),
+            modifier = Modifier.size(size * 0.47f),
+        )
+    }
 }

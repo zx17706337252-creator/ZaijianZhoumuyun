@@ -808,6 +808,15 @@ fun AppNavigation(
                 RoundtableScreen(
                     characterIds = ids,
                     onBack       = { navController.popBackStack() },
+                    // v1.48 圆桌 openFile 缺应用内预览分支修复：与 ChatScreen
+                    // 同一份 FilePreview 路由，圆桌文件卡片/表格气泡点开后
+                    // 现在也能走应用内预览（xlsx 已在 FilePreviewParser 修复闪退）。
+                    onNavigateToFilePreview = { filePath ->
+                        navController.navigateSingle(AppRoute.FilePreview.createRoute(filePath))
+                    },
+                    onNavigateToFilePreviewMemory = { tempKey ->
+                        navController.navigateSingle(AppRoute.FilePreview.createMemoryRoute(tempKey))
+                    },
                 )
             }
 

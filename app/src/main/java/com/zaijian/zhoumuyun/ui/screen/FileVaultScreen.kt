@@ -353,20 +353,24 @@ private fun VaultFileRow(
 
 private val TEXT_EDITABLE_EXT = setOf("md", "txt", "html", "htm", "json", "xml", "csv", "log", "yml", "yaml")
 
-private fun fileIcon(ext: String) = when (ext.lowercase()) {
-    "xlsx", "csv"                  -> AppIcons.TableChart
-    "pdf"                          -> AppIcons.PictureAsPdf
-    "md", "txt", "html", "json", "xml", "log", "yml", "yaml" -> AppIcons.Code
-    "zip"                          -> AppIcons.Folder
-    else                           -> AppIcons.Description
-}
+private fun fileIcon(ext: String) = AppIcons.fileIconForType(ext)
 
 private fun shareFile(context: android.content.Context, file: java.io.File) {
-    val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
-    val intent = Intent(Intent.ACTION_SEND).apply {
-        type = "*/*"
-        putExtra(Intent.EXTRA_STREAM, uri)
-        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    // 非文字内容点击闪退排查：原实现 getUriForFile() 裸调用在 runCatching 之外——
+    // 文件路径不在 file_paths.xml 任何 <files-path> 声明范围内时会抛
+    // IllegalArgumentException，未被捕获直接崩溃。改为整段包 try-catch，
+    // 失败时不再静默，用 Toast 给出可见反馈（与 ChatScreen/RoundtableScreen
+    // 的 openFile 保持同一套错误处理风格）。
+    try {
+        val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = "*/*"
+            putExtra(Intent.EXTRA_STREAM, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        context.startActivity(Intent.createChooser(intent, "分享文件"))
+    } catch (e: Exception) {
+        com.zaijian.zhoumuyun.util.ZLog.e("FileVaultScreen", "分享文件失败：${file.absolutePath}", e)
+        android.widget.Toast.makeText(context, "无法分享该文件：${e.message?.take(60)}", android.widget.Toast.LENGTH_LONG).show()
     }
-    runCatching { context.startActivity(Intent.createChooser(intent, "分享文件")) }
 }

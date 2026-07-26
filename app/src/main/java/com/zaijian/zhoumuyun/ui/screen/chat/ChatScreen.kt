@@ -77,7 +77,6 @@ import coil.compose.AsyncImage
 import coil.request.CachePolicy
 import coil.request.ImageRequest
 import com.zaijian.zhoumuyun.data.model.DefaultPresenceStates
-import com.zaijian.zhoumuyun.data.model.StatusType
 import com.zaijian.zhoumuyun.ui.component.BreathingAvatar
 import com.zaijian.zhoumuyun.ui.component.FertileWindowConsentDialog
 import com.zaijian.zhoumuyun.ui.theme.AnimDuration
@@ -238,6 +237,7 @@ fun ChatScreen(
     // 消息列表（来自 DB + 流式 streaming 追加）
     // Fix-1.1：上移至此，原位置在 headerMood 之后导致前向引用编译错误
     val messages = uiState.messages
+    val attachFilesTogether = uiState.attachFilesTogether
     // P3-39 修复：注释乱码，恢复正确文字。
     // UI M3 修复：心情直接读 uiState.currentMood，
     // ViewModel 在 parsedMood != null 时推送， init() 时从缓存种子。
@@ -732,6 +732,7 @@ fun ChatScreen(
                         avatarCropOffsetX = character.avatarCropCircleOffsetX,
                         avatarCropOffsetY = character.avatarCropCircleOffsetY,
                         avatarCropScale   = character.avatarCropCircleScale,
+                        attachFilesTogether = attachFilesTogether,
                     )
                 }
             }
@@ -848,18 +849,14 @@ fun ChatScreen(
         }
 
         // ── [2] 顶部栏（毛玻璃，56dp）────────────────────────
+        // v152：ChatHeader 去掉了头像展示，avatarUrl/breathColor/statusType/
+        // avatarCrop* 不再需要传入；原头像的"点进详情页"入口现在挂在角色名上。
         ChatHeader(
             name         = character.name,
-            avatarUrl    = character.avatarUrl,
-            breathColor  = character.breathColor,
             accentColor  = character.accentColor,
-            statusType   = presence?.statusType ?: StatusType.OFFLINE,
             headerBg     = headerBg,
-            avatarCropOffsetX = character.avatarCropCircleOffsetX,
-            avatarCropOffsetY = character.avatarCropCircleOffsetY,
-            avatarCropScale   = character.avatarCropCircleScale,
             onBack       = onBack,
-            onAvatarClick = { onNavigateToProfile(characterId) },
+            onProfileClick = { onNavigateToProfile(characterId) },
             onMoreClick  = { showChatSettings = true },
             // 待办10：关系状态
             relStageLabel      = headerStageLabel,
@@ -916,6 +913,10 @@ fun ChatScreen(
                 // v147：透传文件库入口回调，与 onNavigateToSchedule 同款范式。
                 onNavigateToVault    = { onNavigateToVault(characterId) },
                 vaultFileCount       = vaultFileCount,
+                // 文档发送方式：默认一起发（true），底部面板内切换即时生效
+                // （ChatViewModel.setAttachFilesTogether 已做乐观更新 + 后台持久化）。
+                attachFilesTogether  = attachFilesTogether,
+                onAttachFilesTogetherChange = { chatViewModel.setAttachFilesTogether(it) },
                 onDismiss          = { showChatSettings = false },
             )
         }

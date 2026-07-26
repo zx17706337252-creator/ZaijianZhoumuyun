@@ -202,6 +202,37 @@ class ProjectRepository(
     }
 
     /**
+     * 更新已有知识条目（标题/内容/重要度）。
+     *
+     * 用于知识库条目的手动预览+编辑入口——预览需要展示未截断的完整 content，
+     * 编辑同一个入口直接改完保存，不单独做只读预览态。
+     * characterId/source/createdAt 保持不变，只有 title/content/importance/
+     * charCount/updatedAt 会被覆盖。content 不做长度截断，与 [addKnowledge]/
+     * 类头注释里"全文注入策略：content 不截断"的约定一致——文件导入进来的
+     * 条目本来就可能远超手动输入场景的长度上限，编辑时截断等于丢数据。
+     *
+     * @return 是否成功（id 不存在返回 false）
+     */
+    suspend fun updateKnowledge(
+        id: String,
+        title: String,
+        content: String,
+        importance: Int,
+    ): Boolean {
+        val existing = knowledgeDao.getById(id) ?: return false
+        knowledgeDao.upsert(
+            existing.copy(
+                title      = title,
+                content    = content,
+                importance = importance,
+                charCount  = content.length,
+                updatedAt  = System.currentTimeMillis(),
+            )
+        )
+        return true
+    }
+
+    /**
      * 导入文件到知识库。
      *
      * 支持格式：
@@ -227,12 +258,27 @@ class ProjectRepository(
         // P1-8-3 修复：所有分支的 InputStream 改用 .use{} 包裹，确保关闭。
         // 原来 txt/md/else 分支直接 readText() 后不关流；docx 分支已有 XWPFDocument.use{}
         // 但外层 InputStream 本身未关闭；pdf 分支同理。
+        //
+        // v148 修复：txt/md/else 分支原来硬编码 Charsets.UTF_8，完全没有编码检测——
+        // 比 detectFileCharset 的 4096 字节采样误判 bug 更严重：只要导入的是 Windows
+        // Excel/记事本另存为默认的 GBK 编码文件，100% 会乱码（不是概率性误判，是
+        // 压根没检测）。这里的输入是 ContentResolver 的 InputStream，不像 File 那样
+        // 能 seek，所以先读全部字节，再用 detectCharsetFromBytes（与 detectFileCharset
+        // 同一套修复后的逻辑）检测编码，避免这条导入路径遗漏了同一个乱码 bug 的修复。
         val content = inputStream.use { stream ->
             when (ext) {
-                "txt", "md" -> stream.bufferedReader(Charsets.UTF_8).readText()
+                "txt", "md" -> {
+                    val bytes = stream.readBytes()
+                    val charset = com.zaijian.zhoumuyun.data.agent.detectCharsetFromBytes(bytes)
+                    String(bytes, charset)
+                }
                 "docx"      -> parseDocx(stream)
                 "pdf"       -> parsePdf(context, stream)
-                else        -> stream.bufferedReader(Charsets.UTF_8).readText()
+                else        -> {
+                    val bytes = stream.readBytes()
+                    val charset = com.zaijian.zhoumuyun.data.agent.detectCharsetFromBytes(bytes)
+                    String(bytes, charset)
+                }
             }
         }
         addKnowledge(

@@ -2,6 +2,34 @@ package com.zaijian.zhoumuyun.ui.viewmodel
 
 import com.zaijian.zhoumuyun.data.agent.TablePayload
 
+/**
+ * v1.49 修复（file_read 锁死机制复发性触发 + 出戏念旁白）：
+ *
+ * ToolCallInterceptor 的"强制读取文件"锁死机制此前把"这个文件已经读过"的凭证
+ * 只记在本次 streamWithTools() 调用的局部变量里，函数一返回就丢失——数据库里
+ * 只落最终 assistant 回复，从未记录中间的工具调用/工具结果消息。导致每条新消息
+ * 重新组装 LLM 上下文时，都查不到"已读过"的证据，于是又把两轮强制重试 + 兜底
+ * 自动读取整套流程重新跑一遍——这个文件只要还留在对话历史里就会一直复发，
+ * 不会自愈（阿云反馈：索菲亚反复被"系统强制要求"读同一个文件，还把这条内部
+ * 强制指令当角色台词念给用户听）。
+ *
+ * 修复方式：ToolCallInterceptor 在文件被读取（不管是 AI 主动调用还是程序兜底）
+ * 后发出 StreamEvent.FileReadConfirmed，由 ChatMessageOrchestrator 持久化一条
+ * 带这个前缀的标记消息（role="system"）。这条消息需要满足两个相反的要求：
+ *   1) 要能进入下一轮的 LLM 上下文（ChatMessageOrchestrator 组装 messages 时，
+ *      role="system" 且不以 [AGENT_MSG:/[ROUNDTABLE_TRIGGER] 开头的消息本就会
+ *      映射成 LLMMessage(role="user")，不需要改这部分逻辑），让 ToolCallInterceptor
+ *      的 alreadyRead 检测（找 role=="user" 且含"[工具执行结果]"+文件名的消息）
+ *      能查到证据；
+ *   2) 但不能作为聊天气泡出现在界面上——当前 UI 层（ChatSessionDelegate）对
+ *      DB 里取出的消息没有任何按内容过滤的逻辑，任何 role != "user" 的消息都会
+ *      落进 MessageBubble 的"角色气泡"分支，原样展示会让用户看到一条奇怪的
+ *      系统提示，就像是角色自己说的话。
+ * 所以这里只加一个内容前缀做标记，ChatSessionDelegate 组装 UI 展示列表时按
+ * 这个前缀过滤掉，两头都不耽误。
+ */
+const val FILE_READ_MARK_PREFIX = "[FILE_READ_MARK]"
+
 data class ExportedFile(
     val fileName: String,
     val mimeType: String,

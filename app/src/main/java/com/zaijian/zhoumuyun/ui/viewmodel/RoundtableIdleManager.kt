@@ -409,6 +409,9 @@ class RoundtableIdleManager(
                             event.result.tablePayloadJson?.let { pendingTablePayloadJson = it }
                         }
                         is StreamEvent.RoundDone -> Unit
+                        // v1.49 新增：见 RoundtableBotReplyGenerator.kt 同名分支的说明，
+                        // 圆桌空闲消息场景暂不处理文件已读凭证落库。
+                        is StreamEvent.FileReadConfirmed -> Unit
                     }
                 }
                 } // withVaultContext

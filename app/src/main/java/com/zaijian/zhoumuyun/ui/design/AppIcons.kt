@@ -107,6 +107,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.zaijian.zhoumuyun.ui.theme.Palette
 import com.zaijian.zhoumuyun.ui.theme.Radius
 import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
 
@@ -239,6 +240,35 @@ object AppIcons {
     val ToolCode: ImageVector        = Icons.Outlined.Code
     val ToolTable: ImageVector       = Icons.Outlined.TableChart
     val ToolEmail: ImageVector       = Icons.Outlined.Email
+
+    // ── 文件类型图标映射（共享，原 FileVaultScreen.kt 私有 fileIcon 提取） ──
+    // 细化方案第四节：fileIcon() 从 private 改为共享，ContentBlockRenderer /
+    // ChatMessageBubble 复用同一份映射。同时让 "table" 也映射到 TableChart，
+    // 修复 TableFileBlockRenderer 传 "table" 却落到 else 分支通用文档图标的 bug。
+    // zip 改用 Archive（已定义但未使用，语义比 Folder 更准确）。
+    fun fileIconForType(fileType: String): ImageVector = when (fileType.lowercase()) {
+        "xlsx", "csv", "table"                  -> TableChart
+        "pdf"                                   -> PictureAsPdf
+        "md", "txt", "html", "htm", "json", "xml", "log", "yml", "yaml" -> Code
+        "zip", "rar", "7z", "tar", "gz"         -> Archive
+        "jpg", "jpeg", "png", "gif", "webp", "bmp" -> Description
+        else                                    -> Description
+    }
+
+    // ── 文件类型语义色（icon_redesign_renders 新配色方案，取代细化方案第二节初版） ──
+    // 项目此前没有为"文件类型"维度定义语义色（Palette.Semantic* 是状态色，
+    // ownerAccent 是角色色）。这组颜色只用于图标槽 tint，不影响外壳的渐变/描边。
+    // 初版把 PDF/文档/压缩包全部归到 Ink600 同一色，观感单一；现按类型分派独立
+    // 暖色系色相（与 fileIconForType 的分组一一对应）。
+    fun fileTypeSemanticColor(fileType: String): Color = when (fileType.lowercase()) {
+        "pdf"                                                             -> Palette.FileTypePdf    // PDF → 赭红
+        "md", "txt", "html", "htm", "json", "xml", "log", "yml", "yaml"   -> Palette.FileTypeDoc    // 文档/MD → 靛蓝灰
+        "xlsx", "csv", "table"                                            -> Palette.FileTypeTable  // 表格 → 青竹
+        "zip", "rar", "7z", "tar", "gz"                                   -> Palette.FileTypeZip    // 压缩包 → 橄榄棕
+        "jpg", "jpeg", "png", "gif", "webp", "bmp"                        -> Palette.FileTypeImage  // 图片 → 琥珀
+        "link", "url"                                                     -> Palette.Gold           // 链接 → 沿用既有黄铜金
+        else                                                              -> Palette.FileTypeDoc    // 未识别类型兜底
+    }
 }
 
 /**

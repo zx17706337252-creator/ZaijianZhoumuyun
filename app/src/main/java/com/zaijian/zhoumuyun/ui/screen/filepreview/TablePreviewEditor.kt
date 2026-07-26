@@ -1,5 +1,6 @@
 package com.zaijian.zhoumuyun.ui.screen.filepreview
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -12,6 +13,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.zaijian.zhoumuyun.ui.theme.Palette
 import com.zaijian.zhoumuyun.ui.theme.Spacing
 import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
 
@@ -24,6 +26,9 @@ import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
  * @param columns 列头
  * @param rows 数据行
  * @param editable true=csv 可编辑，false=xlsx 只读
+ * @param isTruncated Excel 闪退修复：数据是否因超过 FilePreviewParser 的行数上限
+ *   被截断（只在 xlsx 只读场景可能为 true）。为 true 时顶部展示提示条，
+ *   避免用户误以为文件本身只有这么多行数据。
  * @param onSave 保存回调（editable=true 时显示保存按钮）
  */
 @Composable
@@ -31,6 +36,7 @@ internal fun TablePreviewEditor(
     columns: List<String>,
     rows: List<List<String>>,
     editable: Boolean,
+    isTruncated: Boolean = false,
     onSave: (List<String>, List<List<String>>) -> Unit,
 ) {
     val colors = ZaijianTheme.colors
@@ -44,6 +50,23 @@ internal fun TablePreviewEditor(
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
+        // Excel 闪退修复：截断提示条，仅在 isTruncated=true（超出解析行数上限）时展示。
+        if (isTruncated) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Palette.SemanticWarning.copy(alpha = 0.12f))
+                    .padding(horizontal = Spacing.screenHorizontal, vertical = Spacing.xs),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "数据量较大，仅展示前 ${rows.size} 行，如需查看完整内容请用其他应用打开",
+                    style = type.label,
+                    color = Palette.SemanticWarning,
+                )
+            }
+        }
+
         // 工具栏：行数统计
         Row(
             modifier = Modifier

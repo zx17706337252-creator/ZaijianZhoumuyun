@@ -83,6 +83,9 @@ internal fun ChatSettingsSheet(
     // 视觉范式。vaultFileCount 用于副标题角标（为 0 时显示引导文案）。
     onNavigateToVault: () -> Unit = {},
     vaultFileCount: Int = 0,
+    // 文档发送方式：默认一起发（true），底部面板内可切换为"分开发"（false）。
+    attachFilesTogether: Boolean = true,
+    onAttachFilesTogetherChange: (Boolean) -> Unit = {},
 ) {
     val colors     = ZaijianTheme.colors
     val type       = ZaijianTheme.typography
@@ -288,6 +291,48 @@ internal fun ChatSettingsSheet(
                 Column(modifier = Modifier.weight(1f)) {
                     Text(text = "导出本次对话", style = type.body, color = colors.textPrimary)
                     Text(text = "生成文本文件，可在「文件」中下载分享", style = type.caption, color = colors.textSecondary)
+                }
+            }
+
+            HorizontalDivider(color = colors.border, modifier = Modifier.padding(horizontal = Spacing.screenHorizontal))
+
+            // 条目：文档发送方式——角色用工具产出文件时，文件卡片是跟文字合并
+            // 进同一个气泡（默认），还是像旧版一样各自独立成一张气泡/卡片。
+            // 布局照抄下方"项目知识库"两选项横排范式，保持视觉一致。
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = Spacing.screenHorizontal, vertical = Spacing.md),
+                verticalArrangement = Arrangement.spacedBy(Spacing.sm),
+            ) {
+                Text(text = "文档发送方式", style = type.body, color = colors.textPrimary)
+                Text(
+                    text  = if (attachFilesTogether) "一起发 — 文件随文字合并成一个气泡"
+                            else "分开发 — 文件单独成一张卡片",
+                    style = type.caption,
+                    color = colors.textSecondary,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
+                    listOf(true to "一起发", false to "分开发").forEach { (together, label) ->
+                        val selected = attachFilesTogether == together
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(
+                                    if (selected) accentColor
+                                    else colors.surface.copy(alpha = GlassOpacity.low)
+                                )
+                                .clickable { onAttachFilesTogetherChange(together) }
+                                .padding(horizontal = 16.dp, vertical = 8.dp),
+                        ) {
+                            Text(
+                                text  = label,
+                                style = type.label,
+                                color = if (selected) Color.White else colors.textSecondary,
+                            )
+                        }
+                    }
                 }
             }
 

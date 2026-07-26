@@ -40,8 +40,10 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import com.zaijian.zhoumuyun.data.agent.TablePayload
 import com.zaijian.zhoumuyun.domain.ContentBlockParser
 import com.zaijian.zhoumuyun.ui.design.AppIcons
+import com.zaijian.zhoumuyun.ui.design.MatBadge
 import com.zaijian.zhoumuyun.ui.design.WorldCard
 import com.zaijian.zhoumuyun.ui.design.WorldBubble
+import com.zaijian.zhoumuyun.ui.design.contentOnFill
 import androidx.compose.ui.unit.dp
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -54,9 +56,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.platform.LocalConfiguration
@@ -115,6 +122,12 @@ internal fun MessageBubble(
     avatarCropOffsetX: Float = 0f,
     avatarCropOffsetY: Float = 0f,
     avatarCropScale: Float = 1f,
+    // 文档发送方式（ChatSettingsSheet 可切换，默认 true）：
+    // true  —— 文件卡片/表格卡片嵌进文字气泡内部，跟文字合并成一个气泡
+    // false —— 保留旧版效果，各自独立成一张气泡/卡片（本参数默认值与此保持
+    //          一致是为了兼容 StreamingMessageItem 等未显式传参的旧调用点——
+    //          流式打字机气泡本来就不带文件，传什么值都不影响观感）。
+    attachFilesTogether: Boolean = true,
 ) {
     val haptic = LocalHapticFeedback.current
     val colors         = ZaijianTheme.colors
@@ -175,7 +188,30 @@ internal fun MessageBubble(
                                 bottomEnd   = Radius.xs,
                             )
                         )
-                        .background(userBubbleColor)
+                        // 细化方案第五节：用户气泡材质修复
+                        // 保留纯色识别（不引入中性渐变），给纯色本身加材质层：
+                        // 深浅渐变（顶部提亮 12%）+ 顶部极细高光线，不加投影
+                        .background(
+                            Brush.verticalGradient(
+                                colors = listOf(
+                                    lerp(userBubbleColor, Color.White, 0.12f),
+                                    userBubbleColor,
+                                )
+                            )
+                        )
+                        .drawBehind {
+                            drawRect(
+                                brush = Brush.horizontalGradient(
+                                    colors = listOf(
+                                        Color.White.copy(alpha = 0f),
+                                        Color.White.copy(alpha = if (colors.isDark) 0.15f else 0.25f),
+                                        Color.White.copy(alpha = 0f),
+                                    ),
+                                ),
+                                topLeft = Offset.Zero,
+                                size = Size(size.width, 1.dp.toPx()),
+                            )
+                        }
                         .combinedClickable(
                             interactionSource = userInteraction,
                             indication        = null,
@@ -270,6 +306,11 @@ internal fun MessageBubble(
                 // clip+background+border 组合。四角圆角（尖角在左下）、描边色
                 // 沿用原值不变（borderColor 显式传 Gold 系，非 WorldBubble 默认
                 // accent，保持与此前视觉一致）。
+                // 文档发送方式：只有"有文字 + 有附件"才谈得上"合并/分开"，
+                // 纯文件消息（content 为空）本来就没有文字气泡可合并，走原逻辑。
+                val hasAttachment = message.exportedFiles.isNotEmpty() || message.tablePayload != null
+                val mergeIntoBubble = attachFilesTogether && message.content.isNotBlank() && hasAttachment
+
                 if (message.content.isNotBlank()) {
                     // 2.1：同用户气泡，长按复制 + 按压缩放反馈。
                     val charInteraction = remember { MutableInteractionSource() }
@@ -302,56 +343,94 @@ internal fun MessageBubble(
                         topEnd      = Radius.md,
                         bottomStart = Radius.xs,
                         bottomEnd   = Radius.md,
-                        borderColor = accentColor.copy(alpha = if (colors.isDark) 0.5f else 0.7f),
-                        borderWidth = 1.dp,
+                        // 角色气泡改版：不再是"accentColor 描边包一层纸面底"，
+                        // 气泡本身纯色填充为该角色的 accentColor。
+                        fillColor   = accentColor,
                     ) {
-                        Box(modifier = Modifier.padding(horizontal = Spacing.md, vertical = 12.dp)) {
+                        Column(modifier = Modifier.padding(horizontal = Spacing.md, vertical = 12.dp)) {
                             // 窗口3：角色气泡使用 ContentBlockRenderer 渲染（块级结构化 + 行内语义标记）
                             // 用户气泡（上方）保持原生 Text，FileExportCard 不受影响
                             val contentBlocks = remember(message.content) {
                                 ContentBlockParser.parse(message.content)
                             }
+                            // 纯色填充后文字色不能再用 colors.textPrimary（中性墨色只是
+                            // 为纸面底设计的，配饱和 accentColor 底对比度不稳）——
+                            // 改用 contentOnFill() 按每个角色色的亮度自动选深/浅字。
                             ContentBlockRenderer(
                                 blocks    = contentBlocks,
-                                textColor = colors.textPrimary,
+                                textColor = accentColor.contentOnFill(),
                                 style     = type.body,
                             )
+
+                            // 文档发送方式="一起发"（默认）：文件/表格卡片嵌进同一个
+                            // WorldBubble 内部，跟文字共用一个外框，视觉上是一条消息。
+                            // 卡片自身仍保留 WorldCard 描边（与 Telegram/微信"文字+
+                            // 附件同气泡"的呈现方式一致），只是不再各自套一层独立气泡。
+                            if (mergeIntoBubble) {
+                                Column(
+                                    modifier = Modifier.padding(top = Spacing.sm),
+                                    verticalArrangement = Arrangement.spacedBy(Spacing.xs),
+                                ) {
+                                    message.exportedFiles.forEach { ef ->
+                                        FileExportCard(
+                                            file        = ef,
+                                            accentColor = accentColor,
+                                            maxWidth    = maxBubbleWidth - Spacing.md * 2,
+                                            onOpen      = { onOpenFile(ef) },
+                                        )
+                                    }
+                                    message.tablePayload?.let { payload ->
+                                        val excelFile = payload.exportedFileMetaJson?.let { metaJson ->
+                                            parseExportedFilesWithFallback(null, metaJson).firstOrNull()
+                                        }
+                                        TableCard(
+                                            payload     = payload,
+                                            accentColor = accentColor,
+                                            maxWidth    = maxBubbleWidth - Spacing.md * 2,
+                                            onOpenExcel = excelFile?.let { ef -> { onOpenFile(ef) } },
+                                            onOpenFullTable = {
+                                                onOpenTable(payload.columns, payload.rows)
+                                            },
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
                 }
 
-                // 4. 文件导出卡片（原有逻辑不变，Phase 18）
-                // v66（Agent附件下发方案 v2.0 · 1.7 P3）：一轮回复若连续调用多个
-                // 文件类工具，exportedFiles 现在能拿到全部文件（不再只有最后一个），
-                // 循环渲染多张卡片——外层 Column 已经用 Arrangement.spacedBy(Spacing.xs)
-                // 统一管理垂直间距，这里不需要再手动加 Spacer。
-                message.exportedFiles.forEach { ef ->
-                    FileExportCard(
-                        file        = ef,
-                        accentColor = accentColor,
-                        maxWidth    = maxBubbleWidth,
-                        onOpen      = { onOpenFile(ef) },
-                    )
-                }
-
-                // v67（表格直传 W4）：table_export 产出的表格卡片。
-                // 逻辑对齐上方 exportedFiles 渲染段——payload 非空时渲染 TableCard。
-                // >500 行场景 payload.exportedFileMetaJson 非 null，从里面解析出 xlsx
-                // 文件元信息走 onOpenFile（与 FileExportCard 同款打开路径）。
-                message.tablePayload?.let { payload ->
-                    val excelFile = payload.exportedFileMetaJson?.let { metaJson ->
-                        parseExportedFilesWithFallback(null, metaJson).firstOrNull()
+                // 4. 文件导出卡片 / 表格卡片——"分开发"模式（含纯文件消息，无文字可合并）：
+                // 原有逻辑不变（Phase 18），各自独立成一张气泡，外层 Column 已经用
+                // Arrangement.spacedBy(Spacing.xs) 统一管理垂直间距。
+                if (!mergeIntoBubble) {
+                    message.exportedFiles.forEach { ef ->
+                        FileExportCard(
+                            file        = ef,
+                            accentColor = accentColor,
+                            maxWidth    = maxBubbleWidth,
+                            onOpen      = { onOpenFile(ef) },
+                        )
                     }
-                    TableCard(
-                        payload     = payload,
-                        accentColor = accentColor,
-                        maxWidth    = maxBubbleWidth,
-                        onOpenExcel = excelFile?.let { ef -> { onOpenFile(ef) } },
-                        // v1.48：表格全屏查看/编辑
-                        onOpenFullTable = {
-                            onOpenTable(payload.columns, payload.rows)
-                        },
-                    )
+
+                    // v67（表格直传 W4）：table_export 产出的表格卡片。
+                    // 逻辑对齐上方 exportedFiles 渲染段——payload 非空时渲染 TableCard。
+                    // >500 行场景 payload.exportedFileMetaJson 非 null，从里面解析出 xlsx
+                    // 文件元信息走 onOpenFile（与 FileExportCard 同款打开路径）。
+                    message.tablePayload?.let { payload ->
+                        val excelFile = payload.exportedFileMetaJson?.let { metaJson ->
+                            parseExportedFilesWithFallback(null, metaJson).firstOrNull()
+                        }
+                        TableCard(
+                            payload     = payload,
+                            accentColor = accentColor,
+                            maxWidth    = maxBubbleWidth,
+                            onOpenExcel = excelFile?.let { ef -> { onOpenFile(ef) } },
+                            // v1.48：表格全屏查看/编辑
+                            onOpenFullTable = {
+                                onOpenTable(payload.columns, payload.rows)
+                            },
+                        )
+                    }
                 }
             }
         }
@@ -391,23 +470,17 @@ internal fun FileExportCard(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
         ) {
-            // 文件类型徽标
-            Box(
-                modifier = Modifier
-                    .size(40.dp)
-                    .clip(RoundedCornerShape(Radius.sm))
-                    .background(accentColor.copy(alpha = 0.15f)),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    text  = file.extLabel,
-                    style = type.label.copy(
-                        fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
-                        fontSize   = androidx.compose.ui.unit.TextUnit(11f, androidx.compose.ui.unit.TextUnitType.Sp),
-                    ),
-                    color = accentColor,
-                )
-            }
+            // 文件类型徽标：MatBadge 微立体图标槽（细化方案第四节 + 第九节）
+            // 图标按扩展名映射（fileIconForType），底色用角色 accentColor——
+            // 这里的文件归属当前聊天角色（ownerAccent 已体现），图标槽继续用角色色是对的
+            MatBadge(
+                icon              = AppIcons.fileIconForType(file.extLabel),
+                contentDescription = file.extLabel,
+                color             = accentColor,
+                badgeSize         = 40.dp,
+                iconSize          = 20.dp,
+                cornerRadius      = Radius.sm,
+            )
 
             // 文件名 + 大小
             Column(modifier = Modifier.weight(1f)) {
