@@ -238,6 +238,11 @@ class MemoryWriteTool(
         } catch (e: Throwable) {
             toolFailure(name, "写入记忆失败，请稍后重试。", "memory_write_failed", e)
         }
+        }
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (e: Throwable) {
+        toolFailure(name, "记忆写入工具执行失败，请稍后重试。", "memory_write_tool_failed", e)
     }
 
     /**
@@ -664,7 +669,6 @@ class RuleDistillTool(
         }
 
         ToolResult(name, true, resultText.trim())
-        }
         }
     } catch (e: kotlinx.coroutines.CancellationException) {
         throw e
