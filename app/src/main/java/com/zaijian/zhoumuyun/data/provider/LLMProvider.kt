@@ -169,7 +169,7 @@ suspend fun LLMProvider.chatSyncWithRetry(
     maxAttempts: Int = 2,
 ): String {
     if (maxAttempts <= 0) throw IllegalArgumentException("maxAttempts must be > 0")
-    var lastError: Exception? = null
+    var lastError: Throwable? = null
     repeat(maxAttempts) { attempt ->
         try {
             return chatSync(messages, systemPrompt, config)

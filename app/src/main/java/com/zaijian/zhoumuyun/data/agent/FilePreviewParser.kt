@@ -524,7 +524,7 @@ object FilePreviewParser {
         val realText = try {
             parseDocxText(file)
         } catch (e: Throwable) {
-            com.zaijian.zhoumuyun.util.AgentLog.error(
+            com.zaijian.zhoumuyun.util.ZLog.e(
                 "FilePreviewParser", "docx 按 zip 容器解析失败，尝试伪 docx 兜底：${file.name}", e,
             )
             null
