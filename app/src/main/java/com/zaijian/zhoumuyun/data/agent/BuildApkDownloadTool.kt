@@ -8,11 +8,13 @@ import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.content.FileProvider
 import com.zaijian.zhoumuyun.data.datastore.GithubConfigDataStore
+import com.zaijian.zhoumuyun.util.ZLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
+import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.zip.ZipInputStream
@@ -34,6 +36,11 @@ class BuildApkDownloadTool(
         const val CHANNEL_ID = "apk_download"
         const val CHANNEL_NAME = "APK 下载"
         const val NOTIFICATION_ID = 2001
+
+        // P2 修复：下载体积上限。原 downloadZip 直接 copyTo 落盘，无任何大小校验，
+        // 异常/被篡改的 artifact（或重定向到超大文件）可能把磁盘写满或导致 OOM。
+        // 200MB 对正常 APK 产物足够宽裕，超过即中止下载。
+        const val MAX_DOWNLOAD_BYTES = 200L * 1024 * 1024  // 200MB
     }
 
     override suspend fun execute(params: Map<String, String>): ToolResult =
@@ -71,14 +78,10 @@ class BuildApkDownloadTool(
                         userHint = "下载失败",
                     )
                 }
-            } catch (e: Exception) {
-                ToolResult(
-                    toolName = name,
-                    success  = false,
-                    content  = "",
-                    error    = "下载失败：${e.message?.take(120)}",
-                    userHint = "下载失败",
-                )
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                toolFailure(name, "下载 APK 失败，请稍后重试。", "build_apk_download_failed", e)
             }
         }
 
@@ -113,17 +116,20 @@ class BuildApkDownloadTool(
             conn.disconnect()
         }
 
-        val (artifactName, archiveUrl) = artifactInfo
+        val (artifactName, archiveUrl) = artifactInfo ?: return null
 
         val zipFile = downloadZip(config, archiveUrl) ?: return null
 
-        val apkFile = extractApkFromZip(zipFile) ?: run {
+        // P2 修复（Batch5审查问题：临时 zip 文件泄漏）：原实现仅在"正常路径"和
+        // "extract 返回 null"两条分支里各自调 zipFile.delete()，一旦 extractApkFromZip
+        // 抛异常（Zip Slip 校验失败、zip 损坏、IO 异常等），两条 delete 都走不到，
+        // 临时文件会长期堆积在 cacheDir，最终可能导致磁盘占用异常增长。改为
+        // try-finally 兜底，无论 extractApkFromZip 返回 null 还是抛异常都删除 zipFile。
+        return try {
+            extractApkFromZip(zipFile)
+        } finally {
             zipFile.delete()
-            null
         }
-
-        zipFile.delete()
-        return apkFile
     }
 
     private fun downloadZip(
@@ -143,10 +149,36 @@ class BuildApkDownloadTool(
         return try {
             if (conn.responseCode !in 200..399) return null
             val tempZip = File(context.cacheDir, "apk_download_${System.currentTimeMillis()}.zip")
-            conn.inputStream.use { input ->
-                FileOutputStream(tempZip).use { output ->
-                    input.copyTo(output)
+            // P2 修复：下载无大小限制。原实现用 input.copyTo(output) 一路写到底，
+            // 异常/被篡改的 artifact（或重定向到超大文件）可能把磁盘写满或导致 OOM。
+            // 改为手动循环读取并累计字节数，超过 MAX_DOWNLOAD_BYTES(200MB) 即中止并
+            // 抛 IOException，由 execute() 的 catch 统一转成失败 ToolResult。
+            var totalRead = 0L
+            var exceededLimit = false
+            try {
+                conn.inputStream.use { input ->
+                    FileOutputStream(tempZip).use { output ->
+                        val buffer = ByteArray(8 * 1024)
+                        while (true) {
+                            val n = input.read(buffer)
+                            if (n == -1) break
+                            totalRead += n
+                            if (totalRead > MAX_DOWNLOAD_BYTES) {
+                                exceededLimit = true
+                                break
+                            }
+                            output.write(buffer, 0, n)
+                        }
+                    }
                 }
+            } finally {
+                // 超限或异常时清理半成品文件，避免 cacheDir 残留
+                if (exceededLimit || (tempZip.exists() && tempZip.length() == 0L)) {
+                    tempZip.delete()
+                }
+            }
+            if (exceededLimit) {
+                throw IOException("下载体积超过上限 ${MAX_DOWNLOAD_BYTES / (1024 * 1024)}MB，已中止")
             }
             if (tempZip.length() == 0L) { tempZip.delete(); return null }
             tempZip
@@ -193,42 +225,52 @@ class BuildApkDownloadTool(
     }
 
     private fun sendDownloadNotification(apkFile: File) {
-        val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        // P2 修复：通知发送失败不影响下载结果。走到这里说明 APK 已成功下载落盘，
+        // 通知只是引导用户点击安装的辅助提示，不应因通知渠道未注册/PendingIntent
+        // 异常/NotificationManager 异常等把一次成功的下载拖成失败 ToolResult。
+        // 包一层 try-catch，失败仅记日志，execute() 仍按 success=true 返回。
+        try {
+            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
-        // S3问题7修复：渠道创建已收敛至 ZaijianApp.setupNotificationChannels()
-        // 此处不再自行创建，直接使用已注册的渠道
+            // S3问题7修复：渠道创建已收敛至 ZaijianApp.setupNotificationChannels()
+            // 此处不再自行创建，直接使用已注册的渠道
 
-        val uri = FileProvider.getUriForFile(
-            context,
-            "${context.packageName}.fileprovider",
-            apkFile,
-        )
+            val uri = FileProvider.getUriForFile(
+                context,
+                "${context.packageName}.fileprovider",
+                apkFile,
+            )
 
-        val installIntent = Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(uri, "application/vnd.android.package-archive")
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            val installIntent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "application/vnd.android.package-archive")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+
+            val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            } else {
+                PendingIntent.FLAG_UPDATE_CURRENT
+            }
+
+            val pendingIntent = PendingIntent.getActivity(
+                context, 0, installIntent, flags,
+            )
+
+            val notif = NotificationCompat.Builder(context, CHANNEL_ID)
+                .setSmallIcon(android.R.drawable.ic_menu_upload)
+                .setContentTitle("✅ 编译完成")
+                .setContentText("APK 已下载，点击安装")
+                .setStyle(NotificationCompat.BigTextStyle().bigText("APK 已保存到：${apkFile.name}"))
+                .setAutoCancel(true)
+                .setContentIntent(pendingIntent)
+                .build()
+
+            nm.notify(NOTIFICATION_ID, notif)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            ZLog.w("BuildApkDownloadTool", "下载完成通知发送失败: ${e.message}")
         }
-
-        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        } else {
-            PendingIntent.FLAG_UPDATE_CURRENT
-        }
-
-        val pendingIntent = PendingIntent.getActivity(
-            context, 0, installIntent, flags,
-        )
-
-        val notif = NotificationCompat.Builder(context, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.ic_menu_upload)
-            .setContentTitle("✅ 编译完成")
-            .setContentText("APK 已下载，点击安装")
-            .setStyle(NotificationCompat.BigTextStyle().bigText("APK 已保存到：${apkFile.name}"))
-            .setAutoCancel(true)
-            .setContentIntent(pendingIntent)
-            .build()
-
-        nm.notify(NOTIFICATION_ID, notif)
     }
 }

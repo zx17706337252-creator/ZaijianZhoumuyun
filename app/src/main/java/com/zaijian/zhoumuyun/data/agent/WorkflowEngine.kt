@@ -260,7 +260,10 @@ object WorkflowEngine {
                             startedAt = now,
                             completedAt = System.currentTimeMillis(),
                         )
-                    } catch (e: Exception) {
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (e: Throwable) {
+                        // P1-6 修复：catch Throwable 而非 Exception，防 Error 子类击穿
                         // 批次2 2-3修复：同 executeToolStep 主路径——recordStep 失败时
                         // @Transaction 回滚导致 currentStep 没前进，继续循环会空转
                         // 到 deadlineAt 超时（虽不重复执行工具，但浪费 10 分钟）。
@@ -322,7 +325,14 @@ object WorkflowEngine {
                     startedAt      = startedAt,
                     completedAt    = System.currentTimeMillis(),
                 )
-            } catch (e: Exception) {
+            } catch (e: CancellationException) {
+                // #55 修复：CancellationException 是 Exception 的子类，若被下面这个
+                // catch(e: Exception) 一并吞掉，外层协程作用域取消时这个信号传不上去，
+                // 工作流实际并未真正停止。这里单独拦截并原样重新抛出，与文件里
+                // recordWorkflowActivity/recordJobFailure 已有的正确写法保持一致。
+                throw e
+            } catch (e: Throwable) {
+                // P1-6 修复：catch Throwable 而非 Exception，防 Error 子类击穿
                 // 批次2 2-3修复：recordStep 失败说明 DB 有问题。@Transaction 回滚
                 // 导致 currentStep 没前进，若继续循环 LLM 会重复输出同一决策，对
                 // 非幂等工具（git_commit_push/build_apk）产生重复副作用。此处改为
@@ -349,13 +359,20 @@ object WorkflowEngine {
         } else {
             try {
                 tool.execute(paramsWithCharId)
-            } catch (e: Exception) {
+            } catch (e: CancellationException) {
+                // #55 修复：同上，工具执行本身也可能在挂起点被取消（比如工具内部
+                // 有网络/DB IO），必须让 CancellationException 穿透而不是被当成
+                // "工具执行异常"包装成失败结果继续跑下一步。
+                throw e
+            } catch (e: Throwable) {
+                // P1-6 修复：catch Throwable 而非 Exception，防 Error 子类击穿
                 // AgentTool 约定不抛异常，这里是双重兜底，避免任何意外异常打断整个工作流
+                ZLog.w("WorkflowEngine", "工具执行异常 $toolName", e)
                 ToolResult(
                     toolName = toolName,
                     success = false,
                     content = "",
-                    error = "工具执行异常：${e.message}",
+                    error = "工具执行异常，请稍后重试",
                 )
             }
         }
@@ -395,7 +412,10 @@ object WorkflowEngine {
                 startedAt      = startedAt,
                 completedAt    = System.currentTimeMillis(),
             )
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            // P1-6 修复：catch Throwable 而非 Exception，防 Error 子类击穿
             // 批次2 2-3修复（核心风险点）：L-P1-1 此处只补了 try-catch 防止 DB 写入
             // 异常崩溃 App，但没解决原报告真正担心的问题——recordStepAtomic 用
             // @Transaction 把 insert 和 currentStep+1 绑在一起，写入失败时两者都
@@ -429,8 +449,12 @@ object WorkflowEngine {
                 systemPrompt = systemPrompt,
                 config = config,
             )
-        } catch (e: Exception) {
-            return EngineDecision.Invalid(rawText = "LLM 调用异常：${e.message}")
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            // P1-6 修复：catch Throwable 而非 Exception，防 Error 子类击穿
+            ZLog.w("WorkflowEngine", "askEngineDecision LLM 调用异常", e)
+            return EngineDecision.Invalid(rawText = "LLM 调用异常，请稍后重试")
         }
         return parseDecision(raw)
     }
@@ -539,7 +563,7 @@ object WorkflowEngine {
     private fun paramsToJson(params: Map<String, String>): String =
         try {
             JSONObject(params).toString()
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
             "{}"
         }
 
@@ -585,7 +609,8 @@ object WorkflowEngine {
             )
         } catch (e: CancellationException) {
             throw e
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
+            // P1-6 修复：catch Throwable 而非 Exception，防 Error 子类击穿
             ZLog.w("WorkflowEngine", "心迹镜像埋点失败（不影响工作流）", e)
         }
     }
@@ -617,7 +642,8 @@ object WorkflowEngine {
             )
         } catch (e: CancellationException) {
             throw e
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
+            // P1-6 修复：catch Throwable 而非 Exception，防 Error 子类击穿
             ZLog.w("WorkflowEngine", "失败写回记忆失败（不影响工作流终止）", e)
         }
     }

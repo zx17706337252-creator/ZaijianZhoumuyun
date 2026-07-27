@@ -407,7 +407,7 @@ class PregnancyTriggerManager(
                 // 非本组件超时导致的取消（外部协程真正被取消），必须放行，
                 // 不能当作"调用失败"吞掉后继续走兜底——否则违反结构化并发约定。
                 throw e
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 ZLog.w("PregnancyTriggerManager", "AI 同意判定调用失败，降级到关键词兜底", e)
                 // 落到下面的关键词兜底，不在此处重新抛出——关键词判定是
                 // 兜底容错层，本身就是为了在 AI 判定不可用时仍能正常出结果。
@@ -875,7 +875,9 @@ class PregnancyTriggerManager(
                         if (!inFertileWindow) {
                             pregnancyRepository.markFertileWindowConsentAsked(characterId, false)
                         }
-                    } catch (e: Exception) {
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (e: Throwable) {
                         ZLog.w(
                             "PregnancyTriggerManager",
                             "resyncFertileWindowFlags 单角色处理失败 characterId=$characterId",
@@ -883,7 +885,9 @@ class PregnancyTriggerManager(
                         )
                     }
                 }
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 ZLog.w("PregnancyTriggerManager", "resyncFertileWindowFlags 整体失败", e)
             }
         }

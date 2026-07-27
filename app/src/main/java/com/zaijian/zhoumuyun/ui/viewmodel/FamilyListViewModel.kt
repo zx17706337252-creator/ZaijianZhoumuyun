@@ -102,7 +102,7 @@ class FamilyListViewModel(application: Application) : AndroidViewModel(applicati
                 _uiState.value = FamilyListUiState.Ready(members)
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 ZLog.e("FamilyListViewModel", "loadFamily failed", e)
                 _uiState.value = FamilyListUiState.Error("加载失败：${e.message}")
             }

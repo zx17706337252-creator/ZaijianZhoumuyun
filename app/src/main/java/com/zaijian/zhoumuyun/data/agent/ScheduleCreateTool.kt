@@ -173,8 +173,10 @@ class ScheduleCreateTool(
                 description      = description,
                 projectId        = projectId,
             )
-        } catch (e: Exception) {
-            return ToolResult(name, false, "创建定时任务失败：${e.message?.take(80)}", "创建定时任务失败：${e.message?.take(80)}")
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            return toolFailure(name, "创建定时任务失败，请稍后重试。", "schedule_create_failed", e)
         }
 
         // 同步步骤失败不影响整体结果（Room 数据已落库）
@@ -187,7 +189,9 @@ class ScheduleCreateTool(
                 nextRunAt        = nextRunAt,
                 repeatIntervalMs = repeatIntervalMs,
             )
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             android.util.Log.w("ScheduleCreateTool", "Calendar sync failed for job $jobId", e)
             syncWarning = "（日历同步失败，不影响任务）"
         }
@@ -197,7 +201,9 @@ class ScheduleCreateTool(
                 val delayMs = (nextRunAt - System.currentTimeMillis()).coerceAtLeast(0L)
                 WorkManagerScheduler.enqueue(it, jobId, delayMs)
             }
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             android.util.Log.w("ScheduleCreateTool", "WorkManager enqueue failed for job $jobId", e)
             syncWarning = if (syncWarning.isEmpty()) "（后台调度注册失败，任务仍会按计划执行）"
                           else "$syncWarning，后台调度注册失败"

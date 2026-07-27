@@ -123,7 +123,7 @@ class DaughterCharacterGenerator(
             // 保留回滚但不包装异常，传播取消信号以维护结构化并发
             repository.deleteByMother(input.motherConfig.id)
             throw e
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             repository.deleteByMother(input.motherConfig.id)
             throw DaughterGenerationException(
                 "女儿角色注册失败，已回滚 daughter_character 暂存数据: ${e.message}"
@@ -215,7 +215,7 @@ ${identity.persona}
 speechStyle（说话风格）：
 ${identity.speechStyle}
 
-attitudeToUser（对用户的行为模式）：
+attitudeToUser（对他的行为模式）：
 ${identity.attitudeToUser}
 
 boundaries（绝对不会做的事）：
@@ -290,7 +290,7 @@ ${input.differenceTypes.joinToString("\n") { diffRule ->
         DaughterDifferenceType.REVERSAL ->
             "• REVERSAL（反转）：选取母亲1-2个核心特质，在女儿身上极性翻转。例：母亲话少克制→女儿话多直白；母亲占有欲强→女儿刻意疏离。翻转的是特质，不是人格全部。"
         DaughterDifferenceType.SHIFT ->
-            "• SHIFT（位移）：母亲某个特质保留，但触发场景或投射对象发生偏移。例：母亲对用户黏性高→女儿将同等黏性转移到某个信念或记忆上，而非对人。"
+            "• SHIFT（位移）：母亲某个特质保留，但触发场景或投射对象发生偏移。例：母亲对他黏性高→女儿将同等黏性转移到某个信念或记忆上，而非对人。"
         DaughterDifferenceType.AMPLIFY ->
             "• AMPLIFY（放大）：母亲某个被压抑或隐藏的底层特质，在女儿身上放大到表面。例：母亲面具下的脆弱→女儿将脆弱直接暴露为核心性格标签，不再隐藏。"
     }
@@ -300,11 +300,11 @@ ${input.differenceTypes.joinToString("\n") { diffRule ->
 
 1. **女儿不是母亲的复制**：人格必须可识别地有别于母亲，差异规则必须体现在identity的具体字段上。
 2. **女儿不是母亲的对立面**：差异是有来源的变体，而不是180度反转所有特质。母亲是女儿性格的土壤，能看出血缘联系。
-3. **coreWound和coreDesire优先由D3答案驱动**：用户的回答是最重要的输入，母亲对应字段是参照和变体来源。
+3. **coreWound和coreDesire优先由D3答案驱动**：他的回答是最重要的输入，母亲对应字段是参照和变体来源。
 4. **customEnums必须贴合女儿人格**：四套枚举（maskStates/emotionStates/needStates/fearStates）的description要直接可用于Prompt注入，写法参考母亲专属枚举的注释风格——具体场景+具体动作，不写抽象描述。
 5. **stateLayer初始值从母亲值派生**：不能和母亲完全相同，用差异规则调整1-3个关键数值，其余可相近。
 6. **speechStyle必须独特**：句式、节奏、惯用词、禁止用词要与母亲明显区分，让读者读一句就能区分是谁在说话。
-7. **privateExamples写4-6组对话**：格式与母亲的privateExamples一致（用户说：→ 女儿回应：），体现破防状态下的真实反应。
+7. **privateExamples写4-6组对话**：格式与母亲的privateExamples一致（他说：→ 女儿回应：），体现破防状态下的真实反应。
 
 # 输出格式
 
@@ -388,7 +388,7 @@ JSON结构如下（所有字段必须存在，不能为空字符串或空数组�
         val persona1   = answers[slotKey(PregnancyQuestionType.PERSONA,   1)] ?: "（未填写）"
 
         return """
-## D3 用户答案（6个锁定槎位）
+## D3 他的答案（6个锁定槎位）
 
 槎位1 · NAME_PREF（孩子名字）：
 $namePref
@@ -448,7 +448,7 @@ $persona1
 
         val root = try {
             JSONObject(cleaned)
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             throw DaughterGenerationException("JSON解析失败：${e.message}\n原始输出前200字：${raw.take(200)}")
         }
 

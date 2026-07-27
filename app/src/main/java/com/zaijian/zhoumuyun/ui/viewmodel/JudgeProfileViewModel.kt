@@ -136,7 +136,9 @@ class JudgeProfileViewModel(
             try {
                 judgeProfileRepo.updateStandardNotes(profileId, text.trim())
                 _snackbarMessage.value = "评判标准已更新"
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 _snackbarMessage.value = "保存失败：${e.message}"
             } finally {
                 _isLoading.value = false
@@ -167,7 +169,9 @@ class JudgeProfileViewModel(
                 // ViewModel 不再需要持有 db 来自己开 withTransaction。
                 judgeProfileRepo.confirmCorrection(profileId, trait, entryText)
                 _snackbarMessage.value = "已写进评判标准"
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 _snackbarMessage.value = "操作失败：${e.message}"
             } finally {
                 _isLoading.value = false
@@ -191,7 +195,9 @@ class JudgeProfileViewModel(
             try {
                 judgeProfileRepo.declineCorrection(profileId, entryText)
                 _snackbarMessage.value = "已忽略这条观察"
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 _snackbarMessage.value = "操作失败：${e.message}"
             }
         }
@@ -210,7 +216,7 @@ class JudgeProfileViewModel(
                 val obj = arr.getJSONObject(i)
                 obj.getString("trait") to obj.getInt("occurrenceCount")
             }
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
             emptyList()
         }
     }

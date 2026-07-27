@@ -448,7 +448,7 @@ class DaughterDataException(message: String) : Exception(message)
 
 private fun String.toJSONObjectOrThrow(label: String): JSONObject = try {
     JSONObject(this)
-} catch (e: Exception) {
+} catch (e: Throwable) {
     throw DaughterDataException("$label JSON解析失败：${e.message}")
 }
 

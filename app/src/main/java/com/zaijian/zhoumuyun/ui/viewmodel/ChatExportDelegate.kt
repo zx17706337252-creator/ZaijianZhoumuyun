@@ -77,10 +77,15 @@ class ChatExportDelegate(
                         content = "已导出本次对话",
                         createdAt = System.currentTimeMillis(),
                         exportedFileJson = exportedFileJson,
+                        // v66（1.7 P3）：同步写入 exportedFilesJson，
+                        // 与 ChatMessageOrchestrator/RoundtableBotReplyGenerator 路径保持一致。
+                        exportedFilesJson = packExportedFilesJson(listOf(exportedFileJson)),
                     )
                 )
                 reloadMessages(characterId)
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 ZLog.e("ChatExportDelegate", "导出对话失败 characterId=$characterId", e)
                 _uiState.update { it.copy(error = "导出失败，请重试") }
             }

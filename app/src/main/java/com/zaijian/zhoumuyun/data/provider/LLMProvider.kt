@@ -1,6 +1,7 @@
 package com.zaijian.zhoumuyun.data.provider
 
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
 
 // ─────────────────────────────────────────────────────────────
 //  Data models
@@ -17,6 +18,37 @@ data class LLMConfig(
     val temperature: Float = 0.8f,
     val stream: Boolean = true,
 )
+
+// ─────────────────────────────────────────────────────────────
+//  Streaming chunk (P0-5)
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * 流式输出的单个块。P0-5 修复引入。
+ *
+ * 原先 [LLMProvider.chat] 只返回 `Flow<String>`，无法携带 SSE 流末尾的
+ * `finish_reason` 元数据。OpenAI 协议在最后一个 chunk 中通过 `finish_reason`
+ * 标识结束原因：`stop`（正常）、`length`（maxTokens 截断）、`content_filter`
+ * （被过滤）。不读取这个字段，截断和正常结束完全无法区分——是"文档发送
+ * 失败但无任何报错记录"的协议层根因之一。
+ *
+ * [ChatStreamItem.TextDelta] 携带增量文本（与原 Flow<String> 的每个 emit 对应），
+ * [ChatStreamItem.FinishReason] 在流结束时携带 finish_reason（可能为 null，
+ * 表示提供商未返回或流异常中断）。
+ */
+sealed class ChatStreamItem {
+    /** LLM 输出的增量文本 */
+    data class TextDelta(val text: String) : ChatStreamItem()
+
+    /**
+     * 流结束信号，携带 finish_reason。
+     * - "stop"：正常结束
+     * - "length"：达到 maxTokens 被截断
+     * - "content_filter"：被内容过滤
+     * - null：提供商未返回 finish_reason（流异常中断等）
+     */
+    data class FinishReason(val reason: String?) : ChatStreamItem()
+}
 
 // ─────────────────────────────────────────────────────────────
 //  Provider interface
@@ -40,6 +72,24 @@ interface LLMProvider {
         systemPrompt: String,
         config: LLMConfig,
     ): Flow<String>
+
+    /**
+     * 带元数据的流式输出（P0-5 修复）。
+     *
+     * 与 [chat] 的差异：返回 [ChatStreamItem] 而非 `String`，在流结束时
+     * 额外 emit 一个 [ChatStreamItem.FinishReason] 携带 `finish_reason`。
+     * 调用方（[com.zaijian.zhoumuyun.data.agent.ToolCallInterceptor]）据此
+     * 判断是否被 maxTokens 截断，并注入续写/自查指令。
+     *
+     * 默认实现包装 [chat]，不 emit FinishReason（向后兼容不支持 finish_reason
+     * 的提供商——当前只有 [OpenAICompatProvider] 覆写此方法）。
+     */
+    suspend fun chatStream(
+        messages: List<LLMMessage>,
+        systemPrompt: String,
+        config: LLMConfig,
+    ): Flow<ChatStreamItem> =
+        chat(messages, systemPrompt, config).map { ChatStreamItem.TextDelta(it) }
 
     /**
      * 同步输出（整段返回）。
@@ -133,7 +183,7 @@ suspend fun LLMProvider.chatSyncWithRetry(
             if (attempt < maxAttempts - 1) {
                 kotlinx.coroutines.delay(1000L * (1L shl attempt))
             }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             lastError = e
             // 指数退避：1s, 2s, 4s, 8s...
             if (attempt < maxAttempts - 1) {

@@ -84,7 +84,9 @@ class ScheduleGetTool(
                         .map { k -> "$k=${json.getString(k)}" }
                         .joinToString(", ")
                         .ifEmpty { "（无参数）" }
-                } catch (_: Exception) { job.toolParamsJson }
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (_: Throwable) { job.toolParamsJson }
             } else {
                 null  // 工单型不展示参数行
             }
@@ -127,8 +129,10 @@ class ScheduleGetTool(
                 success  = true,
                 content  = content,
             )
-        } catch (e: Exception) {
-            ToolResult(name, false, "", error = "查询失败：${e.message}")
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            toolFailure(name, "查询定时任务失败，请稍后重试。", "schedule_get_failed", e)
         }
     }
 }

@@ -68,7 +68,9 @@ class AgentActivityViewModel(application: Application) : AndroidViewModel(applic
                         it.copy(isLoading = false, blocks = blocks, error = null)
                     }
                 }
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 _uiState.update {
                     it.copy(isLoading = false, error = e.message ?: "加载心迹失败")
                 }

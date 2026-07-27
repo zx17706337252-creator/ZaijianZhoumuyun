@@ -324,7 +324,7 @@ private fun RelationshipHistoryRow(
                     }
                 }")
             }.trim().ifEmpty { "关系更新" }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             ZLog.w("CharacterDetail", "RelationshipEventCard: failed to parse payload JSON", e)
             "关系更新"
         }

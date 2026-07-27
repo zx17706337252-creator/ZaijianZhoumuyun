@@ -145,14 +145,10 @@ class WebSearchTool : AgentTool {
                     conn.disconnect()
                 }
 
-            } catch (e: Exception) {
-                ToolResult(
-                    toolName = name,
-                    success  = false,
-                    content  = "搜索「$query」时遇到问题，请稍后再试。",
-                    error    = e.message,
-                    userHint = "搜索遇到问题",
-                )
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                toolFailure(name, "搜索「$query」时遇到问题，请稍后再试。", "web_search_failed", e)
             }
         }
     }
@@ -220,6 +216,9 @@ class DateTimeTool : AgentTool {
     // 与项目内其他 AgentTool（CalculatorTool/UnitConvertTool/CountdownTool 等）保持契约一致，
     // 即便本工具当前实现是纯本地计算，不依赖此调度也不产生功能性影响。
     override suspend fun execute(params: Map<String, String>): ToolResult = withContext(Dispatchers.IO) {
+        // P1-4 修复：datetime 工具此前完全没有 try-catch，TimeFormatUtils 任何异常
+        // （含 Error 子类）会直接穿透 execute()，违反 AgentTool 契约。
+        try {
         val format = params["format"]?.trim()?.lowercase() ?: "full"
         val now = Calendar.getInstance()
 
@@ -252,6 +251,11 @@ class DateTimeTool : AgentTool {
             success  = true,
             content  = "[当前时间]\n$result",
         )
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            toolFailure(name, "获取时间失败，请稍后重试。", "datetime_failed", e)
+        }
     }
 }
 
@@ -371,13 +375,10 @@ class TranslateTool : AgentTool {
                     userHint = "正在翻译…",
                 )
 
-            } catch (e: Exception) {
-                ToolResult(
-                    toolName = name,
-                    success  = false,
-                    content  = "翻译时遇到问题：${e.message}",
-                    error    = e.message,
-                )
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                toolFailure(name, "翻译时遇到问题。", "translate_failed", e)
             } finally {
                 conn?.disconnect()
             }
@@ -488,6 +489,32 @@ class FileReadTool(private val context: Context) : AgentTool {
                     return@withContext readXlsxContents(file, maxLines)
                 }
 
+                // P1-8 修复：除 zip/docx/xlsx 外的二进制文件（apk/png/pdf 等）会落入通用文本
+                // 读取路径，二进制内容解码成"单行超长字符串"可能 OOM。按扩展名拦截 + 文件大小限制。
+                val binaryExts = setOf("apk","jar","dex","so","png","jpg","jpeg","gif","bmp","webp",
+                    "mp3","mp4","avi","mov","wav","flac","ogg","pdf","class","exe","dll")
+                val ext = file.name.lowercase().substringAfterLast('.', "")
+                if (ext in binaryExts) {
+                    return@withContext ToolResult(name, false, "",
+                        error = "不支持直接读取二进制文件（.$ext），如需查看内容请先转换为文本格式")
+                }
+                val maxFileSize = 2L * 1024 * 1024
+                if (file.length() > maxFileSize) {
+                    return@withContext ToolResult(name, false, "",
+                        error = "文件过大（${file.length() / 1024}KB），最大支持 ${maxFileSize / 1024}KB")
+                }
+
+                // 二进制内容探测（第三层防护）：扩展名黑名单只能拦截已知后缀，改名成 .txt
+                // 或使用 .bin/.dat/无后缀等未列入黑名单的二进制文件仍会漏进下面的通用文本
+                // 读取路径。读取前 8KB 探测是否含 null 字节，命中则视为二进制文件直接拒绝，
+                // 避免 bufferedReader 把二进制内容解码成超长乱码字符串导致的潜在 OOM。
+                val probe = ByteArray(8192)
+                val probeRead = file.inputStream().use { it.read(probe) }
+                if (probeRead > 0 && probe.copyOfRange(0, probeRead).any { it == 0.toByte() }) {
+                    return@withContext ToolResult(name, false, "",
+                        error = "检测到二进制文件内容，不支持文本读取")
+                }
+
                 // v147+ CSV 乱码修复：自动检测文件编码（UTF-8 / GBK / UTF-16），
                 // 不再硬编码 UTF-8。Windows Excel 导出的中文 CSV 默认 GBK，硬编码
                 // UTF-8 会导致乱码（AI 看到"鏉傞繝鍧?"之类的误解码产物）。
@@ -521,13 +548,10 @@ class FileReadTool(private val context: Context) : AgentTool {
                     userHint = "正在读取「${file.name}」…",
                 )
 
-            } catch (e: Exception) {
-                ToolResult(
-                    toolName = name,
-                    success  = false,
-                    content  = "读取文件时遇到问题：${e.message}",
-                    error    = e.message,
-                )
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                toolFailure(name, "读取文件时遇到问题。", "file_read_failed", e)
             }
         }
     }
@@ -592,7 +616,9 @@ class FileReadTool(private val context: Context) : AgentTool {
                         val fileContent = lines.joinToString("\n").take(remaining.coerceAtLeast(0))
                         contentBuilder.append(fileContent)
                         totalChars += fileContent.length
-                    } catch (_: Exception) {
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (_: Throwable) {
                         contentBuilder.appendLine("（无法读取该文件内容）")
                     }
                 }
@@ -606,13 +632,10 @@ class FileReadTool(private val context: Context) : AgentTool {
                     userHint = "正在分析 ZIP 文件内容…",
                 )
                 }  // .use { zip -> }
-            } catch (e: Exception) {
-                ToolResult(
-                    toolName = name,
-                    success  = false,
-                    content  = "无法解析 ZIP 文件：${e.message?.take(80)}",
-                    error    = e.message,
-                )
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                toolFailure(name, "无法解析 ZIP 文件。", "zip_parse_failed", e)
             }
         }
 
@@ -678,14 +701,10 @@ class FileReadTool(private val context: Context) : AgentTool {
                         userHint = "正在解析 Word 文档…",
                     )
                 }
-            } catch (e: Exception) {
-                com.zaijian.zhoumuyun.util.AgentLog.error("FileRead", "解析 docx 失败：${docxFile.name}", e)
-                ToolResult(
-                    toolName = name,
-                    success  = false,
-                    content  = "无法解析 docx 文件：${e.message?.take(80)}",
-                    error    = e.message,
-                )
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                toolFailure(name, "无法解析 docx 文件。", "docx_parse_failed", e)
             }
         }
 
@@ -772,14 +791,10 @@ class FileReadTool(private val context: Context) : AgentTool {
                         userHint = "正在解析 Excel 文档…",
                     )
                 }
-            } catch (e: Exception) {
-                com.zaijian.zhoumuyun.util.AgentLog.error("FileRead", "解析 xlsx 失败：${xlsxFile.name}", e)
-                ToolResult(
-                    toolName = name,
-                    success  = false,
-                    content  = "无法解析 xlsx 文件：${e.message?.take(80)}",
-                    error    = e.message,
-                )
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                toolFailure(name, "无法解析 xlsx 文件。", "xlsx_parse_failed", e)
             }
         }
 
@@ -882,8 +897,10 @@ class WeatherTool : AgentTool {
                 userHint = "正在查询「$cityName」天气…",
             )
 
-        } catch (e: Exception) {
-            ToolResult(name, false, "查询天气时遇到点问题：${e.message?.take(80)}", e.message)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            toolFailure(name, "查询天气时遇到点问题。", "weather_failed", e)
         }
     }
 
@@ -922,7 +939,7 @@ class WeatherTool : AgentTool {
         } finally {
             conn.disconnect()
         }
-    } catch (e: Exception) { null }
+    } catch (e: Throwable) { null }
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -947,6 +964,9 @@ class UrlFetchTool : AgentTool {
         const val MAX_CHARS_LIMIT   = 8_000
         const val CONNECT_TIMEOUT   = 8_000
         const val READ_TIMEOUT      = 12_000
+        // #15 修复：readText() 将整个 HTTP 响应读入内存后再截断，大响应会 OOM。
+        // 改为流式读取并限制最大读取字节数（1MB），超过即截断。
+        const val MAX_READ_BYTES    = 1_048_576 // 1MB
     }
 
     override suspend fun execute(params: Map<String, String>): ToolResult = withContext(Dispatchers.IO) {
@@ -971,7 +991,9 @@ class UrlFetchTool : AgentTool {
                     error = "ssrf_blocked_private_address",
                 )
             }
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             return@withContext ToolResult(name, false, "网址格式不正确或无法解析。", error = "invalid_url")
         }
 
@@ -997,7 +1019,10 @@ class UrlFetchTool : AgentTool {
 
                 // P2 修复：从 Content-Type header 解析字符集，而非误用 Content-Encoding（后者是 gzip/deflate 压缩编码）
                 val charset = conn.contentType?.charset()?.name() ?: "UTF-8"
-                val html = conn.inputStream.bufferedReader(charsetFor(charset)).readText()
+                // #15 修复：原 readText() 将整个 HTTP 响应读入内存后再 take(maxChars) 截断，
+                // 抓取超大页面（如几十 MB 的 HTML）会 OOM。改为流式读取并限制最大字节数 1MB，
+                // 超过即截断，内存占用可控。
+                val html = readLimitedString(conn.inputStream, charsetFor(charset), MAX_READ_BYTES)
                 val text = extractReadableText(html).take(maxChars)
 
                 if (text.isBlank()) {
@@ -1018,8 +1043,10 @@ class UrlFetchTool : AgentTool {
             ToolResult(name, false, "无法连接网络，请检查网络设置后重试。", error = "unknown_host")
         } catch (e: java.net.SocketTimeoutException) {
             ToolResult(name, false, "网页响应超时，稍后再试。", error = "timeout")
-        } catch (e: Exception) {
-            ToolResult(name, false, "抓取网页时遇到问题：${e.message?.take(80)}", e.message)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            toolFailure(name, "抓取网页时遇到问题。", "url_fetch_failed", e)
         }
     }
 
@@ -1042,8 +1069,37 @@ class UrlFetchTool : AgentTool {
 
     private fun charsetFor(name: String): java.nio.charset.Charset = try {
         java.nio.charset.Charset.forName(name)
-    } catch (_: Exception) {
+    } catch (_: Throwable) {
         Charsets.UTF_8
+    }
+
+    /**
+     * #15 修复：流式读取输入流并限制最大读取字节数，超过即截断。
+     *
+     * 替代 [BufferedReader.readText]，避免将整个 HTTP 响应一次性读入内存。
+     * 按字节累计读取，达到 [maxBytes] 后停止读取并返回已读部分解码后的字符串。
+     * 截断发生在字节边界，多字节字符可能被截半，解码时末尾会出现替换字符，
+     * 对"只取正文摘要"的场景可接受。
+     */
+    private fun readLimitedString(
+        stream: java.io.InputStream,
+        charset: java.nio.charset.Charset,
+        maxBytes: Int,
+    ): String {
+        val baos = java.io.ByteArrayOutputStream(maxBytes.coerceAtMost(64 * 1024))
+        val buf = ByteArray(8 * 1024)
+        var total = 0
+        while (true) {
+            val read = stream.read(buf)
+            if (read < 0) break
+            if (total + read > maxBytes) {
+                baos.write(buf, 0, maxBytes - total)
+                break
+            }
+            baos.write(buf, 0, read)
+            total += read
+        }
+        return baos.toString(charset)
     }
 
     /**
@@ -1097,7 +1153,7 @@ fun detectFileCharset(file: java.io.File): Charset {
             val sampleLen = fis.read(sample)
             detectCharsetFromBytes(sample, sampleLen.coerceAtLeast(0))
         }
-    } catch (_: Exception) {
+    } catch (_: Throwable) {
         Charsets.UTF_8  // 检测失败时安全回退
     }
 }
@@ -1134,7 +1190,7 @@ fun detectCharsetFromBytes(bytes: ByteArray, len: Int = bytes.size): Charset {
         // 不是合法 UTF-8 → 大概率是 GBK（中文 Windows 默认编码）
         try {
             Charset.forName("GBK")
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
             Charsets.UTF_8  // GBK 不可用时回退
         }
     }
@@ -1288,8 +1344,13 @@ class FileExportTool(private val context: Context) : AgentTool {
                 content  = "文件已生成：$fileName（${formatSize(sizeBytes)}）\n$metaJson$formatNotice",
                 userHint = "正在生成文件…",
             )
-        } catch (e: Exception) {
-            ToolResult(name, false, "生成文件时出现问题：${e.message?.take(80)}", e.message)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e  // 协程取消必须重新抛出，不能当成业务失败吞掉
+        } catch (e: Throwable) {
+            // 与 excel_gen 同批修复：catch Throwable 而非 Exception。
+            // file_export 是 docx_gen/pdf_export/html_gen/markdown_to_doc 等
+            // 工具的公共落盘出口，一旦这里被 Error 击穿，受影响面最广。
+            toolFailure(name, "生成文件时出现问题。", "file_export_failed", e)
         }
     }
 
@@ -1370,8 +1431,11 @@ class ArchiveExportTool(private val context: Context) : AgentTool {
                 content  = "压缩包已生成：$humanName（${formatZipSize(sizeBytes)}）\n$metaJson",
                 userHint = "正在打包…",
             )
-        } catch (e: Exception) {
-            ToolResult(name, false, "打包失败：${e.message?.take(80)}", e.message)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e  // 协程取消必须重新抛出，不能当成业务失败吞掉
+        } catch (e: Throwable) {
+            // 与 excel_gen 同批修复：catch Throwable 而非 Exception。
+            toolFailure(name, "打包失败。", "archive_export_failed", e)
         }
     }
 
@@ -1408,6 +1472,27 @@ class DiagLogExportTool(private val context: Context) : AgentTool {
     override val usageNotes = "包含Agent工具调用记录、异常堆栈等"
     override val paramKeys = emptyList<String>()
 
+    private companion object {
+        // #38 修复：diag_export_log 将敏感信息写入日志文件。
+        // 导出日志时对敏感信息做脱敏处理（正则替换为 ***），避免用户把含密码/邮箱
+        // 的日志分享给开发者时泄露隐私。
+        // 邮箱地址：标准 email 格式
+        val EMAIL_REGEX = Regex("[A-Za-z0-9._%+\\-]+@[A-Za-z0-9.\\-]+\\.[A-Za-z]{2,}")
+        // 密码/密钥字段：password=xxx / "pwd":"xxx" / api_key=xxx 等键值对，仅替换值部分
+        val SENSITIVE_FIELD_REGEX = Regex(
+            """(?i)((?:password|passwd|pwd|secret|token|api[_\-]?key|access[_\-]?token|authorization)\s*["']?\s*[:=]\s*["']?)([^"'\s,};]+)"""
+        )
+    }
+
+    /** #38 修复：对日志文本中的敏感信息做脱敏，邮箱整体替换为 ***，密码字段值替换为 *** */
+    private fun redactSensitiveInfo(text: String): String {
+        var result = EMAIL_REGEX.replace(text, "***")
+        result = SENSITIVE_FIELD_REGEX.replace(result) { mr ->
+            mr.groupValues[1] + "***"
+        }
+        return result
+    }
+
     override suspend fun execute(params: Map<String, String>): ToolResult = withContext(Dispatchers.IO) {
         try {
             val logFile = com.zaijian.zhoumuyun.util.AgentLog.exportLog(context)
@@ -1429,8 +1514,11 @@ class DiagLogExportTool(private val context: Context) : AgentTool {
             // 复制到 vault 目录，生成可下载的文件
             val stamp = TimeFormatUtils.formatFileStamp(System.currentTimeMillis())
             val humanName = "诊断日志_$stamp.txt"
+            // #38 修复：导出前对日志内容做脱敏（邮箱、密码字段替换为 ***），
+            // 避免用户分享日志时泄露敏感信息。原实现直接 copyTo 落盘，不做任何处理。
+            val redactedContent = redactSensitiveInfo(logFile.readText(Charsets.UTF_8))
             val metaJson = writeVaultStream(context, humanName, "text/plain") { out ->
-                logFile.inputStream().use { it.copyTo(out) }
+                out.write(redactedContent.toByteArray(Charsets.UTF_8))
             }
 
             val sizeBytes = JSONObject(metaJson).optLong("sizeBytes", 0L)
@@ -1439,17 +1527,15 @@ class DiagLogExportTool(private val context: Context) : AgentTool {
                 toolName = name,
                 success  = true,
                 content  = "诊断日志已导出：$humanName（${String.format("%.1f", sizeKb)} KB）\n" +
-                           "日志包含 Agent 工具调用记录、异常堆栈等。用户下载后可分享给开发者排查。\n" +
+                           "日志包含 Agent 工具调用记录、异常堆栈等。他下载后可分享给开发者排查。\n" +
                            "$metaJson",
             )
-        } catch (e: Exception) {
-            com.zaijian.zhoumuyun.util.AgentLog.error("DiagLogExport", "导出诊断日志失败", e)
-            ToolResult(
-                toolName = name,
-                success  = false,
-                content  = "[导出诊断日志失败：${e.message}]",
-                error    = e.message,
-            )
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e  // 协程取消必须重新抛出，不能当成业务失败吞掉
+        } catch (e: Throwable) {
+            // 与 excel_gen 同批修复：catch Throwable 而非 Exception——诊断日志
+            // 工具本身也不该因为一次意外的 Error 而让整轮回复静默终止。
+            toolFailure(name, "导出诊断日志失败。", "diag_log_export_failed", e)
         }
     }
 }

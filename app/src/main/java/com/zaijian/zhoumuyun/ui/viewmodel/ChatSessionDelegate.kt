@@ -72,7 +72,24 @@ class ChatSessionDelegate(
     /** 初始化（或切换）会话角色。取消上一次的全部 Job，重新启动观察者。 */
     fun init(characterId: Int) {
         // P1-10-4：切换角色时必须同时取消上一次的 replyJob
-        getReplyJob()?.cancel()
+        //
+        // Fix-孤儿文件（导航打断，配合 ToolCallInterceptor.executeWithTimeout 的
+        // Fix-孤儿文件 一起看）：`init(characterId)` 由 ChatScreen 的
+        // `LaunchedEffect(characterId) { chatViewModel.init(characterId) }` 触发——
+        // 这不仅在"切换到另一个角色"时触发，导航离开聊天页再返回同一个角色
+        // （composable 被销毁重建，LaunchedEffect 随之重新执行）同样会调用它。
+        // 原实现无条件 `getReplyJob()?.cancel()`：如果用户恰好在 excel_gen/pptx_gen
+        // 等耗时工具还在后台生成文件时短暂离开又返回同一角色的聊天页，这次回复会
+        // 被无声无息地打断——用户完全不知道自己"离开一下"就导致了这个后果。
+        // 只有真正切换到不同角色时，旧角色的 replyJob 才必须被取消（否则旧角色的
+        // 回复落库时 getCurrentCharacterId() 已经指向新角色，会串号）；同一角色
+        // 重新进入页面，没有理由打断一个仍在正常进行的回复，让它在后台继续跑完，
+        // 该来的消息/文件卡稍后会正常出现在列表里。
+        val isReenteringSameCharacterWithActiveReply =
+            characterId == getCurrentCharacterId() && getReplyJob()?.isActive == true
+        if (!isReenteringSameCharacterWithActiveReply) {
+            getReplyJob()?.cancel()
+        }
         _streamingContent.value = null
         _streamingPsych.value = null
         observeJobs.forEach { it.cancel() }
@@ -85,7 +102,7 @@ class ChatSessionDelegate(
 
         try {
             toolRegistrar.registerCharacterTools(characterId)
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             ZLog.e("ChatSessionDelegate", "registerCharacterTools 失败，工具注册可能不完整", e)
         }
 
@@ -97,7 +114,9 @@ class ChatSessionDelegate(
                     memoryRepo    = memoryRepo,
                     daughterRepo  = daughterRepo,
                 )
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 ZLog.e("ChatSessionDelegate", "分娩结算检查失败", e)
             }
         }
@@ -146,7 +165,9 @@ class ChatSessionDelegate(
                         )
                         ZLog.i("ChatSessionDelegate", "B-6: 补偿注册完成，daughterId=$allocatedId")
                     }
-                } catch (e: Exception) {
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
                     ZLog.e("ChatSessionDelegate", "B-6: 补偿注册失败", e)
                 }
             }
@@ -166,7 +187,9 @@ class ChatSessionDelegate(
                                     .filterNot { it.content.startsWith(FILE_READ_MARK_PREFIX) }
                                     .map { ChatTagParser.toChatMessage(it) }.toImmutableList())
                             }
-                        } catch (e: Exception) {
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            throw e
+                        } catch (e: Throwable) {
                             ZLog.e("ChatSessionDelegate", "characterId=$characterId 消息Flow订阅处理失败", e)
                             _uiState.update { it.copy(error = "加载消息失败，请重试") }
                         }
@@ -212,7 +235,9 @@ class ChatSessionDelegate(
                     .filterNot { it.content.startsWith(FILE_READ_MARK_PREFIX) }
                     .map { ChatTagParser.toChatMessage(it) }.toImmutableList())
             }
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             ZLog.e("ChatSessionDelegate", "characterId=$characterId 加载消息失败", e)
             _uiState.update { it.copy(error = "加载消息失败，请重试") }
         }

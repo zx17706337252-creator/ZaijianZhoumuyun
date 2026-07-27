@@ -157,7 +157,9 @@ class PregnancyRepository(
                 try {
                     val isDaughter = isDaughterMother(state.characterId)
                     results += completeBirth(state.characterId, isDaughter, now)
-                } catch (e: Exception) {
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
                     ZLog.w("PregnancyRepository", "characterId=${state.characterId} 分娩结算失败，跳过", e)
                 }
             }

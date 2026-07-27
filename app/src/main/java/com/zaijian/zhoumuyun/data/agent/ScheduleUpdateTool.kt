@@ -236,8 +236,10 @@ class ScheduleUpdateTool(
                 description      = newDescription,
                 projectId        = newProjectId,
             )
-        } catch (e: Exception) {
-            return ToolResult(name, false, "", error = "更新失败：${e.message}")
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            return toolFailure(name, "更新定时任务失败，请稍后重试。", "schedule_update_precheck_failed", e)
         }.let { p ->
             // updateJob 单独隔离：与 ScheduleCreateTool.createJob 同款——DB 写入
             // 失败即整体失败并直接返回，不与后面的日历/WorkManager 同步步骤共用
@@ -254,8 +256,10 @@ class ScheduleUpdateTool(
                     description      = p.description,
                     projectId        = p.projectId,
                 )
-            } catch (e: Exception) {
-                return ToolResult(name, false, "", error = "更新失败：${e.message}")
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                return toolFailure(name, "更新定时任务失败，请稍后重试。", "schedule_update_db_failed", e)
             }
 
             // 同步更新系统日历事件（权限未授予时静默跳过）
@@ -269,7 +273,9 @@ class ScheduleUpdateTool(
                     nextRunAt        = p.nextRunAt,
                     repeatIntervalMs = p.repeatIntervalMs,
                 )
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 android.util.Log.w("ScheduleUpdateTool", "Calendar sync failed for job $id", e)
                 syncWarning = "（日历同步失败，不影响任务）"
             }
@@ -280,7 +286,9 @@ class ScheduleUpdateTool(
                     val delayMs = (p.nextRunAt - System.currentTimeMillis()).coerceAtLeast(0L)
                     WorkManagerScheduler.enqueue(it, id, delayMs)
                 }
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 android.util.Log.w("ScheduleUpdateTool", "WorkManager reschedule failed for job $id", e)
                 syncWarning = if (syncWarning.isEmpty()) "（后台调度更新失败，任务仍会按计划执行）"
                               else "$syncWarning，后台调度更新失败"

@@ -108,7 +108,9 @@ class NotificationViewModel(application: Application) : AndroidViewModel(applica
             notificationRepo.pruneStaleReadState(
                 data.attentionItems.map { notificationRepo.buildItemKey(it) }
             )
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             ZLog.e("NotificationViewModel", "通知中心数据加载失败", e)
             // 同上，用 update {} 避免跟并发的 markItemRead() 互相覆盖。
             _uiState.update {

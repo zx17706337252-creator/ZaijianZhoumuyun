@@ -3,6 +3,7 @@ package com.zaijian.zhoumuyun
 // ⚠️ 重命名记录: Phase22Tools→AgentCoreTools, Phase25Tools→(merged), Phase28Part*→Creative/DataVis/AgentMetaTools
 
 import android.app.Application
+import com.zaijian.zhoumuyun.util.AgentLog
 import com.zaijian.zhoumuyun.util.ZLog
 import android.content.Context
 import com.zaijian.zhoumuyun.data.agent.AgentToolRegistry
@@ -219,7 +220,7 @@ class ZaijianApp : Application() {
                         }))
                     }
                 )
-            } catch (_: Exception) { /* 写文件失败不阻塞进程退出 */ }
+            } catch (_: Throwable) { /* 写文件失败不阻塞进程退出 */ }
             defaultHandler?.uncaughtException(thread, throwable)
             android.os.Process.killProcess(android.os.Process.myPid())
         }
@@ -243,7 +244,7 @@ class ZaijianApp : Application() {
         // 这里只是最后一道日志防线。
         val db = try {
             AppDatabase.getInstance(this)
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             ZLog.e("ZaijianApp", "数据库初始化失败，App 无法启动", e)
             throw e
         }
@@ -281,7 +282,9 @@ class ZaijianApp : Application() {
                             .build()
                     )
                 }
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 ZLog.w("ZaijianApp", "预加载启动页背景图失败（不阻断启动）", e)
             }
         }
@@ -325,7 +328,9 @@ class ZaijianApp : Application() {
         scope.launch(Dispatchers.Default) {
             try {
                 registerAgentTools(db, this@ZaijianApp)
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 ZLog.e("ZaijianApp", "Agent 工具注册过程中发生异常，部分工具可能未注册成功", e)
             }
         }
@@ -342,7 +347,9 @@ class ZaijianApp : Application() {
                     compensationScheduleRepository.syncCloudResults(charId)
                 }
                 compensationScheduleRepository.runLocalCompensation()
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 ZLog.e("ZaijianApp", "调度补偿（云同步/本地补偿）执行异常", e)
             }
         }
@@ -357,7 +364,9 @@ class ZaijianApp : Application() {
         scope.launch(Dispatchers.Default) {
             try {
                 com.zaijian.zhoumuyun.data.agent.BootReceiver.restoreReminderAlarms(this@ZaijianApp)
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 ZLog.e("ZaijianApp", "Reminder 闹钟恢复执行异常", e)
             }
         }
@@ -371,7 +380,9 @@ class ZaijianApp : Application() {
         scope.launch(Dispatchers.Default) {
             try {
                 com.zaijian.zhoumuyun.data.AppContainer.instance.menstrualCycleRepo.initIfAbsent()
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 ZLog.e("ZaijianApp", "MenstrualCycleRepository.initIfAbsent() 执行异常", e)
             }
         }
@@ -547,7 +558,9 @@ class ZaijianApp : Application() {
                 if (hasActiveSpecialty) {
                     DailyPracticeScheduler.scheduleNext(this@ZaijianApp)
                 }
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 // 批次5 5-1①修复：原代码无 try-catch，scheduleNext 或 DB 查询异常时
                 // "每日练习调度未建立"静默失效直到重启，且不走项目统一 ZLog.e 通道。
                 // 与 263/270/293 行的 scope.launch 范式一致，补 try-catch + ZLog.e。
@@ -630,7 +643,9 @@ class ZaijianApp : Application() {
                                     ?: continue
                                 val jobTitle = try {
                                     scheduledJobDao.findById(result.jobId)?.title ?: result.toolName
-                                } catch (_: Exception) {
+                                } catch (e: kotlinx.coroutines.CancellationException) {
+                                    throw e
+                                } catch (_: Throwable) {
                                     result.toolName
                                 }
                                 presenceEngine.notifyTaskCompletion(
@@ -645,7 +660,7 @@ class ZaijianApp : Application() {
                     break
                 } catch (e: CancellationException) {
                     throw e  // 协程正常取消（如 App 进程退出），不重试，直接向上传播
-                } catch (e: Exception) {
+                } catch (e: Throwable) {
                     // 注意：collect 内部的 findById 已有自己的 try-catch（不中断循环），
                     // 这里兜底的是 Flow 上游异常和 collect lambda 内未预期的异常。
                     ZLog.e("ZaijianApp", "任务完成通知长驻收集器异常，${RETRY_DELAY_MS}ms 后自动重新订阅", e)
@@ -729,7 +744,9 @@ class ZaijianApp : Application() {
     ) {
         val provider = try {
             ProviderManager.instance.activeProvider
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             ZLog.w("ZaijianApp", "Provider not ready, skip daily note gen", e)
             return
         } ?: run {
@@ -743,7 +760,9 @@ class ZaijianApp : Application() {
             // 方案 5-4：单个角色 getTopGoal / generateDailyNoteText 失败用独立
             // try-catch 隔离，不阻断其余角色的生成。与 Daughters 段一致。
             try {
-                val topGoal = try { goalDao.getTopGoal(character.id) } catch (_: Exception) { null }
+                val topGoal = try { goalDao.getTopGoal(character.id) } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (_: Throwable) { null }
 
                 presenceEngine.generateDailyNoteText(
                     characterId   = character.id,
@@ -753,7 +772,9 @@ class ZaijianApp : Application() {
                     goalTitle     = topGoal?.title,
                     provider      = provider,
                 )
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 ZLog.w("ZaijianApp", "generateDailyNoteText failed for characterId=${character.id}", e)
             }
         }
@@ -766,7 +787,9 @@ class ZaijianApp : Application() {
         // 已完成的原生角色，用独立 try-catch 逐条隔离。
         val daughterIds = try {
             daughterRepo.getAllDaughterCharacterIds()
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             ZLog.w("ZaijianApp", "getAllDaughterCharacterIds failed, skip daughter daily note gen", e)
             emptyList()
         }
@@ -775,12 +798,16 @@ class ZaijianApp : Application() {
 
             val daughterConfig = try {
                 daughterRepo.getCharacterConfig(daughterId)
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 ZLog.w("ZaijianApp", "getCharacterConfig failed for daughterId=$daughterId, skip", e)
                 null
             } ?: return@daughterLoop
 
-            val topGoal = try { goalDao.getTopGoal(daughterId) } catch (_: Exception) { null }
+            val topGoal = try { goalDao.getTopGoal(daughterId) } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (_: Throwable) { null }
 
             try {
                 presenceEngine.generateDailyNoteText(
@@ -791,7 +818,9 @@ class ZaijianApp : Application() {
                     goalTitle     = topGoal?.title,
                     provider      = provider,
                 )
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 ZLog.w("ZaijianApp", "generateDailyNoteText failed for daughterId=$daughterId", e)
             }
         }
@@ -967,10 +996,21 @@ class ZaijianApp : Application() {
                 // W2：TableExportTool 来源 B（日程数据源）需要 ScheduleRepository。
                 scheduleRepository = scheduleRepository,
             )
-        }.onFailure { ZLog.e("ZaijianApp", "registerDataVisTools 注册失败", it) }
+        }.onFailure {
+            // 诊断补丁（2026-07-27）：registerDataVisTools 把 excel_gen/pptx_gen/mindmap_gen/
+            // flowchart_gen/table_export/csv_analyze/table_gen/self_reflect/rule_review 等
+            // 十个工具放在同一个 registerAll(...) vararg 调用里，任意一个构造/类加载失败会
+            // 导致整批工具集体不注册，但此前 onFailure 只写 ZLog.e（仅 logcat），排查时既没有
+            // adb 环境、logcat 缓冲区也太小抓不到 App 启动阶段的这条日志，完全没有可用的排查
+            // 入口。这里补一条 AgentLog.error，把真实异常类型 + 完整堆栈落进用户可导出的
+            // agent_log.txt。只加日志，不改变任何现有行为/控制流。
+            ZLog.e("ZaijianApp", "registerDataVisTools 注册失败", it)
+            AgentLog.error("ZaijianApp", "registerDataVisTools 注册失败（excel_gen/pptx_gen 等十个工具集体受影响）", it)
+        }
         runCatching {
             AgentToolRegistry.registerAgentMetaTools(
                 context    = context,
+                db         = db,
                 memoryDao  = db.memoryDao(),
                 sessionDao = db.evaluationSessionDao(),
                 goalDao    = db.learningGoalDao(),
@@ -997,6 +1037,7 @@ class ZaijianApp : Application() {
         runCatching {
             AgentToolRegistry.register(
                 ProjectDailyPlannerTool(
+                    db         = db,
                     projectDao = db.projectDao(),
                     goalDao    = db.characterGoalDao(),
                     taskDao    = db.taskDao(),

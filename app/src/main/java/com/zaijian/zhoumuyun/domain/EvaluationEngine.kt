@@ -208,7 +208,9 @@ class EvaluationEngine(
                 reportText     = reportText,
             )
             true
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             // 解析失败时写入兜底分（避免 Session 永久卡在 PENDING）
             val fallbackScore   = 3.0f
             val fallbackJson    = JSONObject().apply {

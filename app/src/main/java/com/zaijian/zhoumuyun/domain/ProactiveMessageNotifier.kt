@@ -76,7 +76,9 @@ class ProactiveMessageNotifier(
         // 近似修复足以解决"看起来乱序"的问题，不引入额外的跨表事务复杂度。
         val lastMessageAt = try {
             messageDao.getLastMessageAt(characterId)
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             ZLog.w(TAG, "Read lastMessageAt failed for char $characterId, fallback to now", e)
             null
         }
@@ -112,7 +114,9 @@ class ProactiveMessageNotifier(
                     thinkingText = message.thinkingText,
                 )
             )
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             ZLog.w(TAG, "Persist proactive message failed for char $characterId", e)
             return  // 写入失败就不发通知了，避免通知点进去却看不到对应消息
         }
@@ -132,7 +136,9 @@ class ProactiveMessageNotifier(
         DefaultCharacters.firstOrNull { it.id == characterId }?.let { return it.name }
         try {
             daughterCharacterRepo?.getCharacterConfig(characterId)?.let { return it.name }
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             ZLog.w(TAG, "Resolve daughter name failed for char $characterId", e)
         }
         return "她"

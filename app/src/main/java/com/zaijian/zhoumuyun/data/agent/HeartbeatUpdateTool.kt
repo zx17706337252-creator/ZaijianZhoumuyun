@@ -69,7 +69,21 @@ class HeartbeatUpdateTool(
                         return@withLock ToolResult(name, false, "", error = "心跳清单不存在，请先用 heartbeat_set 创建")
                     }
 
-                    val json = JSONObject(file.readText(Charsets.UTF_8))
+                    val rawText = file.readText(Charsets.UTF_8)
+                    // #46 修复：文件存在但内容为空（如写入过程中被中断、被外部清空）时，
+                    // JSONObject(rawText) 会抛 JSONException，此前直接落进外层 catch，
+                    // toolFailure 只返回统一的"更新心跳清单失败，请稍后重试"，
+                    // 看不出真实原因是"清单文件是空的"。这里提前识别空文件场景，
+                    // 给出可定位问题、并指向修复路径（重新用 heartbeat_set 初始化）的
+                    // 明确提示，而不是让异常在通用 catch 里丢失上下文。
+                    if (rawText.isBlank()) {
+                        return@withLock ToolResult(
+                            name, false, "",
+                            error = "心跳清单文件为空（可能未正确初始化或已损坏），请先用 heartbeat_set 重新写入清单",
+                        )
+                    }
+
+                    val json = JSONObject(rawText)
                     val items = json.getJSONArray("items")
 
                     if (index < 0 || index >= items.length()) {
@@ -116,8 +130,10 @@ class HeartbeatUpdateTool(
                         userHint = "正在更新心跳清单…",
                     )
                 }
-            } catch (e: Exception) {
-                ToolResult(name, false, "", error = "更新失败：${e.message}")
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                toolFailure(name, "更新心跳清单失败，请稍后重试。", "heartbeat_update_failed", e)
             }
         }
 

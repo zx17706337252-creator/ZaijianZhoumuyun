@@ -138,7 +138,7 @@ object TimeFormatUtils {
     fun parseIso8601UtcToEpochSeconds(iso: String): Long =
         try {
             Instant.parse(iso).epochSecond
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
             0L
         }
 
@@ -153,7 +153,7 @@ object TimeFormatUtils {
     fun parseIsoDateToEpochMillis(s: String): Long? =
         try {
             LocalDate.parse(s, isoDateFormatter).atStartOfDay(zone).toInstant().toEpochMilli()
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
             null
         }
 

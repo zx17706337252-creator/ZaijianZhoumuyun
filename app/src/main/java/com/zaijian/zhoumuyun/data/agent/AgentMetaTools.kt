@@ -14,10 +14,12 @@ package com.zaijian.zhoumuyun.data.agent
  *   ArxivSearchTool       — ArXiv 论文检索（arxiv_search）
  *
  * 注册入口：
- *   AgentToolRegistry.registerAgentMetaTools(context, memoryDao, sessionDao, goalDao, messageDao, taskDao)
+ *   AgentToolRegistry.registerAgentMetaTools(context, db, memoryDao, sessionDao, goalDao, messageDao, taskDao)
  */
 
 import android.content.Context
+import androidx.room.withTransaction
+import com.zaijian.zhoumuyun.data.db.AppDatabase
 import com.zaijian.zhoumuyun.data.db.dao.EvaluationSessionDao
 import com.zaijian.zhoumuyun.data.db.dao.LearningGoalDao
 import com.zaijian.zhoumuyun.data.db.dao.MemoryDao
@@ -29,8 +31,6 @@ import com.zaijian.zhoumuyun.data.provider.LLMProvider
 import com.zaijian.zhoumuyun.data.repository.MessageRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.io.BufferedReader
-import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
@@ -75,7 +75,34 @@ private fun p3HttpGet(url: String, timeoutMs: Int = 8000): String {
     }
     return try {
         if (conn.responseCode in 200..299) {
-            BufferedReader(InputStreamReader(conn.inputStream, Charsets.UTF_8)).use { it.readText() }
+            // #39 修复 + 低风险清单复核补丁：原实现按字符数（CharArray）计数，
+            // UTF-8 下一个字符可能占 1~4 字节，多字节字符（如中文）占比高的响应
+            // 实际字节量可能达到标称上限的数倍（最坏约 4MB），不是精确的字节上限。
+            // 改为直接按原始字节流读取计数，精确控制在 MAX_RESPONSE_BYTES 以内，
+            // 读够/读完后再统一解码为字符串，不再依赖字符数近似字节数。
+            val MAX_RESPONSE_BYTES = 1_048_576 // 1MB
+            val buf = ByteArray(8 * 1024)
+            val out = java.io.ByteArrayOutputStream()
+            var truncated = false
+            conn.inputStream.use { input ->
+                while (true) {
+                    val n = input.read(buf)
+                    if (n < 0) break
+                    val remaining = MAX_RESPONSE_BYTES - out.size()
+                    if (remaining <= 0) {
+                        truncated = true
+                        break
+                    }
+                    val toWrite = minOf(n, remaining)
+                    out.write(buf, 0, toWrite)
+                    if (toWrite < n) {
+                        truncated = true
+                        break
+                    }
+                }
+            }
+            val text = out.toString("UTF-8")
+            if (truncated) text + "\n[响应已截断：超过 ${MAX_RESPONSE_BYTES / 1024}KB 限制]" else text
         } else {
             throw RuntimeException("HTTP ${conn.responseCode}: ${conn.responseMessage}")
         }
@@ -169,7 +196,7 @@ $ruleList
                     providerFn   = providerFn,
                     systemPrompt = "你是规则质量审查员，负责检测规则间的冲突与重复。简洁准确输出。",
                     userPrompt   = prompt,
-                    maxTokens    = 200,
+                    maxTokens    = 350,
                     temperature  = 0.2f,
                 )
 
@@ -179,8 +206,10 @@ $ruleList
                     content  = "[规则冲突检测]\n$analysis",
                     userHint = "正在检测规则冲突…",
                 )
-            } catch (e: Exception) {
-                ToolResult(name, false, "规则冲突检测失败：${e.message?.take(80)}", e.message)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                toolFailure(name, "规则冲突检测失败，请稍后重试。", "rule_check_failed", e)
             }
         }
 }
@@ -276,7 +305,7 @@ $sessionSummary
                     providerFn   = providerFn,
                     systemPrompt = "你是学习进度分析师，从 Session 评分历史中提炼有价值的成长洞察。",
                     userPrompt   = prompt,
-                    maxTokens    = 250,
+                    maxTokens    = 400,
                     temperature  = 0.4f,
                 )
 
@@ -286,8 +315,10 @@ $sessionSummary
                     content  = "[Session 对比分析（共 ${sessions.size} 次）]\n趋势：$trend\n\n$analysis",
                     userHint = "正在对比历史 Session…",
                 )
-            } catch (e: Exception) {
-                ToolResult(name, false, "Session 对比失败：${e.message?.take(80)}", e.message)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                toolFailure(name, "Session 对比失败，请稍后重试。", "session_compare_failed", e)
             }
         }
 }
@@ -342,7 +373,13 @@ class ProgressReportTool(
                 }
 
                 val goalTitle    = goal?.title ?: "（未找到目标）"
-                val progressPct  = goal?.let { "%.0f".format(it.progress * 100) } ?: "0"
+                // #40 修复：progress 异常值（NaN/Infinity）注入 CSS width 属性会破坏布局。
+                // goal.progress 正常范围 [0,1]，乘以 100 后 [0,100]。若数据异常为 NaN/Infinity，
+                // "%.0f".format() 会输出 "NaN"/"Infinity"，注入 CSS width 后导致样式崩溃。
+                // coerceIn 到合法范围，NaN 视为 0。
+                val rawProgress = goal?.progress ?: 0f
+                val progressPct  = if (rawProgress.isNaN() || rawProgress.isInfinite()) "0"
+                                   else "%.0f".format(rawProgress.coerceIn(0f, 1f) * 100)
                 val goalStatus   = goal?.status ?: "UNKNOWN"
 
                 // 读取 Session 历史
@@ -406,7 +443,7 @@ $rulesSummary
                     providerFn   = providerFn,
                     systemPrompt = "你是学习成果汇报专家，生成结构清晰、数据驱动的进度报告。",
                     userPrompt   = prompt,
-                    maxTokens    = 350,
+                    maxTokens    = 512,
                     temperature  = 0.3f,
                 )
 
@@ -435,7 +472,7 @@ $rulesSummary
 <div class="meta">目标：${p3EscapeHtml(goalTitle)} &nbsp;|&nbsp; 状态：${p3EscapeHtml(goalStatus)} &nbsp;|&nbsp; 生成时间：${java.util.Date()}</div>
 <div>进度：$progressPct%</div>
 <div class="progress-bar"><div class="progress-fill"></div></div>
-<div class="section"><pre>$reportBody</pre></div>
+<div class="section"><pre>${p3EscapeHtml(reportBody)}</pre></div>
 <hr style="border-color: #444">
 <div style="color:#666; font-size:0.8em; text-align:center">再见周慕云 · 自动生成</div>
 </body>
@@ -451,7 +488,16 @@ $rulesSummary
                     )
 
                     if (!exportResult.success) {
-                        ToolResult(name, false, "报告导出失败：${exportResult.error}", exportResult.error)
+                        // P2 补齐：原先手搓 ToolResult 无任何日志，file_export 失败时
+                        // 排查不到具体原因（磁盘满/权限/路径异常等）。改走 toolFailure
+                        // 统一记录到 AgentLog；exportResult 本身不含 Throwable，这里
+                        // 用 exportResult.error 构造一个异常对象传入，保留原始错误码信息。
+                        toolFailure(
+                            name,
+                            "报告导出失败：文件写入错误。",
+                            "file_write_failed",
+                            IllegalStateException("file_export 失败: ${exportResult.error ?: "未知原因"}"),
+                        )
                     } else {
                         ToolResult(
                             toolName = name,
@@ -469,8 +515,10 @@ $rulesSummary
                         userHint = "正在生成进度报告…",
                     )
                 }
-            } catch (e: Exception) {
-                ToolResult(name, false, "进度报告生成失败：${e.message?.take(80)}", e.message)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                toolFailure(name, "进度报告生成失败，请稍后重试。", "progress_report_failed", e)
             }
         }
 }
@@ -538,8 +586,10 @@ class AgentMessageTool(
                     content  = "消息已发送给角色 $toCharId，对方在下次对话时将看到此消息。",
                     userHint = "正在发送消息…",
                 )
-            } catch (e: Exception) {
-                ToolResult(name, false, "消息发送失败：${e.message?.take(80)}", e.message)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                toolFailure(name, "消息发送失败，请稍后重试。", "agent_message_failed", e)
             }
         }
 }
@@ -615,8 +665,10 @@ class RoundtableTriggerTool(
                     content  = "圆桌讨论已发起，议题：$topic$participantDesc",
                     userHint = "正在发起圆桌…",
                 )
-            } catch (e: Exception) {
-                ToolResult(name, false, "圆桌发起失败：${e.message?.take(80)}", e.message)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                toolFailure(name, "圆桌发起失败，请稍后重试。", "roundtable_trigger_failed", e)
             }
         }
 }
@@ -640,6 +692,7 @@ class RoundtableTriggerTool(
  */
 class TaskDelegateTool(
     private val providerFn:          () -> LLMProvider?,
+    private val db:                  AppDatabase,
     private val taskDao:             TaskDao,
     private val characterIdProvider: () -> Int,
 ) : AgentTool {
@@ -692,7 +745,7 @@ ${if (due.isNotEmpty()) "截止：$due" else ""}
                     providerFn   = providerFn,
                     systemPrompt = "你是任务分解专家，将任务合理分配给不同角色，每条子任务清晰具体。",
                     userPrompt   = splitPrompt,
-                    maxTokens    = 300,
+                    maxTokens    = (300 + targetIds.size * 80).coerceAtMost(1200),
                     temperature  = 0.3f,
                 )
 
@@ -717,20 +770,23 @@ ${if (due.isNotEmpty()) "截止：$due" else ""}
                 val now = System.currentTimeMillis()
                 val dueNote = if (due.isNotEmpty()) "（截止：$due）" else ""
 
-                delegationMap.forEach { (charId, subTask) ->
-                    taskDao.insert(
-                        TaskEntity(
-                            id          = UUID.randomUUID().toString(),
-                            title       = "委托任务：${subTask.take(30)}",
-                            description = "$subTask\n\n委托方：角色$fromId$dueNote",
-                            characterId = charId,
-                            status      = TaskStatus.PENDING.name,
-                            toolName    = "task_delegate",
-                            source      = "delegation",
-                            createdAt   = now,
-                            updatedAt   = now,
+                // P1-10 修复（#20）：多条 insert 无事务包裹，部分失败致数据不一致。
+                db.withTransaction {
+                    delegationMap.forEach { (charId, subTask) ->
+                        taskDao.insert(
+                            TaskEntity(
+                                id          = UUID.randomUUID().toString(),
+                                title       = "委托任务：${subTask.take(30)}",
+                                description = "$subTask\n\n委托方：角色$fromId$dueNote",
+                                characterId = charId,
+                                status      = TaskStatus.PENDING.name,
+                                toolName    = "task_delegate",
+                                source      = "delegation",
+                                createdAt   = now,
+                                updatedAt   = now,
+                            )
                         )
-                    )
+                    }
                 }
 
                 // Step 3: 构建委托清单
@@ -744,8 +800,10 @@ ${if (due.isNotEmpty()) "截止：$due" else ""}
                     content  = "[任务委托清单$dueNote]\n$delegationList\n\n共 ${delegationMap.size} 个子任务已分配。",
                     userHint = "正在分配任务…",
                 )
-            } catch (e: Exception) {
-                ToolResult(name, false, "任务委托失败：${e.message?.take(80)}", e.message)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                toolFailure(name, "任务委托失败，请稍后重试。", "task_delegate_failed", e)
             }
         }
 }
@@ -808,12 +866,22 @@ class WikiFetchTool : AgentTool {
                     content  = "【$title】（来源：Wikipedia/$lang）$disambiguationNote\n\n${extract.take(800)}",
                     userHint = "正在查询维基百科…",
                 )
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 val msg = e.message ?: "未知错误"
                 if ("404" in msg || "Not Found" in msg.lowercase()) {
+                    // P2 补齐：404 是"未找到词条"的正常业务分支，不算系统故障，
+                    // 不套 toolFailure；但此前完全无日志，排查"某关键词为何总查不到"
+                    // 时无迹可循，补一条 warn 级别记录（非 error，避免误判为故障）。
+                    com.zaijian.zhoumuyun.util.AgentLog.warn(
+                        "WikiFetch",
+                        "词条未找到 keyword=$keyword lang=$lang",
+                        e,
+                    )
                     ToolResult(name, false, "未找到词条「$keyword」，建议调整关键词或切换 lang=en。", "404")
                 } else {
-                    ToolResult(name, false, "Wiki 查询失败：${msg.take(80)}", msg)
+                    toolFailure(name, "Wiki 查询失败，请稍后重试。", "wiki_fetch_failed", e, "WikiFetch")
                 }
             }
         }
@@ -893,8 +961,10 @@ class ArxivSearchTool : AgentTool {
                     content  = result.trimEnd(),
                     userHint = "正在搜索 arXiv…",
                 )
-            } catch (e: Exception) {
-                ToolResult(name, false, "arXiv 搜索失败：${e.message?.take(80)}", e.message)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                toolFailure(name, "arXiv 搜索失败，请稍后重试。", "arxiv_search_failed", e)
             }
         }
 }
@@ -912,6 +982,7 @@ class ArxivSearchTool : AgentTool {
  */
 fun AgentToolRegistry.registerAgentMetaTools(
     context:    Context,
+    db:         AppDatabase,
     memoryDao:  MemoryDao,
     sessionDao: EvaluationSessionDao,
     goalDao:    LearningGoalDao,
@@ -949,6 +1020,7 @@ fun AgentToolRegistry.registerAgentMetaTools(
         ),
         TaskDelegateTool(
             providerFn          = providerFn,
+            db                  = db,
             taskDao             = taskDao,
             characterIdProvider = { -1 },
         ),

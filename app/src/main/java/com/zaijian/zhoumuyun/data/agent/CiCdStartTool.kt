@@ -60,8 +60,10 @@ class CiCdStartTool(
             if (parsed.isEmpty()) {
                 return ToolResult(name, false, "", "files_json 中没有有效的文件条目")
             }
-        } catch (e: Exception) {
-            return ToolResult(name, false, "", "files_json 格式错误，流水线未启动：${e.message?.take(120)}")
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            return toolFailure(name, "files_json 格式错误，流水线未启动。", "cicd_start_files_json_invalid", e)
         }
 
         val branch = params["branch"]?.trim().takeIf { !it.isNullOrBlank() } ?: "main"
@@ -147,8 +149,10 @@ class CiCdStartTool(
                 content  = "已开始后台流水线：提交代码 → 触发编译 → 下载 APK，完成后会通知你。$warningSuffix",
                 userHint = "正在启动编译流水线…",
             )
-        } catch (e: Exception) {
-            ToolResult(name, false, "", "启动流水线失败：${e.message?.take(120)}")
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            toolFailure(name, "启动流水线失败，请稍后重试。", "cicd_start_enqueue_failed", e)
         }
     }
 }

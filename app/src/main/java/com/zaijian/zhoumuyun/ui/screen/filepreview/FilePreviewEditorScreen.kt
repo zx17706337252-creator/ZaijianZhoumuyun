@@ -148,7 +148,7 @@ fun FilePreviewEditorScreen(
                                             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                                         }
                                         context.startActivity(Intent.createChooser(intent, "打开 ${file.name}"))
-                                    } catch (e: Exception) {
+                                    } catch (e: Throwable) {
                                         com.zaijian.zhoumuyun.util.ZLog.e("FilePreview", "外部打开失败", e)
                                     }
                                 },
@@ -194,6 +194,11 @@ fun FilePreviewEditorScreen(
                                 // Excel 闪退修复：把解析层的截断标记透传给渲染层，
                                 // 让用户知道"看到的不是全部数据"而不是以为文件本身只有这么点内容。
                                 isTruncated = content.isTruncated,
+                                // xlsx 多 sheet 支持：透传 sheet 列表/当前索引，点击标签时
+                                // 交给 ViewModel 重新解析目标 sheet。
+                                sheetNames = content.sheetNames,
+                                activeSheetIndex = content.activeSheetIndex,
+                                onSheetSelect = { index -> viewModel.switchXlsxSheet(index) },
                                 onSave = { cols, rows -> viewModel.saveTable(cols, rows) },
                             )
                         }
@@ -226,7 +231,7 @@ fun FilePreviewEditorScreen(
                                             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                                         }
                                         context.startActivity(Intent.createChooser(intent, "打开 ${content.fileName}"))
-                                    } catch (e: Exception) {
+                                    } catch (e: Throwable) {
                                         com.zaijian.zhoumuyun.util.ZLog.e("FilePreview", "外部打开失败", e)
                                     }
                                 },

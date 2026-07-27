@@ -63,7 +63,7 @@ object ContentBlockParser {
         // 整段当一个普通段落兜底展示，不让用户看到白屏/闪退。
         return try {
             parseInternal(text)
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             com.zaijian.zhoumuyun.util.ZLog.e("ContentBlockParser", "解析异常，回退为纯文本段落", e)
             listOf(ContentBlock.Paragraph(listOf(TextSegment(text, TextSegmentType.DIALOGUE))))
         }

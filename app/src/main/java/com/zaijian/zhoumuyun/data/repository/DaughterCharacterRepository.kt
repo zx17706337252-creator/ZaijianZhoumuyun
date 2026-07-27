@@ -235,7 +235,9 @@ class DaughterCharacterRepository(
 
         val gen2Config = try {
             gen2Entity.toDaughterCharacterData().toCharacterConfig(gen2CharacterId)
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             ZLog.w("DaughterCharacterRepo", "gen2 parse failed, skip", e)
             return result
         }
@@ -250,7 +252,9 @@ class DaughterCharacterRepository(
 
         val gen3Config = try {
             gen3Entity.toDaughterCharacterData().toCharacterConfig(gen3CharacterId)
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             ZLog.w("DaughterCharacterRepo", "gen3 parse failed, skip", e)
             return result
         }
@@ -412,7 +416,9 @@ class DaughterCharacterRepository(
             try {
                 val config = getCharacterConfig(daughterId)
                 config?.let { daughterId.toString() to it.name }
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 ZLog.w(logTag, "女儿角色($daughterId)名称查询失败", e)
                 null
             }

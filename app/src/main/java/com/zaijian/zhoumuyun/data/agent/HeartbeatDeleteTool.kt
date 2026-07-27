@@ -51,7 +51,10 @@ class HeartbeatDeleteTool(
 
                     if (indexStr.isNullOrEmpty()) {
                         // ── 删除整个清单 ──────────────────────────────────
-                        file.delete()
+                        // P2 修复：检查 file.delete() 返回值，删除失败时返回错误而非假装成功
+                        if (!file.delete()) {
+                            return@withLock ToolResult(name, false, "", error = "删除心跳清单文件失败")
+                        }
                         ToolResult(
                             toolName = name,
                             success  = true,
@@ -92,8 +95,10 @@ class HeartbeatDeleteTool(
                         )
                     }
                 }
-            } catch (e: Exception) {
-                ToolResult(name, false, "", error = "删除失败：${e.message}")
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                toolFailure(name, "删除心跳清单条目失败，请稍后重试。", "heartbeat_delete_failed", e)
             }
         }
 

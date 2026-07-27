@@ -104,8 +104,10 @@ class HeartbeatSetTool(
                     content  = "心跳清单「$title」已写入，共 ${items.size} 条。",
                     userHint = "正在写入心跳清单…",
                 )
-            } catch (e: Exception) {
-                ToolResult(name, false, "", error = "写入失败：${e.message}")
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                toolFailure(name, "写入心跳清单失败，请稍后重试。", "heartbeat_set_failed", e)
             }
         }
 
@@ -115,7 +117,18 @@ class HeartbeatSetTool(
     internal suspend fun writeChecklistFile(characterId: Int, content: String) {
         HeartbeatFileLocks.getMutex(characterId).withLock {
             val dir = File(context.filesDir, "heartbeat/$characterId")
-            dir.mkdirs()
+            // #45 修复：原逻辑不检查 mkdirs() 返回值。目录创建失败时（磁盘满、
+            // 权限异常等）此前会直接走到 writeText 抛出普通 IOException——外层
+            // execute() 的 try-catch 能兜住不崩溃，但 toolFailure 只把异常细节
+            // 写进 Logcat，返给 LLM/用户的只是统一的"写入心跳清单失败，请稍后
+            // 重试"，看不出根因其实是"目录都没建起来"。
+            // 这里显式检查：mkdirs() 返回 false 时，先看 dir 是否已经存在
+            // （包括"目录已存在"和"并发场景下已被其他调用创建好"两种正常情况，
+            // mkdirs() 对已存在目录也会返回 false），只有确认目录仍不存在才
+            // 抛出带明确原因的异常，避免误报正常场景为失败。
+            if (!dir.exists() && !dir.mkdirs() && !dir.exists()) {
+                throw java.io.IOException("无法创建心跳清单目录: ${dir.path}")
+            }
             File(dir, "checklist.json").writeText(content, Charsets.UTF_8)
         }
     }

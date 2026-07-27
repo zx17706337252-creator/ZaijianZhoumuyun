@@ -1,6 +1,7 @@
 package com.zaijian.zhoumuyun.data.agent
 
 import com.zaijian.zhoumuyun.data.AppContainer
+import com.zaijian.zhoumuyun.data.provider.ChatStreamItem
 import com.zaijian.zhoumuyun.data.provider.LLMConfig
 import com.zaijian.zhoumuyun.data.provider.LLMMessage
 import com.zaijian.zhoumuyun.data.provider.LLMProvider
@@ -9,6 +10,8 @@ import com.zaijian.zhoumuyun.data.repository.AgentActivityRepository
 import com.zaijian.zhoumuyun.util.ZLog
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
@@ -135,14 +138,55 @@ object ToolCallInterceptor {
      * 最大工具执行轮数。
      * 第二次 LLM 回复中仍有工具调用时，最多再执行一轮。
      * 超过此轮数后，直接返回最后一次 LLM 的原始输出（含标签），不再拦截。
+     *
+     * P0-7 修复：原值 2 对"一次性导出 5 种格式文件"这类多工具连续调用场景严重不足，
+     * 模型往往在第 2、3 个工具标签还没写完就达到轮数上限被强制收尾。提升到 6，
+     * 覆盖典型的多工具编排（5 份文件 + 1 轮收尾自查）。
      */
-    const val MAX_TOOL_ROUNDS = 2
+    const val MAX_TOOL_ROUNDS = 6
 
     /**
      * 单个工具调用超时（毫秒）。
      * 超过此时间后返回超时 ToolResult，不中断整体流程。
      */
     const val TOOL_TIMEOUT_MS = 30_000L
+
+    // ─────────────────────────────────────────────────────────
+    //  Fix-孤儿文件 ③：工具执行中标记（供调用方在 cancel 前查询）
+    // ─────────────────────────────────────────────────────────
+    //
+    // 背景：①②（executeWithTimeout 的 NonCancellable + 孤儿兜底）保证了
+    // "即使被打断，文件也不会真的丢"，但打断本身仍然发生——被打断的这一轮
+    // 回复文字会被腰斩，用户体验上仍然是"话说到一半没了"。①②处理的是
+    // "取消已经发生之后怎么办"，这里补一道"能不能一开始就别取消"的防线。
+    //
+    // ChatMessageOrchestrator.sendMessage() 的 getReplyJob()?.cancel() 理论上
+    // 应该只在 isTyping==false（发送按钮本就该被禁用）时才可能触发，属于
+    // "万一 isTyping 门控失效"的兜底调用；ChatSessionDelegate.init() 已经改成
+    // 只在真正切换角色时才取消（见该文件 Fix-孤儿文件 说明）。这道标记是给
+    // 这两处（以及圆桌 RoundtableMessageOrchestrator.sendMessage() 同款场景）
+    // 多一层依据：cancel 之前先问一句"这个角色/圆桌成员现在是不是正有工具在
+    // 落盘"，是的话就别粗暴杀掉，改为提示用户稍候。
+    //
+    // key 用 "sceneType:characterId" 而不是单独 characterId——私聊和圆桌可能
+    // 复用同一个角色 ID（圆桌成员本身也是一个正常角色），两边应该各自独立
+    // 判断"是否正在执行"，不应互相影响。
+    private val toolInFlightKeys = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    private fun toolInFlightKey(sceneType: String, characterId: Int) = "$sceneType:$characterId"
+
+    /**
+     * 供调用方（ChatMessageOrchestrator.sendMessage / RoundtableMessageOrchestrator.sendMessage
+     * 等）在决定要不要 cancel 旧任务前查询：这个 (sceneType, characterId) 当前
+     * 是不是正有工具在执行（[executeWithDegradation] 覆盖的整个尝试/降级周期，
+     * 不只是最外层 LLM 文字流式阶段——文字流式阶段被打断是安全、廉价的，
+     * 真正需要保护的是工具落盘这一段）。
+     *
+     * 返回 true 时，调用方应避免 cancel 当前 job，改为提示用户"上一个操作还在
+     * 进行中，请稍候"，而不是强行打断。
+     */
+    fun isToolInFlight(sceneType: String, characterId: Int): Boolean =
+        toolInFlightKeys.contains(toolInFlightKey(sceneType, characterId))
 
     /**
      * 流式调用 LLM 并自动处理工具调用。
@@ -185,8 +229,9 @@ object ToolCallInterceptor {
         // 在 pendingCalls.isEmpty() 处正常 break，只是多了一点不必要的
         // parser 构造开销，可接受。
         if (AgentToolRegistry.allNames().isEmpty()) {
-            provider.chat(messages, systemPrompt, config).collect { delta ->
-                send(StreamEvent.TextDelta(delta))
+            // P0-5: 使用 chatStream() 保持一致，但快速路径不关心 finish_reason
+            provider.chatStream(messages, systemPrompt, config).collect { item ->
+                if (item is ChatStreamItem.TextDelta) send(StreamEvent.TextDelta(item.text))
             }
             return@channelFlow
         }
@@ -251,23 +296,37 @@ object ToolCallInterceptor {
             val isForcedLockRound = pendingFilePaths.isNotEmpty() && round < 2
 
             // ── Phase 1：流式接收 LLM 输出 ─────────────────────
+            // P0-5 修复：使用 chatStream() 替代 chat()，以获取 finish_reason 截断信号。
+            // finish_reason=="length" 表示 maxTokens 截断；同时 flush() 的 hasPendingTag
+            // 表示有未闭合的 <tool: 标签。两个信号任一为真即判定本轮被截断。
+            var truncatedThisRound = false
             try {
-                provider.chat(currentMessages, systemPrompt, config).collect { delta ->
-                    val result = parser.feed(delta)
+                provider.chatStream(currentMessages, systemPrompt, config).collect { item ->
+                    when (item) {
+                        is ChatStreamItem.TextDelta -> {
+                            val result = parser.feed(item.text)
 
-                    // 立即输出纯文本（打字机效果）——锁死阶段不展示给用户
-                    if (result.cleanText.isNotEmpty()) {
-                        if (!isForcedLockRound) send(StreamEvent.TextDelta(result.cleanText))
-                        roundText.append(result.cleanText)
+                            // 立即输出纯文本（打字机效果）——锁死阶段不展示给用户
+                            if (result.cleanText.isNotEmpty()) {
+                                if (!isForcedLockRound) send(StreamEvent.TextDelta(result.cleanText))
+                                roundText.append(result.cleanText)
+                            }
+
+                            // 收集本轮发现的工具调用
+                            pendingCalls.addAll(result.detectedCalls)
+                        }
+                        is ChatStreamItem.FinishReason -> {
+                            if (item.reason == "length") {
+                                truncatedThisRound = true
+                            }
+                        }
                     }
-
-                    // 收集本轮发现的工具调用
-                    pendingCalls.addAll(result.detectedCalls)
                 }
             } catch (e: CancellationException) {
                 throw e  // 协程取消必须重新抛出
-            } catch (e: Exception) {
-                // LLM 调用失败：emit 错误提示后退出
+            } catch (e: Throwable) {
+                // P1-5 修复：catch Throwable 而非 Exception——Error 子类（OOM 等）
+                // 此前击穿 Exception 导致 channelFlow 异常退出、用户无错误提示。
                 com.zaijian.zhoumuyun.util.AgentLog.error("LLM", "LLM 调用失败（第 ${round + 1} 轮）", e)
                 send(StreamEvent.TextDelta("\n\n[抱歉，遇到了一些问题，稍后再试？]"))
                 break
@@ -288,6 +347,21 @@ object ToolCallInterceptor {
             if (flushResult.cleanText.isNotEmpty()) {
                 if (!isForcedLockRound) send(StreamEvent.TextDelta(flushResult.cleanText))
                 roundText.append(flushResult.cleanText)
+            }
+
+            // P0-5 修复：综合截断信号。两个来源：
+            //   1. finish_reason == "length"（来自 chatStream 的 FinishReason 事件）
+            //   2. flushResult.hasPendingTag（来自 ToolParser.flush()，P0-6 修复）
+            // 任一为真即判定本轮被 maxTokens 截断。用于：
+            //   - pendingCalls 为空时：注入续写指令而非直接结束
+            //   - pendingCalls 非空时：收尾指令加自查提醒
+            val wasTruncated = truncatedThisRound || flushResult.hasPendingTag
+            if (wasTruncated) {
+                com.zaijian.zhoumuyun.util.AgentLog.warn(
+                    "ToolCall",
+                    "✂ 本轮输出被截断（finish_reason=${if (truncatedThisRound) "length" else "n/a"}, " +
+                        "hasPendingTag=${flushResult.hasPendingTag}，第 ${round + 1} 轮）",
+                )
             }
 
             // 本轮没有工具调用 → 检查是否需要文件读取锁死
@@ -333,7 +407,7 @@ object ToolCallInterceptor {
                     // 注入强制指令，要求 AI 必须调用 file_read
                     val fileList = pendingFilePaths.joinToString("\n") { "  - $it" }
                     currentMessages.add(LLMMessage("user", buildString {
-                        append("你刚才的回复没有调用 file_read 工具读取用户上传的文件。\n")
+                        append("你刚才的回复没有调用 file_read 工具读取我上传的文件。\n")
                         append("以下文件尚未读取，你必须立即调用 file_read 工具读取它们的全部内容：\n")
                         append(fileList)
                         append("\n\n不要回复任何其他内容，不要解释，不要道歉，")
@@ -383,8 +457,12 @@ object ToolCallInterceptor {
                                         "FileReadLock", "兜底读取失败：$filePath（${readResult.error}）",
                                     )
                                 }
-                            } catch (e: Exception) {
-                                fallbackParts.add("[file_read 读取 $filePath 异常：${e.message}]")
+                            } catch (e: kotlinx.coroutines.CancellationException) {
+                                throw e
+                            } catch (e: Throwable) {
+                                // P1-5 修复：catch Throwable 而非 Exception，防 Error 子类击穿。
+                                // P2 修复：兜底消息不暴露 e.message（可能含绝对路径），异常详情已由下方 AgentLog.error 记录
+                                fallbackParts.add("[file_read 读取 $filePath 异常]")
                                 com.zaijian.zhoumuyun.util.AgentLog.error(
                                     "FileReadLock", "兜底读取异常：$filePath", e,
                                 )
@@ -411,7 +489,7 @@ object ToolCallInterceptor {
                         }
                         appendLine()
                         appendLine()
-                        append("请根据以上工具返回的信息，用你自己的语气回复用户。不要提及工具或搜索的过程。")
+                        append("请根据以上工具返回的信息，用你自己的语气回复我。不要提及工具或搜索的过程。")
                     }
 
                     // 追加 AI 这轮的回复（不推倒重来——复核意见一第 4 条）
@@ -440,6 +518,25 @@ object ToolCallInterceptor {
                     continue  // 让 LLM 基于注入的内容生成回复
                 }
 
+                // P0-5 修复：截断续写。如果本轮被 maxTokens 截断（wasTruncated=true）
+                // 且没有完整的工具调用（pendingCalls 为空），说明模型正在写工具标签
+                // 或正文时被截断。原行为：截断的半截标签被 flush 丢弃后，整轮被
+                // 误判为"模型没调工具"，直接 break 结束——是"没有任何报错记录"的
+                // 根因。改为注入续写指令，让模型在下一轮继续完成。
+                if (wasTruncated && round < maxRounds - 1) {
+                    if (roundText.isNotEmpty()) {
+                        currentMessages.add(LLMMessage("assistant", roundText.toString()))
+                    }
+                    currentMessages.add(LLMMessage("user",
+                        "你上一轮的回复被截断了，请继续完成。" +
+                        "如果原本要调用工具，请重新发起完整的工具调用标签。" +
+                        "不要重复已经输出过的内容，直接从截断处继续。"
+                    ))
+                    roundText.clear()
+                    round++
+                    continue
+                }
+
                 break
             }
 
@@ -464,6 +561,13 @@ object ToolCallInterceptor {
 
             // ── Phase 2：串行执行工具调用 ─────────────────────
             val toolResultParts = mutableListOf<String>()
+            // 根因修复（静默失败）：此前 Phase 3 不区分成败，一律指示 LLM
+            // "不要提及工具或搜索的过程"——工具真失败时，这条指令连同失败原因
+            // 一起把"这次操作没成功"这件事也一并瞒着用户，导致用户看到的是
+            // 角色若无其事地继续聊天，没有文件、没有错误提示、什么都没发生，
+            // 而实际上工具已经执行过且已失败。用本轮是否有任何工具失败/被禁用/
+            // 未注册来决定 Phase 3 给 LLM 的收尾指令（见下方 anyFailed 分支）。
+            var anyFailed = false
 
             for (call in pendingCalls) {
                 if (call.toolName in disabledToolNames) {
@@ -472,6 +576,7 @@ object ToolCallInterceptor {
                     // 这里是兜底的第二道防线。
                     com.zaijian.zhoumuyun.util.AgentLog.warn("ToolCall", "⊘ ${call.toolName} 在当前场景被禁用，跳过执行")
                     toolResultParts.add("[工具 ${call.toolName} 在当前场景不可用]")
+                    anyFailed = true
                     continue
                 }
                 val tool = AgentToolRegistry.get(call.toolName)
@@ -479,6 +584,7 @@ object ToolCallInterceptor {
                     // 未注册的工具：记录并跳过
                     com.zaijian.zhoumuyun.util.AgentLog.warn("ToolCall", "⊘ ${call.toolName} 未注册（LLM 生成了该工具标签但 registry 里没有），跳过")
                     toolResultParts.add("[工具 ${call.toolName} 不可用]")
+                    anyFailed = true
                     continue
                 }
 
@@ -502,6 +608,7 @@ object ToolCallInterceptor {
                 // 通知 UI 工具完成
                 send(StreamEvent.ToolDone(toolResult))
 
+                if (!toolResult.success) anyFailed = true
                 toolResultParts.add(
                     if (toolResult.success) toolResult.content
                     else "[${toolResult.toolName} 执行失败: ${toolResult.error ?: "未知错误"}]"
@@ -518,6 +625,16 @@ object ToolCallInterceptor {
             //   OpenAI 兼容协议各提供商对 "tool" role 支持参差不齐；
             //   "user" role 所有提供商均支持，且语义清晰。
             //
+            // 收尾指令按 anyFailed / wasTruncated 分支：
+            //   全部成功且未截断 → 维持原指令，不解释工具/搜索过程，保持角色沉浸感。
+            //   任一失败 → 明确要求 LLM 用角色口吻告知用户"这件事没做成"，
+            //     不能假装已完成、也不能对失败只字不提；技术细节（工具名、
+            //     报错信息）仍不暴露给用户，只是"失败"这件事本身必须被看见。
+            //   被截断但已有工具成功（P0-5）→ 要求模型自查是否有遗漏的工具调用，
+            //     而不是默认全部做完后自信地说"五个都发了"。截断发生在工具标签
+            //     之间时，已完成的标签会被正常解析执行，但模型可能还计划了更多
+            //     工具调用——原行为下模型顺着上下文自信地报告"全部完成"，实际
+            //     只做了一半。
             val toolResultContent = buildString {
                 appendLine("[工具执行结果]")
                 toolResultParts.forEachIndexed { i, r ->
@@ -526,7 +643,23 @@ object ToolCallInterceptor {
                 }
                 appendLine()
                 appendLine()
-                append("请根据以上工具返回的信息，用你自己的语气回复用户。不要提及工具或搜索的过程。")
+                if (anyFailed) {
+                    append("以上信息中有操作未成功。请用你自己的语气自然地告诉我这件事没有做成" +
+                        "（不需要暴露工具名称、报错信息等技术细节，也不要堆砌道歉套话），" +
+                        "可以问我要不要换个方式再试。禁止假装该操作已经完成，" +
+                        "禁止对失败这件事只字不提、顾左右而言他。")
+                } else if (wasTruncated) {
+                    // P0-5 修复：截断自查。模型上一轮输出被 maxTokens 截断，
+                    // 已执行的工具可能只是计划中的一部分。要求模型检查是否
+                    // 还有遗漏，而不是默认全部做完。
+                    append("注意：你上一轮的输出被截断了，以上可能只是部分工具的执行结果。" +
+                        "请检查我原始请求中要求的所有操作是否都已执行。" +
+                        "如果还有遗漏的操作，请继续调用对应工具完成；" +
+                        "如果已经全部完成，请用你自己的语气回复我，不要提及工具或搜索的过程。" +
+                        "禁止在不确定的情况下声称所有操作都已完成。")
+                } else {
+                    append("请根据以上工具返回的信息，用你自己的语气回复我。不要提及工具或搜索的过程。")
+                }
             }
 
             // 将本轮 LLM 输出 + 工具结果追加到消息历史
@@ -545,9 +678,12 @@ object ToolCallInterceptor {
         if (round == maxRounds) {
             try {
                 val parser = ToolParser()
-                provider.chat(currentMessages, systemPrompt, config).collect { delta ->
-                    val result = parser.feed(delta)
-                    if (result.cleanText.isNotEmpty()) send(StreamEvent.TextDelta(result.cleanText))
+                // P0-5: 使用 chatStream() 保持一致
+                provider.chatStream(currentMessages, systemPrompt, config).collect { item ->
+                    if (item is ChatStreamItem.TextDelta) {
+                        val result = parser.feed(item.text)
+                        if (result.cleanText.isNotEmpty()) send(StreamEvent.TextDelta(result.cleanText))
+                    }
                 }
                 // L4 修复同主循环：先 feed("") 扫尽 buffer 里已完整的标签，
                 // 再 flush() 截断尾部未闭合碎片，避免末轮完整工具标签被丢弃。
@@ -557,73 +693,233 @@ object ToolCallInterceptor {
                 if (final.cleanText.isNotEmpty()) send(StreamEvent.TextDelta(final.cleanText))
             } catch (e: CancellationException) {
                 throw e
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
+                // P0-7 修复：末轮收尾 LLM 流式此前 catch(Exception) 抓不住 Error 子类
+                // （如 OutOfMemoryError），且完全没有日志——异常被静默吞掉，
+                // 用户只看到一句"[抱歉…]"却无法在日志中定位根因。改为 Throwable
+                // 并补齐 AgentLog.error，与主循环 LLM catch（line 327）保持一致。
+                com.zaijian.zhoumuyun.util.AgentLog.error(
+                    "ToolCall", "末轮收尾 LLM 流式失败（round=$round）", e,
+                )
                 send(StreamEvent.TextDelta("\n\n[抱歉，遇到了一些问题，稍后再试？]"))
             }
         }
     }
 
+    // ── P2 日志脱敏 ──────────────────────────────────────────
+    /** 敏感参数 key：其 value 可能含大段文件内容/用户私密文本，日志中只记长度+预览。 */
+    private val SENSITIVE_PARAM_KEYS = setOf("content", "text", "body", "data", "html")
+
+    /**
+     * P2 修复：对工具参数做脱敏后再写日志。
+     *
+     * 原先 `call.params.toString().take(500)` 会把 `file_export` 的 `content`（完整文件内容）、
+     * `translate` 的 `text`（用户私密文本）等原样写进可导出的 agent_log.txt。现在对敏感 key
+     * 只记录长度+前 20 字符预览，非敏感 key 限制 100 字符。
+     */
+    private fun sanitizeParams(params: Map<String, String>): String =
+        params.entries.joinToString(", ", "{", "}") { (k, v) ->
+            val display = if (k in SENSITIVE_PARAM_KEYS) {
+                if (v.length <= 20) "***(${v.length}字符)"
+                else "\"${v.take(20)}…***\"(${v.length}字符)"
+            } else {
+                v.take(100)
+            }
+            "$k=$display"
+        }
+
     /**
      * 带超时的工具执行。
      *
      * 超过 [TOOL_TIMEOUT_MS] 返回超时 ToolResult，不抛出异常。
+     *
+     * ── Fix-孤儿文件（取消竞态）──────────────────────────────────────
+     * 背景（详见 agent_log.txt 04:30:41 那次 excel_gen 事故复盘）：`sendMessage()`/
+     * `ChatSessionDelegate.init()` 在新消息进入或切换角色时会无条件
+     * `getReplyJob()?.cancel()`。若此时正巧有 excel_gen/pptx_gen 这类耗时工具在
+     * 执行 POI 写文件（阻塞式调用，内部无挂起点），协作式取消在阻塞期间无法生效，
+     * 文件本身会正常写完落盘——但 `withTimeout{}` 在把结果交还调用者的那一刻
+     * （唯一的挂起点）发现外层 Job 已取消，直接抛出 `CancellationException`，
+     * 原实现在这里 `throw e` 且不写任何日志：文件已经在磁盘上，但 metaJson 永远
+     * 到不了 `send(StreamEvent.ToolDone)`，也就永远进不了数据库/文件卡——
+     * 文件变成没人知道存在的孤儿，用户看到的是"什么都没发生"。
+     *
+     * 三层修复：
+     * ①（本函数）取消必须留痕：不再对 CancellationException 静默 throw。
+     * ②（本函数）用 [NonCancellable] 包住工具执行与日志记录整个过程，确保只要
+     *   进了这个保护区就能拿到确定的 ToolResult（不再被外层取消打断到一半），
+     *   跳出保护区后再补一次显式判断：若调用方（replyJob）确实已经取消，走
+     *   [recoverOrphanedToolResult] 兜底（私聊场景直接落一条系统消息把文件卡片
+     *   找补回来），再重新抛出取消信号，维持结构化并发语义不变。
+     * ③ 从源头减少打断发生（[ChatMessageOrchestrator]/[ChatSessionDelegate] 等
+     *   调用方在决定要不要 cancel 旧 job 前，先判断是否正有工具在执行）是更大的
+     *   改动，本次先只做这里的兜底层，具体见随附说明。
+     *
+     * @param activityContext 非 null 时，孤儿恢复仅在 sceneType==CHAT（私聊）落库
+     *   系统消息找补文件卡片；圆桌/后台工作流场景消息表结构不同，暂只保留
+     *   AgentLog 里的完整 absolutePath 供人工找回，不贸然跨结构写入。
      */
     private suspend fun executeWithTimeout(
         call: ToolCall,
         tool: AgentTool,
-    ): ToolResult = withContext(Dispatchers.IO) {
+        activityContext: ActivityContext? = null,
+    ): ToolResult {
         // U-7 修复：执行前检查协程是否已被取消，避免外层已取消后仍启动工具副作用。
-        // 注：ensureActive 只能提供入口处的快速退出保护；阻塞式工具（POI wb.write 等）
-        // 内部无挂起点，withTimeout 取消信号在阻塞期间无法生效，这是协作式取消的固有限制。
         currentCoroutineContext().ensureActive()
-        val startTime = System.currentTimeMillis()
-        com.zaijian.zhoumuyun.util.AgentLog.info("ToolCall", "▶ ${call.toolName} 开始\n  params: ${call.params.toString().take(500)}")
-        try {
-            kotlinx.coroutines.withTimeout(TOOL_TIMEOUT_MS) {
-                tool.execute(call.params)
-            }.also { result ->
-                val elapsed = System.currentTimeMillis() - startTime
-                if (result.success) {
-                    com.zaijian.zhoumuyun.util.AgentLog.info(
-                        "ToolCall",
-                        "✔ ${call.toolName} 成功（用时 ${elapsed}ms）\n  result: ${result.content.take(300)}${if (result.tablePayloadJson != null) "\n  [附带 tablePayloadJson]" else ""}",
-                    )
-                } else {
-                    com.zaijian.zhoumuyun.util.AgentLog.warn(
-                        "ToolCall",
-                        "⚠ ${call.toolName} 业务失败（用时 ${elapsed}ms）\n  error: ${result.error}",
-                    )
+        // 必须在切换到 NonCancellable 之前拿到调用方（replyJob 一侧）的 Job 引用——
+        // 进入 NonCancellable 保护区后，ambient Job 会变成 NonCancellable 本身，
+        // 不再能反映外层协程真实的取消状态。
+        val callerJob = currentCoroutineContext()[Job]
+
+        val result = withContext(Dispatchers.IO + NonCancellable) {
+            val startTime = System.currentTimeMillis()
+            com.zaijian.zhoumuyun.util.AgentLog.info("ToolCall", "▶ ${call.toolName} 开始\n  params: ${sanitizeParams(call.params)}")
+            try {
+                kotlinx.coroutines.withTimeout(TOOL_TIMEOUT_MS) {
+                    tool.execute(call.params)
+                }.also { r ->
+                    val elapsed = System.currentTimeMillis() - startTime
+                    if (r.success) {
+                        // P2 修复：file_read/url_fetch 等工具的成功结果是完整文件/网页内容，
+                        // 原先 take(300) 会把前 300 字符写进可导出日志，现改为只记长度。
+                        val resultPreview = if (call.toolName in setOf("file_read", "url_fetch")) {
+                            "[内容长度: ${r.content.length}字符]"
+                        } else {
+                            r.content.take(300)
+                        }
+                        com.zaijian.zhoumuyun.util.AgentLog.info(
+                            "ToolCall",
+                            "✔ ${call.toolName} 成功（用时 ${elapsed}ms）\n  result: $resultPreview${if (r.tablePayloadJson != null) "\n  [附带 tablePayloadJson]" else ""}",
+                        )
+                    } else {
+                        com.zaijian.zhoumuyun.util.AgentLog.warn(
+                            "ToolCall",
+                            "⚠ ${call.toolName} 业务失败（用时 ${elapsed}ms）\n  error: ${r.error}",
+                        )
+                    }
                 }
+            } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+                val elapsed = System.currentTimeMillis() - startTime
+                com.zaijian.zhoumuyun.util.AgentLog.error(
+                    "ToolCall",
+                    "⏱ ${call.toolName} 超时（${TOOL_TIMEOUT_MS / 1000}s，实际 ${elapsed}ms）",
+                )
+                ToolResult(
+                    toolName = call.toolName,
+                    success  = false,
+                    content  = "[${call.toolName} 执行超时（${TOOL_TIMEOUT_MS / 1000}s）]",
+                    error    = "timeout",
+                )
+            } catch (e: CancellationException) {
+                // 理论上不会走到这里：NonCancellable 屏蔽了"调用方 replyJob 被取消"
+                // 这一信号源，withTimeout 自身的取消已经在上面单独 catch。保留这条
+                // 兜底日志纯粹是防御性的——万一出现其它我们没预料到的取消来源，
+                // 也不会退回"静默吞掉、死得不明不白"的老问题。
+                val elapsed = System.currentTimeMillis() - startTime
+                com.zaijian.zhoumuyun.util.AgentLog.error(
+                    "ToolCall",
+                    "⚠ ${call.toolName} 在 NonCancellable 保护区内意外收到取消信号（用时 ${elapsed}ms），已记录，重新抛出",
+                )
+                throw e
+            } catch (e: Throwable) {
+                // 修复（并发工具调用静默卡死）：原先是 catch (e: Exception)，抓不住
+                // Error 子类（如 Apache POI 在 Android 上触发的 NoClassDefFoundError）。
+                // 单个工具内部若踩到这类问题，异常会从这里直接向上击穿到
+                // ChatMessageOrchestrator，导致整条回复协程静默终止——用户只看到
+                // 流式气泡的"…"突然消失，没有任何错误提示。这里是"单个工具执行"
+                // 这一层的最后防线，兜住 Throwable 后同样转成正常的失败 ToolResult，
+                // 不让任何单个工具的意外崩溃拖垮整轮多工具调用。
+                val elapsed = System.currentTimeMillis() - startTime
+                com.zaijian.zhoumuyun.util.AgentLog.error(
+                    "ToolCall",
+                    "✗ ${call.toolName} 异常（用时 ${elapsed}ms, exceptionType=${e::class.qualifiedName ?: e.javaClass.name}）",
+                    e,
+                )
+                // P2 修复：catch-all 异常处理不暴露 e.message（可能含绝对路径/堆栈），
+                // 完整异常已由上方 AgentLog.error 记录，对外只回固定文案 + 稳定错误码。
+                ToolResult(
+                    toolName = call.toolName,
+                    success  = false,
+                    content  = "[${call.toolName} 执行异常]",
+                    error    = "exception",
+                )
             }
-        } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
-            val elapsed = System.currentTimeMillis() - startTime
-            com.zaijian.zhoumuyun.util.AgentLog.error(
+        }
+
+        // 跳出 NonCancellable 保护区：工具执行 + 落盘（如果有）此时已经确定性地
+        // 跑完，result 里的 metaJson（如果是文件类工具）是可信的。如果调用方
+        // 早已被取消，正常的 send(StreamEvent.ToolDone(result)) 链路必然会在
+        // 下一个挂起点被打断，这条结果永远不会被上层消费——这里做最后的兜底。
+        if (callerJob?.isCancelled == true) {
+            com.zaijian.zhoumuyun.util.AgentLog.warn(
                 "ToolCall",
-                "⏱ ${call.toolName} 超时（${TOOL_TIMEOUT_MS / 1000}s，实际 ${elapsed}ms）",
+                "⚠ ${call.toolName} 执行完毕，但调用方在执行期间已被取消" +
+                    "（新消息打断/切换角色/退出圆桌等）——正常投递链路已中断，尝试孤儿兜底",
             )
-            ToolResult(
-                toolName = call.toolName,
-                success  = false,
-                content  = "[${call.toolName} 执行超时（${TOOL_TIMEOUT_MS / 1000}s）]",
-                error    = "timeout",
+            recoverOrphanedToolResult(result, activityContext)
+            // 兜底完成后把取消信号正常传播出去，维持结构化并发语义——
+            // NonCancellable 只是保护了"落盘/记录结果"这一步，不代表这次
+            // 工具调用在整条回复流程里仍然算数。
+            throw CancellationException("caller job cancelled during ${call.toolName} execution")
+        }
+
+        return result
+    }
+
+    /**
+     * 孤儿文件兜底（Fix-孤儿文件，见 [executeWithTimeout] 顶部说明）。
+     *
+     * 只在确认调用方已取消、且工具本身执行成功时才有意义——工具失败/超时
+     * 不产生需要找补的文件，直接跳过。
+     */
+    private suspend fun recoverOrphanedToolResult(result: ToolResult, activityContext: ActivityContext?) {
+        if (!result.success) return
+        val metaJson = extractOrphanFileMetaJson(result.content) ?: return
+
+        com.zaijian.zhoumuyun.util.AgentLog.warn(
+            "ToolCall",
+            "🗄 检测到孤儿文件（${result.toolName}），回复流程已被取消，正常投递链路中断\n  meta: $metaJson",
+        )
+
+        if (activityContext?.sceneType != AgentActivityRepository.SceneType.CHAT) {
+            // 圆桌 / 后台工作流场景：消息表结构与私聊不同（RoundtableMessage /
+            // WorkflowStepResult），贸然跨结构塞一条私聊 MessageEntity 风险更高
+            // （角色归属、UI 渲染路径都对不上）。这里先只保证上面的 AgentLog 留下
+            // 完整 absolutePath，需要时可以手动从 vault 目录找回文件；后续如果
+            // 圆桌/后台任务这类孤儿文件也频繁出现，再单独为它们各自的持久化
+            // 方式实现对应的找补逻辑（③ 从源头减少打断发生是更根本的解法）。
+            return
+        }
+
+        try {
+            AppContainer.instance.messageRepo.insert(
+                com.zaijian.zhoumuyun.data.db.entity.MessageEntity(
+                    id = java.util.UUID.randomUUID().toString(),
+                    characterId = activityContext.characterId,
+                    role = "system",
+                    content = "⚠ 上一条请求被打断，但下面这个文件已经生成好了：",
+                    createdAt = System.currentTimeMillis(),
+                    exportedFileJson = metaJson,
+                    exportedFilesJson = "[$metaJson]",
+                )
             )
-        } catch (e: CancellationException) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
-        } catch (e: Exception) {
-            val elapsed = System.currentTimeMillis() - startTime
-            com.zaijian.zhoumuyun.util.AgentLog.error(
-                "ToolCall",
-                "✗ ${call.toolName} 异常（用时 ${elapsed}ms）",
-                e,
-            )
-            ToolResult(
-                toolName = call.toolName,
-                success  = false,
-                content  = "[${call.toolName} 执行异常：${e.message}]",
-                error    = e.message,
-            )
+        } catch (e: Throwable) {
+            // P1-5 修复：catch Throwable 而非 Exception，防 Error 子类击穿
+            com.zaijian.zhoumuyun.util.AgentLog.error("ToolCall", "孤儿文件兜底落库失败（不影响主流程，文件仍留在磁盘上）", e)
         }
     }
+
+    /**
+     * 从工具结果文本里提取文件元数据 JSON（fileName/absolutePath 字段齐全才算数）。
+     *
+     * P3-2（元数据解析三份副本统一）：唯一实现已下沉到同层的
+     * `data.agent.ExportedFileMeta.kt`（[extractExportedFileJson]），本函数不再
+     * 手写一份重复的正则+JSON校验逻辑，只做委托。
+     */
+    private fun extractOrphanFileMetaJson(content: String): String? =
+        extractExportedFileJson(content)
 
     // ─────────────────────────────────────────────────────────
     //  §2.1.2 降级策略状态机
@@ -672,6 +968,38 @@ object ToolCallInterceptor {
     )
 
     /**
+     * §2.1.2 降级策略状态机对外入口：在 [executeWithDegradationCore] 之上包一层
+     * "工具执行中"标记维护（Fix-孤儿文件 ③，见 [toolInFlightKeys] 顶部说明）。
+     *
+     * 标记覆盖的是整个尝试/降级周期（第1次尝试 + 瞬时重试 + 全部降级轮次），
+     * 而不只是单次 [executeWithTimeout] 调用——因为调用方真正关心的是
+     * "这个角色现在算不算正被工具占着"，降级重试期间同样应该被当作"占着"。
+     *
+     * 用 try/finally 包裹而不是直接改 [executeWithDegradationCore] 内部：
+     * 那个函数有多处提前 return（成功 / 降级放弃 / 达到上限），在每处分别补
+     * 标记清理容易漏改一处；外层包一层可以保证无论走哪个 return 分支，
+     * finally 都会执行且只需要维护一处。
+     */
+    private suspend fun executeWithDegradation(
+        call: ToolCall,
+        tool: AgentTool,
+        provider: LLMProvider,
+        disabledToolNames: Set<String>,
+        activityContext: ActivityContext?,
+        goalContext: String,
+    ): ToolResult {
+        val inFlightKey = activityContext?.let { toolInFlightKey(it.sceneType, it.characterId) }
+        inFlightKey?.let { toolInFlightKeys.add(it) }
+        try {
+            return executeWithDegradationCore(call, tool, provider, disabledToolNames, activityContext, goalContext)
+        } finally {
+            // 纯内存 Set 操作，非挂起调用，即使协程已被取消（含 NonCancellable
+            // 保护区之外的正常取消路径）finally 块本身依然会执行，标记不会残留。
+            inFlightKey?.let { toolInFlightKeys.remove(it) }
+        }
+    }
+
+    /**
      * §2.1.2 降级策略状态机：在 [executeWithTimeout] 之上包装一层降级决策。
      *
      * 流程：
@@ -687,7 +1015,7 @@ object ToolCallInterceptor {
      * 降级过程不作为 StreamEvent.TextDelta 输出给用户——用户只看到最终结果。
      * 每次尝试都写一条 AgentActivityEventEntity（如果 [activityContext] 非 null）。
      */
-    private suspend fun executeWithDegradation(
+    private suspend fun executeWithDegradationCore(
         call: ToolCall,
         tool: AgentTool,
         provider: LLMProvider,
@@ -703,7 +1031,7 @@ object ToolCallInterceptor {
 
         // ── 第1次尝试 ──
         attempts++
-        lastResult = executeWithTimeout(currentCall, currentTool)
+        lastResult = executeWithTimeout(currentCall, currentTool, activityContext)
         if (lastResult.success) return lastResult
 
         // ── 判断失败类型 ──
@@ -715,7 +1043,7 @@ object ToolCallInterceptor {
             attempts++
             recordDegradeEvent(activityContext, "DEGRADE_RETRY", currentCall.toolName,
                 "瞬时类失败（${lastResult.error}），原参数重试", startTime)
-            lastResult = executeWithTimeout(currentCall, currentTool)
+            lastResult = executeWithTimeout(currentCall, currentTool, activityContext)
             if (lastResult.success) return lastResult
         }
 
@@ -733,7 +1061,7 @@ object ToolCallInterceptor {
                     recordDegradeEvent(activityContext, "DEGRADE_RETRY", currentCall.toolName,
                         "LLM 建议换参数重试：${decision.params}", startTime)
                     currentCall = ToolCall(toolName = currentCall.toolName, params = decision.params, rawTag = "")
-                    lastResult = executeWithTimeout(currentCall, currentTool)
+                    lastResult = executeWithTimeout(currentCall, currentTool, activityContext)
                 }
                 is DegradeDecision.Switch -> {
                     val newTool = AgentToolRegistry.get(decision.toolName)
@@ -749,7 +1077,7 @@ object ToolCallInterceptor {
                         "LLM 建议从 ${currentCall.toolName} 切换到 ${decision.toolName}", startTime)
                     currentCall = ToolCall(toolName = decision.toolName, params = decision.params, rawTag = "")
                     currentTool = newTool
-                    lastResult = executeWithTimeout(currentCall, currentTool)
+                    lastResult = executeWithTimeout(currentCall, currentTool, activityContext)
                 }
                 is DegradeDecision.Giveup -> {
                     recordDegradeEvent(activityContext, "DEGRADE_GIVEUP", currentCall.toolName,
@@ -818,13 +1146,16 @@ object ToolCallInterceptor {
                 providerFn   = { provider },
                 systemPrompt = systemPrompt,
                 userPrompt   = userPrompt,
-                maxTokens    = 200,
+                // P1 修复：原 200 tokens 对含较长 params 的 degrade:switch 标签极易截断，
+                // 截断后 parseDegradeDecision 匹配失败返回 Invalid，降级流程静默放弃。
+                maxTokens    = 512,
                 temperature  = 0.3f,
             )
             parseDegradeDecision(response)
         } catch (e: CancellationException) {
             throw e
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
+            // P1-5 修复：catch Throwable 而非 Exception，防 Error 子类击穿
             ZLog.w("ToolCall", "[askDegradeDecision] LLM 调用失败: ${e.message}")
             DegradeDecision.Invalid
         }
@@ -917,7 +1248,8 @@ object ToolCallInterceptor {
             )
         } catch (e: CancellationException) {
             throw e
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
+            // P1-5 修复：catch Throwable 而非 Exception，防 Error 子类击穿
             ZLog.w("ToolCall", "降级事件落库失败（不影响降级流程）", e)
         }
     }
@@ -943,7 +1275,8 @@ object ToolCallInterceptor {
             )
         } catch (e: CancellationException) {
             throw e
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
+            // P1-5 修复：catch Throwable 而非 Exception，防 Error 子类击穿
             ZLog.w("ToolCall", "失败写回记忆失败（不影响降级流程）", e)
         }
     }

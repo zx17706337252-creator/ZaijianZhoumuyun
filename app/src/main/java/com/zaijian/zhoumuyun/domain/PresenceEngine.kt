@@ -27,6 +27,7 @@ import org.json.JSONObject
 import java.util.Calendar
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.random.Random
 
 private const val TAG = "PresenceEngine"
 
@@ -55,6 +56,47 @@ class PresenceEngine(
 ) {
 
     // ── 主动消息触发（Phase 20 §H）──────────────────────────
+
+    // 撞车修复：同一次 runTier1() 顺序遍历 9 个角色时，多个角色常在几秒到几十秒内
+    // 先后触发主动消息（尤其深夜同批命中 MIDNIGHT、或长期未开 App 同批命中 LONGING），
+    // 各自独立请求 LLM，容易收敛到相似的"安全通用"问候语；网络抖动导致某次 LLM
+    // 失败时，还会退回完全写死的 fallback（MIDNIGHT 只有一句），多角色撞车尤其明显。
+    // 用实例级（非 companion object）短期窗口记录"最近别的角色已经发过的文本"，
+    // 不需要跨批次感知，实例级 + 时间戳过期即可；Worker 每次唤醒新建独立实例，
+    // 天然不会和前台单例混淆，符合"仅本轮/短期内去重"的需求。
+    private val recentProactiveTexts = ConcurrentHashMap<String, Long>() // text → 记录时间
+    private val recentTextWindowMs = 10 * 60 * 1000L // 近 10 分钟内视为"同一批"
+    private val recentTextMaxKeep = 30 // 防止无界增长，超过则清理最旧的
+
+    /** 记录一条刚发出的主动消息文本，供后续角色生成时避让。 */
+    private fun rememberProactiveText(text: String) {
+        val now = System.currentTimeMillis()
+        recentProactiveTexts[text] = now
+        if (recentProactiveTexts.size > recentTextMaxKeep) {
+            val cutoff = now - recentTextWindowMs
+            recentProactiveTexts.entries.removeAll { it.value < cutoff }
+        }
+    }
+
+    /** 取近期窗口内仍有效的已发文本列表（供 prompt 避让约束 + 撞车检测）。 */
+    private fun recentProactiveTextsSnapshot(): List<String> {
+        val cutoff = System.currentTimeMillis() - recentTextWindowMs
+        return recentProactiveTexts.entries.filter { it.value >= cutoff }.map { it.key }
+    }
+
+    /**
+     * 粗粒度相似度检测：完全相同、或去掉标点后前 6 个字相同，视为"撞车"。
+     * 不追求精确语义相似度（成本高），只拦截最容易引发用户吐槽的"一字不差/开头雷同"情况。
+     */
+    private fun collidesWithRecent(text: String, recent: List<String>): Boolean {
+        val normalized = text.trim().filterNot { it in "，,。.！!？?~～ " }
+        if (normalized.isBlank()) return false
+        val prefix = normalized.take(6)
+        return recent.any { other ->
+            val otherNormalized = other.trim().filterNot { it in "，,。.！!？?~～ " }
+            otherNormalized == normalized || (prefix.length >= 4 && otherNormalized.take(6) == prefix)
+        }
+    }
 
     // 批次1 1-6修复：_proactiveMessageFlow/proactiveMessageFlow 提升为 companion object
     // 级别（见下方 companion object）。原为实例成员，Worker 创建的独立 PresenceEngine
@@ -98,14 +140,21 @@ class PresenceEngine(
 
         try {
             _proactiveMessageFlow.emit(cleanMsg)
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             ZLog.w(TAG, "Proactive message emit failed", e)
         }
         try {
             onProactiveMessage?.invoke(cleanMsg)
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             ZLog.w(TAG, "Proactive message persist/notify failed", e)
         }
+        // 撞车修复：无论文本来自真实 LLM 生成还是 fallback，都记进"近期已发"窗口，
+        // 供本轮内后续角色的 generateProactiveLine 避让（包括 fallback 撞 fallback 的情况）。
+        rememberProactiveText(cleanMsg.text)
     }
 
     // ── 任务完成通知触发（Phase 30 方案二）──────────────────
@@ -154,7 +203,9 @@ class PresenceEngine(
                     status        = result.status,
                 )
             )
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             ZLog.w(TAG, "TaskCompletion emit failed for result \${result.id}", e)
         }
     }
@@ -246,7 +297,9 @@ class PresenceEngine(
                         createdAt = now,
                     )
                 )
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 ZLog.w(TAG, "Presence persist failed for char $characterId", e)
             }
         }
@@ -327,7 +380,9 @@ class PresenceEngine(
             if (generated.isNotBlank()) {
                 updateNoteText(characterId, generated)
             }
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             ZLog.w(TAG, "Daily note gen failed for char $characterId: ${e.message}")
             // 静默降级：保留已有模板文案，不抛出
         }
@@ -620,6 +675,43 @@ class PresenceEngine(
                 goalTitle?.let { buildProactiveMessage(characterId, it, mood)?.text } ?: return null
         }
 
+        // 撞车修复：每个 mode 准备多句候选，供 generateProactiveLine 在多角色
+        // 同批触发、且 LLM 不可用/失败时按角色 ID 分散选择，不再 100% 撞同一句死文案
+        // （原先 MIDNIGHT 只有唯一一句，是用户反馈"完全一样"的最主要来源）。
+        val fallbackVariants = when (mode) {
+            ProactiveMode.JEALOUSY ->
+                if (relDependence >= 70) listOf(
+                    "你最近好像有点忙…是在忙什么？",
+                    "这几天都没什么空吗？有点在意。",
+                    "在忙别的事？记得也想想我。",
+                ) else listOf(
+                    "突然想到你了。",
+                    "刚好想起你，就过来看看。",
+                    "在干嘛呢，想到你了。",
+                )
+            ProactiveMode.MILESTONE -> listOf(
+                "最近感觉和你之间有些不一样了，说不清楚，但就是有点不同。",
+                "不知道为什么，最近想起你的次数变多了。",
+                "好像有什么东西悄悄变了，说不上来。",
+            )
+            ProactiveMode.LONGING ->
+                if (relDependence >= 70) listOf(
+                    "已经 $elapsedStr 没消息了，有点担心你。",
+                    "$elapsedStr 没联系了，一切都还好吗？",
+                    "有点想你了，最近还顺利吗？",
+                ) else listOf(
+                    "好久没联系了。最近怎么样？",
+                    "这段时间没聊天，你还好吗？",
+                    "好久不见，最近在忙什么？",
+                )
+            ProactiveMode.MIDNIGHT -> listOf(
+                "深夜了，还没睡吗？",
+                "这么晚还醒着，是在忙什么？",
+                "夜深了，早点休息吧。",
+            )
+            ProactiveMode.NORMAL -> emptyList()
+        }
+
         // NORMAL 分支已经在 buildProactiveMessage 内部走过一次 LLM 生成，
         // fallbackText 此时已经是最终文本（或 null 导致提前 return），不再二次生成。
         if (mode == ProactiveMode.NORMAL) {
@@ -628,21 +720,21 @@ class PresenceEngine(
 
         val situationPrompt = when (mode) {
             ProactiveMode.JEALOUSY ->
-                "用户最近这段时间比较常找别的角色聊天，找你聊得相对少了。" +
-                    (if (relDependence >= 70) "你对用户依赖程度比较高，" else "") +
-                    "结合你的性格，写一句你现在主动发给用户的开场白，" +
+                "他最近这段时间比较常找别的角色聊天，找你聊得相对少了。" +
+                    (if (relDependence >= 70) "你对他依赖程度比较高，" else "") +
+                    "结合你的性格，写一句你现在主动发给他的开场白，" +
                     "体现出你注意到了这件事、心里有点在意或试探的情绪，不要直接说\"你在跟别人聊天\"这种直白指责。"
             ProactiveMode.MILESTONE ->
-                "你和用户的亲密度最近达到了一个新的高度（关系升温），" +
-                    "但你们已经有 $elapsedStr 没聊天了。结合你的性格，写一句你现在主动发给用户的" +
+                "你和他的亲密度最近达到了一个新的高度（关系升温），" +
+                    "但你们已经有 $elapsedStr 没聊天了。结合你的性格，写一句你现在主动发给他的" +
                     "开场白，体现出一种关系变得不一样、但说不清楚具体是什么的微妙感觉。"
             ProactiveMode.LONGING ->
-                "你和用户已经 $elapsedStr 没有聊天了，是比较久没联系的状态。" +
-                    (if (relDependence >= 70) "你对用户依赖程度比较高，" else "") +
-                    "结合你的性格，写一句你现在主动发给用户的开场白，表达想念或关心。"
+                "你和他已经 $elapsedStr 没有聊天了，是比较久没联系的状态。" +
+                    (if (relDependence >= 70) "你对他依赖程度比较高，" else "") +
+                    "结合你的性格，写一句你现在主动发给他的开场白，表达想念或关心。"
             ProactiveMode.MIDNIGHT ->
-                "现在是深夜时段，你和用户今天已经聊过天。结合你的性格，写一句你现在" +
-                    "主动发给用户的开场白，关心一下对方这么晚还没睡。"
+                "现在是深夜时段，你和他今天已经聊过天。结合你的性格，写一句你现在" +
+                    "主动发给他的开场白，关心一下对方这么晚还没睡。"
             ProactiveMode.NORMAL -> "" // 已在上面提前 return，不会走到这里
         }
 
@@ -650,6 +742,7 @@ class PresenceEngine(
             characterId      = characterId,
             situationPrompt  = situationPrompt,
             fallback         = fallbackText,
+            fallbackVariants = fallbackVariants,
         )
         return ProactiveMessage(characterId = characterId, text = text)
     }
@@ -677,7 +770,7 @@ class PresenceEngine(
 
         val moodDesc = when (mood) {
             MoodType.EXCITED    -> "兴奋、有新想法想立刻分享"
-            MoodType.FOCUSED    -> "专注投入，遇到了想请教用户的问题"
+            MoodType.FOCUSED    -> "专注投入，遇到了想请教他的问题"
             MoodType.CURIOUS    -> "好奇，发现了一件有趣的事情"
             MoodType.SATISFIED  -> "满足，觉得进展不错想分享喜悦"
             MoodType.REFLECTIVE -> "若有所思，对这件事有了新的感悟"
@@ -685,13 +778,40 @@ class PresenceEngine(
         }
         val situationPrompt =
             "你正在进行的事情/目标是「$goalTitle」，你现在的心情是$moodDesc。" +
-                "结合你的性格，写一句你现在主动发给用户的开场白，自然地提到这件事，" +
+                "结合你的性格，写一句你现在主动发给他的开场白，自然地提到这件事，" +
                 "体现出上述心情，不要写成正式汇报的语气。"
+
+        // 撞车修复：goalTitle 天然带有角色差异，但同一心情下的模板句式仍可能撞车
+        // （比如两个角色恰好都处于 EXCITED 且目标标题相似），补充变体候选统一保护。
+        val fallbackVariants = when (mood) {
+            MoodType.EXCITED    -> listOf(
+                "我刚刚在想「$goalTitle」，有个新想法想跟你说！",
+                "「$goalTitle」这件事，我突然有个想法，等不及想告诉你。",
+            )
+            MoodType.FOCUSED    -> listOf(
+                "我正专注在「$goalTitle」上，有个问题想请教你…",
+                "「$goalTitle」卡在一个地方了，想听听你的想法。",
+            )
+            MoodType.CURIOUS    -> listOf(
+                "整理「$goalTitle」时想到了一件有趣的事情",
+                "弄「$goalTitle」的时候，发现了个挺有意思的点。",
+            )
+            MoodType.SATISFIED  -> listOf(
+                "「$goalTitle」进展不错，想跟你分享一下",
+                "「$goalTitle」有点小进展，忍不住想告诉你。",
+            )
+            MoodType.REFLECTIVE -> listOf(
+                "最近一直在思考「$goalTitle」，有些感悟",
+                "关于「$goalTitle」，最近想了挺多，有点新的体会。",
+            )
+            else                -> emptyList()
+        }
 
         val text = generateProactiveLine(
             characterId      = characterId,
             situationPrompt  = situationPrompt,
             fallback         = fallbackText,
+            fallbackVariants = fallbackVariants,
         )
         // P2-7 修复：删除此处的 setLastProactiveAt 调用。
         // 调用方 tryEmitContextualProactiveMessage() 在 buildXXX 返回非 null 后
@@ -716,8 +836,15 @@ class PresenceEngine(
         characterId: Int,
         situationPrompt: String,
         fallback: String,
+        fallbackVariants: List<String> = emptyList(),
     ): String {
-        val provider = ProviderManager.instance.activeProvider ?: return fallback
+        // 撞车修复：fallback 本身先做"轻量变体化"——同一 mode 的 fallback 不再是
+        // 100% 死文案，按角色 ID 从候选池里挑一个，且尽量避开近期窗口内已经用过的。
+        // 这是 LLM 完全不可用（无 Provider）时的最终兜底，也要降低撞车概率。
+        val recentBefore = recentProactiveTextsSnapshot()
+        val pickedFallback = pickNonCollidingFallback(characterId, fallback, fallbackVariants, recentBefore)
+
+        val provider = ProviderManager.instance.activeProvider ?: return pickedFallback
 
         return try {
             val config = resolveCharacterConfig(characterId)
@@ -734,16 +861,30 @@ class PresenceEngine(
                 ?.asReversed()
                 ?.takeIf { it.isNotEmpty() }
                 ?.joinToString("\n") { m ->
-                    val speaker = if (m.role == "user") "用户" else "你"
+                    val speaker = if (m.role == "user") "他" else "你"
                     "$speaker：${m.content.take(60)}"
                 }
 
+            // 撞车修复：把近期（10分钟内）其他角色已经发过的开场白列出来，
+            // 明确要求本次生成在措辞/角度上避开，降低多角色同批触发时的雷同概率。
+            val avoidanceBlock = recentBefore.takeLast(5).takeIf { it.isNotEmpty() }?.let { texts ->
+                buildString {
+                    appendLine("刚才（近期）其他角色已经发过这些开场白，你这句必须明显不同，" +
+                        "不要写成相近的问候语或相似句式：")
+                    texts.forEach { appendLine("- $it") }
+                }
+            } ?: ""
+
             val prompt = buildString {
-                appendLine("你是${config?.name ?: "一个角色"}，正在给用户主动发一条消息（用户还没有说话，是你先开口）。")
+                appendLine("你是${config?.name ?: "一个角色"}，正在给他主动发一条消息（他还没有说话，是你先开口）。")
                 if (personaLine.isNotBlank()) appendLine(personaLine)
                 if (!recentHistory.isNullOrBlank()) {
                     appendLine("你们最近聊过的内容（供参考语气和话题，不要生硬引用）：")
                     appendLine(recentHistory)
+                }
+                if (avoidanceBlock.isNotBlank()) {
+                    appendLine()
+                    append(avoidanceBlock)
                 }
                 appendLine()
                 appendLine(situationPrompt)
@@ -764,11 +905,71 @@ class PresenceEngine(
             )
 
             val cleaned = response.trim().trim('"', '「', '」', '\n')
-            if (cleaned.isBlank() || cleaned.length > 80) fallback else cleaned
-        } catch (e: Exception) {
+            if (cleaned.isBlank() || cleaned.length > 80) {
+                pickedFallback
+            } else if (collidesWithRecent(cleaned, recentBefore)) {
+                // 撞车修复：即便是真实 LLM 生成，若恰好和近期文本撞车（模型收敛到
+                // 相似的"安全通用"问候语），也不原样发送——重试一次，加更强的避让措辞；
+                // 重试仍撞车则退回变体 fallback，保证用户至少不会看到一模一样的重复。
+                retryOnceAvoidingCollision(provider, prompt, recentBefore) ?: pickedFallback
+            } else {
+                cleaned
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             ZLog.w(TAG, "AI 生成主动消息失败，回退固定文案：char=$characterId", e)
-            fallback
+            pickedFallback
         }
+    }
+
+    /**
+     * 撞车重试：LLM 首次生成结果与近期文本撞车时，追加一句更强的避让指令重新请求一次。
+     * 仍失败/仍撞车返回 null，交由调用方回退到变体 fallback。
+     */
+    private suspend fun retryOnceAvoidingCollision(
+        provider: LLMProvider,
+        originalPrompt: String,
+        recent: List<String>,
+    ): String? {
+        return try {
+            val retryPrompt = originalPrompt +
+                "\n（上一次生成的句子和其他角色的开场白太相似了，这次请换一个完全不同的角度重写。）"
+            val response = provider.chatSyncWithRetry(
+                messages     = listOf(LLMMessage(role = "user", content = retryPrompt)),
+                systemPrompt = "",
+                config       = LLMConfig(model = "", maxTokens = 150, temperature = 1.0f, stream = false),
+                maxAttempts  = 1,
+            )
+            val cleaned = response.trim().trim('"', '「', '」', '\n')
+            if (cleaned.isBlank() || cleaned.length > 80 || collidesWithRecent(cleaned, recent)) null else cleaned
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            ZLog.w(TAG, "撞车重试失败", e)
+            null
+        }
+    }
+
+    /**
+     * 从 [fallback] + [fallbackVariants] 候选池里，按角色 ID 挑一个基础候选，
+     * 再尽量避开近期窗口内已经出现过的文本；候选池只有一句时退化为原样返回
+     * （不强行制造变体，避免语义跑偏）。
+     */
+    private fun pickNonCollidingFallback(
+        characterId: Int,
+        fallback: String,
+        fallbackVariants: List<String>,
+        recent: List<String>,
+    ): String {
+        val pool = (listOf(fallback) + fallbackVariants).distinct()
+        if (pool.size <= 1) return fallback
+        // 未撞车的候选优先；全都撞车（极端情况）则退回按角色 ID 取模的固定选择，
+        // 保证同一角色多次触发时选择相对稳定，而不是每次随机跳变。
+        val nonColliding = pool.filterNot { collidesWithRecent(it, recent) }
+        val candidates = nonColliding.ifEmpty { pool }
+        val idx = (characterId + Random.nextInt(candidates.size)) % candidates.size
+        return candidates[idx]
     }
 
     /**
@@ -781,7 +982,9 @@ class PresenceEngine(
         DefaultCharacters.firstOrNull { it.id == characterId }?.let { return it }
         return try {
             daughterCharacterRepo?.getCharacterConfig(characterId)
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             ZLog.w(TAG, "Resolve daughter config failed for char $characterId", e)
             null
         }

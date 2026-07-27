@@ -91,7 +91,9 @@ class CalendarSyncHelper(private val context: Context) {
             if (eventId != null) {
                 prefs.edit().putLong(jobId, eventId).apply()
             }
-        } catch (_: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (_: Throwable) {
             // 静默失败，不影响任务主流程
         }
     }
@@ -133,7 +135,9 @@ class CalendarSyncHelper(private val context: Context) {
             val uri = CalendarContract.Events.CONTENT_URI
                 .buildUpon().appendPath(eventId.toString()).build()
             context.contentResolver.update(uri, values, null, null)
-        } catch (_: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (_: Throwable) {
             // 静默失败
         }
     }
@@ -151,7 +155,9 @@ class CalendarSyncHelper(private val context: Context) {
                 context.contentResolver.delete(uri, null, null)
                 prefs.edit().remove(jobId).apply()
             }
-        } catch (_: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (_: Throwable) {
             // 静默失败
         }
     }

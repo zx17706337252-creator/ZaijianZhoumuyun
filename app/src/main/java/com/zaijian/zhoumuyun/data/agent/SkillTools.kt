@@ -126,9 +126,10 @@ class SkillCreateTool(
                     name, success = true,
                     content = "已沉淀技能「$skillName」（id=$id）。下次同类任务可直接 skill_expand 复用。",
                 )
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (t: Throwable) {
-                ZLog.e("SkillCreateTool", "创建技能失败", t)
-                ToolResult(name, success = false, content = "", error = "创建失败：${t.message}")
+                toolFailure(name, "创建技能失败，请稍后重试。", "skill_create_failed", t)
             }
         }
 
@@ -200,9 +201,10 @@ class SkillEditTool(
                     content = if (ok) "已修订技能「${existing.name}」并写入变更日志" else "",
                     error = if (ok) null else "修订失败",
                 )
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (t: Throwable) {
-                ZLog.e("SkillEditTool", "编辑技能失败", t)
-                ToolResult(name, success = false, content = "", error = "编辑失败：${t.message}")
+                toolFailure(name, "编辑技能失败，请稍后重试。", "skill_edit_failed", t)
             }
         }
 }
@@ -245,9 +247,10 @@ class SkillDeprecateTool(
                     content = if (ok) "已废弃技能「${existing.name}」（保留记录，可恢复）" else "",
                     error = if (ok) null else "废弃失败",
                 )
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (t: Throwable) {
-                ZLog.e("SkillDeprecateTool", "废弃技能失败", t)
-                ToolResult(name, success = false, content = "", error = "废弃失败：${t.message}")
+                toolFailure(name, "废弃技能失败，请稍后重试。", "skill_deprecate_failed", t)
             }
         }
 }
@@ -289,13 +292,21 @@ class SkillExpandTool(
                     )
                 }
                 repo.recordUsage(skillId) // §3.5 步骤 3：计数器 +1、lastUsedAt 刷新
+                // #47 修复：数据库层 incrementUsage 走的是原子 SQL
+                // "UPDATE ... SET usageCount = usageCount + 1"，计数本身没问题；
+                // 但此前展示用的是调用前读到的 existing.usageCount 现算 +1，
+                // 并发场景下（同一技能被多次几乎同时展开）这个现算值可能比
+                // 数据库里的实际值小，是纯展示滞后。改为 recordUsage 落库后
+                // 重新查一次最新记录，展示真实计数，不再自己推算。
+                val updated = repo.getById(skillId) ?: existing
                 ToolResult(
                     name, success = true,
-                    content = "【技能：${existing.name}】（v${existing.version}，已用 ${existing.usageCount + 1} 次）\n${existing.fullContent}",
+                    content = "【技能：${existing.name}】（v${existing.version}，已用 ${updated.usageCount} 次）\n${existing.fullContent}",
                 )
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (t: Throwable) {
-                ZLog.e("SkillExpandTool", "展开技能失败", t)
-                ToolResult(name, success = false, content = "", error = "展开失败：${t.message}")
+                toolFailure(name, "展开技能失败，请稍后重试。", "skill_expand_failed", t)
             }
         }
 }
@@ -343,9 +354,10 @@ class SkillFeedbackTool(
                     name, success = true,
                     content = "已记录技能「${existing.name}」本次使用反馈：$outcome",
                 )
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (t: Throwable) {
-                ZLog.e("SkillFeedbackTool", "技能反馈记录失败", t)
-                ToolResult(name, success = false, content = "", error = "反馈记录失败：${t.message}")
+                toolFailure(name, "技能反馈记录失败，请稍后重试。", "skill_feedback_failed", t)
             }
         }
 }
@@ -369,17 +381,26 @@ object SkillRegistry {
      */
     suspend fun buildSkillCatalogBlock(characterId: Int, repo: SkillRepository): String {
         if (characterId < 0) return ""
-        val skills = repo.getActiveSkills(characterId)
-        if (skills.isEmpty()) return ""
-        val lines = skills.joinToString("\n") { s ->
-            "- ${s.name}（${s.shortDescriptor}）  id=${s.id}"
-        }
-        return buildString {
-            appendLine("[可用技能]")
-            appendLine("需要某条技能的完整方法时，用 <tool:skill_expand skill_id=\"xxx\"/> 展开读取。")
-            appendLine("完成一个复杂任务后，若这个做法值得下次复用，用 <tool:skill_create .../> 沉淀成技能。")
-            appendLine()
-            append(lines)
+        // P2 修复：包裹 try-catch，repo.getActiveSkills() 抛异常时不再让整个消息流崩溃，
+        // 降级为跳过技能层注入（返回空串），与"无技能时返回空串"的调用方契约一致。
+        return try {
+            val skills = repo.getActiveSkills(characterId)
+            if (skills.isEmpty()) return ""
+            val lines = skills.joinToString("\n") { s ->
+                "- ${s.name}（${s.shortDescriptor}）  id=${s.id}"
+            }
+            buildString {
+                appendLine("[可用技能]")
+                appendLine("需要某条技能的完整方法时，用 <tool:skill_expand skill_id=\"xxx\"/> 展开读取。")
+                appendLine("完成一个复杂任务后，若这个做法值得下次复用，用 <tool:skill_create .../> 沉淀成技能。")
+                appendLine()
+                append(lines)
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            ZLog.w("SkillRegistry", "构建技能目录块失败，跳过技能层注入: ${e.message}")
+            ""
         }
     }
 }

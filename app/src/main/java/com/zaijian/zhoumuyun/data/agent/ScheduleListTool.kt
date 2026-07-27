@@ -47,21 +47,27 @@ class ScheduleListTool(
 
     override suspend fun execute(params: Map<String, String>): ToolResult {
         val charId = params["__character_id"]?.toIntOrNull() ?: params["character_id"]?.toIntOrNull() ?: characterIdProvider()
+        // P2 修复：补 charId < 0 校验，与同类工具（ScheduleGetTool 等）保持一致，
+        // 避免未初始化角色（-1）静默查询出空结果或脏数据。
+        if (charId < 0) {
+            return ToolResult(name, false, "", "角色未初始化")
+        }
         // P2-16 修复：原 hours_ahead 非数字时静默降级为 168（7天），
         // 与 ScheduleCreateTool/UpdateTool 的 parseHoursOrError 严格校验不一致。
         // 现区分"未传参"（合法默认168）与"传了但格式非法"（报错）。
+        //
+        // #43 修复：原逻辑只校验 ">= 0"，没有上限，"当前时间 + hoursAhead 对应
+        // 毫秒数" 这步 Long 加法与 #41（ScheduleCreateTool）同源，同样存在超大
+        // 值导致溢出的风险。改为直接复用 ScheduleToolParamUtil.parseHoursOrError
+        // （与 #41 同一套校验，含新增的上限检查），不再各自维护一份校验逻辑。
         val hoursAheadRaw = params["hours_ahead"]?.trim()
         val hoursAhead = if (hoursAheadRaw.isNullOrEmpty()) {
             168.0
         } else {
-            hoursAheadRaw.toDoubleOrNull()
-                ?.takeIf { it >= 0 }
-                ?: return ToolResult(
-                    toolName = name,
-                    success  = false,
-                    content  = "",
-                    error    = "hours_ahead 必须是非负数字，收到: $hoursAheadRaw",
-                )
+            ScheduleToolParamUtil.parseHoursOrError(hoursAheadRaw, "hours_ahead")
+                .getOrElse {
+                    return ToolResult(toolName = name, success = false, content = "", error = it.message)
+                }
         }
         val enabledOnly = params["enabled_only"]?.trim()?.lowercase() != "false"
 
@@ -131,8 +137,10 @@ class ScheduleListTool(
                 success  = true,
                 content  = content,
             )
-        } catch (e: Exception) {
-            ToolResult(name, false, "", error = "列表查询失败：${e.message}")
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            toolFailure(name, "列表查询失败，请稍后重试。", "schedule_list_failed", e)
         }
     }
 }

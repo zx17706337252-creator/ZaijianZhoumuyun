@@ -144,7 +144,7 @@ class RoundtableBotReplyGenerator(
             respondingOtherBot = intent == SpeakIntent.RESPOND_OTHER_BOT,
             isAutoDiscussing   = _uiState.value.isAutoDiscussing,
             discussionRound    = _uiState.value.discussionRound,
-            notifiedByName     = if (isNotified) "用户" else null,
+            notifiedByName     = if (isNotified) "他" else null,
         )
 
         val roundtableMemberIds = _uiState.value.activeMembers.map { it.id }.filter { it != bot.id }
@@ -178,7 +178,9 @@ class RoundtableBotReplyGenerator(
                         characterState = daughterData.stateLayer.toCharacterStateLayer()
                     }
                 }
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 ZLog.w("RoundtableViewModel", "女儿状态数据查询失败，State Layer 渲染将回退到通用描述", e)
             }
         }
@@ -244,10 +246,6 @@ class RoundtableBotReplyGenerator(
             identityEntity          = identityEntity,
             coreMemories            = coreMemories,
             relevantMemories        = relevantMemories,
-            // 「称呼」功能性缺陷修复：此前圆桌常规回复路径未传 userName，恒为默认值
-            // "你"。与 AppContainer.instance.agentActivityRepo（本文件 389/409 行）
-            // 同一模式：直接引用容器单例，不新增构造参数。
-            userName                = AppContainer.instance.userProfileRepo.getUserName(),
             groupCoreMemories       = groupCoreMemories,
             groupRelevantMemories   = groupRelevantMemories,
             presenceActivity        = presenceSnap?.activity ?: "",
@@ -328,7 +326,7 @@ class RoundtableBotReplyGenerator(
         }
 
         var fullReply = ""
-        val config = LLMConfig(model = "", maxTokens = 800, temperature = 0.85f, stream = true)
+        val config = LLMConfig(model = "", maxTokens = 50000, temperature = 0.85f, stream = true)
         var interrupted = false
         // P0-02 修复：finally 块内计算出的干净回复文本，供 try/finally 结束后的
         // return 语句使用（finally 内部声明的局部变量出了 finally 就不可见，需要一个
@@ -407,7 +405,7 @@ class RoundtableBotReplyGenerator(
                                 )
                             } catch (e: CancellationException) {
                                 throw e
-                            } catch (e: Exception) {
+                            } catch (e: Throwable) {
                                 ZLog.w("RoundtableViewModel", "心迹事件落库失败（不影响主流程）", e)
                             }
                         }
@@ -430,7 +428,7 @@ class RoundtableBotReplyGenerator(
                                 )
                             } catch (e: CancellationException) {
                                 throw e
-                            } catch (e: Exception) {
+                            } catch (e: Throwable) {
                                 ZLog.w("RoundtableViewModel", "心迹事件落库失败（不影响主流程）", e)
                             }
                             // 识别文件类工具产物，暂存 JSON，落库时接回 RoundtableMessage。
@@ -454,9 +452,12 @@ class RoundtableBotReplyGenerator(
             }
         } catch (e: CancellationException) {
             throw e  // P1-11-4 修复：CancellationException 必须 rethrow，结构化并发需要它传播
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             // 超时或其他异常：保留已生成的回复
-            ZLog.w("RoundtableViewModel", "流式生成中断（msgId=$msgId），已生成长度=${fullReply.length}", e)
+            // catch Throwable 而非 Exception：与私聊 ChatMessageOrchestrator:584 对齐，
+            // 防止工具层 Error（如 POI NoClassDefFoundError）击穿到 viewModelScope 静默终止。
+            ZLog.e("RoundtableViewModel", "流式生成中断（msgId=$msgId），已生成长度=${fullReply.length}", e)
+            _uiState.update { it.copy(error = "回复时遇到问题，请稍后重试。") }
         } finally {
             // P0-02 修复：上面 catch(CancellationException) 里的 throw e 会立刻向外传播，
             // 原本紧跟在 try-catch 之后的收尾代码（剥标签、isStreaming=false、落库、
@@ -530,7 +531,9 @@ class RoundtableBotReplyGenerator(
                                     tableDataJson = pendingTablePayloadJson,
                                 ).toEntity(rtIdForDb)
                             )
-                        } catch (e: Exception) {
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            throw e
+                        } catch (e: Throwable) {
                             ZLog.e("RoundtableViewModel", "圆桌回复落库失败（msgId=$msgId）", e)
                             _uiState.update { it.copy(error = "消息保存失败，可能会在下次打开时丢失") }
                         }

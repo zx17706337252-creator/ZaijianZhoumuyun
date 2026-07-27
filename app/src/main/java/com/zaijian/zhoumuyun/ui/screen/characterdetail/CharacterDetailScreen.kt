@@ -170,7 +170,8 @@ fun CharacterDetailScreen(
     // 初始化 Identity ViewModel
     LaunchedEffect(characterId, "identity") {
         try { identityViewModel.init(characterId) }
-        catch (e: Exception) { android.util.Log.e("CharDetail", "Identity init failed", e) }
+        catch (e: kotlinx.coroutines.CancellationException) { throw e }
+        catch (e: Throwable) { android.util.Log.e("CharDetail", "Identity init failed", e) }
     }
     val identityState by identityViewModel.uiState.collectAsStateWithLifecycle()
 
@@ -326,21 +327,24 @@ fun CharacterDetailScreen(
     // 【Phase 8】初始化 MemoryViewModel（collectAsState 已下移到记忆 Tab 内，避免无关 Tab 重组）
     LaunchedEffect(characterId, "memory") {
         try { memoryViewModel.init(characterId) }
-        catch (e: Exception) { android.util.Log.e("CharDetail", "Memory init failed", e) }
+        catch (e: kotlinx.coroutines.CancellationException) { throw e }
+        catch (e: Throwable) { android.util.Log.e("CharDetail", "Memory init failed", e) }
     }
 
     // 【Phase 15】初始化 GoalViewModel
     // goalDraft 必须在根收集：GoalDraftSheet 渲染在 LazyColumn 外的顶层 Box 中
     LaunchedEffect(characterId, "goal") {
         try { goalViewModel.init(characterId) }
-        catch (e: Exception) { android.util.Log.e("CharDetail", "Goal init failed", e) }
+        catch (e: kotlinx.coroutines.CancellationException) { throw e }
+        catch (e: Throwable) { android.util.Log.e("CharDetail", "Goal init failed", e) }
     }
     val goalDraft by goalViewModel.draft.collectAsStateWithLifecycle()
 
     // 【1.2 修复】初始化 PregnancyViewModel（collectAsState 已下移到孕育 Tab 内，避免无关 Tab 重组）
     LaunchedEffect(characterId, "pregnancy") {
         try { pregnancyViewModel.init(characterId) }
-        catch (e: Exception) { android.util.Log.e("CharDetail", "Pregnancy init failed", e) }
+        catch (e: kotlinx.coroutines.CancellationException) { throw e }
+        catch (e: Throwable) { android.util.Log.e("CharDetail", "Pregnancy init failed", e) }
     }
 
     // 主 Tab：0 = 记忆  1 = 能力  2 = 人设  3 = 目标（★ Phase 15 新增）

@@ -138,7 +138,9 @@ class CompetitionViewModel(
                     com.zaijian.zhoumuyun.util.ZLog.i("CompetitionViewModel",
                         "启动恢复：${round.status} → COLLECTING roundId=${round.id}")
                 }
-            } catch (_: Exception) { /* 恢复失败静默，不阻断正常流程 */ }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (_: Throwable) { /* 恢复失败静默，不阻断正常流程 */ }
         }
         viewModelScope.launch {
             try {
@@ -146,7 +148,9 @@ class CompetitionViewModel(
                 val configs = ids.mapNotNull { id ->
                     try {
                         daughterRepo.getCharacterConfig(id)
-                    } catch (e: Exception) {
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (e: Throwable) {
                         // 单个女儿数据损坏不应影响整批加载——与 DaughterCharacterRepository
                         // 类注释中"宁可这一条消息报错，不能让女儿带着残缺人格说话"原则一致，
                         // 这里选择跳过该条，其余女儿角色正常可选。
@@ -156,7 +160,9 @@ class CompetitionViewModel(
                     }
                 }
                 _daughterCharacters.value = configs
-            } catch (_: Exception) { /* 女儿列表加载失败时，竞赛页面仍可用 DefaultCharacters 正常运作 */ }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (_: Throwable) { /* 女儿列表加载失败时，竞赛页面仍可用 DefaultCharacters 正常运作 */ }
         }
     }
 
@@ -295,7 +301,9 @@ class CompetitionViewModel(
                     _snackbarMessage.value = "裁判评审阶段出现问题，可稍后重试"
                 }
                 // 无论成功与否，isLoading 均在这里收尾
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 _snackbarMessage.value = "竞赛启动失败：${e.message}"
             } finally {
                 _isLoading.value = false
@@ -330,7 +338,9 @@ class CompetitionViewModel(
                 if (!judged) {
                     _snackbarMessage.value = "裁判评审再次失败，请稍后重试"
                 }
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 _snackbarMessage.value = "重试评审失败：${e.message}"
             } finally {
                 _isLoading.value = false
@@ -366,7 +376,9 @@ class CompetitionViewModel(
                 if (!judged) {
                     _snackbarMessage.value = "裁判评审阶段出现问题，可稍后重试"
                 }
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 _snackbarMessage.value = "重试收集失败：${e.message}"
             } finally {
                 _isLoading.value = false
@@ -420,7 +432,9 @@ class CompetitionViewModel(
                 } else {
                     "取消失败：该轮竞赛可能已结算或已取消"
                 }
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 _snackbarMessage.value = "取消竞赛失败：${e.message}"
             } finally {
                 _isLoading.value = false
@@ -540,7 +554,9 @@ class CompetitionViewModel(
                         }
                     }
                 }
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 _snackbarMessage.value = "结算失败：${e.message}"
             } finally {
                 _isLoading.value = false

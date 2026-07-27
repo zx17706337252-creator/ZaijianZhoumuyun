@@ -115,7 +115,9 @@ class MainActivity : ComponentActivity() {
                                 data = Uri.parse("package:" + context.packageName)
                             }
                             context.startActivity(intent)
-                        } catch (_: Exception) {
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            throw e
+                        } catch (_: Throwable) {
                             // 某些设备可能不支持此 Intent，忽略
                         }
                     }

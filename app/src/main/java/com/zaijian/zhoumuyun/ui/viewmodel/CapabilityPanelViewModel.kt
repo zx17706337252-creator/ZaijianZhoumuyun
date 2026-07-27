@@ -55,7 +55,9 @@ class CapabilityPanelViewModel(application: Application) : AndroidViewModel(appl
                 _uiState.update {
                     it.copy(isLoading = false, snapshot = snapshot, error = null)
                 }
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 _uiState.update {
                     it.copy(isLoading = false, error = e.message ?: "加载失败")
                 }
@@ -74,7 +76,9 @@ class CapabilityPanelViewModel(application: Application) : AndroidViewModel(appl
                 _uiState.update {
                     it.copy(isLoading = false, snapshot = snapshot, error = null)
                 }
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 _uiState.update {
                     it.copy(isLoading = false, error = e.message ?: "刷新失败")
                 }

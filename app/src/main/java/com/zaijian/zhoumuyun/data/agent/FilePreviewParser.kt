@@ -17,8 +17,10 @@ import java.util.zip.ZipFile
  * ## 支持类型
  * - md/txt/json/xml/log/yml/yaml → [PreviewContent.Textual]（可编辑）
  * - csv → [PreviewContent.Tabular]（可编辑）
- * - xlsx → [PreviewContent.Tabular]（只读）
- * - docx → [PreviewContent.Textual]（只读，解析为纯文本）
+ * - xlsx → [PreviewContent.Tabular]（只读，支持多 sheet 切换）
+ * - docx → 真实 docx（zip 容器）→ [PreviewContent.Textual]（只读，解析为纯文本）；
+ *   若不是合法 zip（如 docx_gen 产出的"伪 docx"，实际是 HTML）→ 嗅探为 HTML 时
+ *   兜底成 [PreviewContent.Html]，否则 [PreviewContent.Unsupported]
  * - html/htm → [PreviewContent.Html]（可编辑源码）
  * - 其他 → [PreviewContent.Unsupported]
  *
@@ -82,6 +84,25 @@ object FilePreviewParser {
     private const val MAX_PARSE_ROWS = 5000
 
     /**
+     * P2 修复：单个 XML 条目（解压后）允许 readBytes() 读入内存的最大体积。
+     *
+     * xlsx 内部的 sharedStrings.xml / sheet1.xml 是文本类内容，解压后体积可能远大于
+     * 压缩包本身（文本类内容压缩比高）。即使原始 xlsx 不超过 [MAX_PARSE_FILE_BYTES]
+     * 门槛（15MB 压缩包），宽表/多行表解压后单条目仍可能撑得很大，一次性 readBytes()
+     * 会有 OOM 风险。此处对单条目再设一道 50MB 上限，超过则跳过解析。
+     *
+     * 残留风险说明：parseXlsx 仍用 readBytes() + 正则全量扫描，未改为 XmlPullParser
+     * 流式读取。原因是当前正则解析与 sharedStrings 索引查找逻辑深度耦合，流式改造
+     * 改动量大、回归风险高。已通过本常量 + [MAX_PARSE_FILE_BYTES] + [MAX_PARSE_ROWS]
+     * 三重限流把风险压到可接受范围；真正的流式解析留待后续重构。
+     *
+     * 注意：[java.util.zip.ZipEntry.getSize] 在部分实现下返回 -1（未知大小），此时
+     * 无法预判体积，校验表达式设计为 `size > MAX_XML_ENTRY_BYTES`（size==-1 时为
+     * false），不会误拦未知大小条目，只能依赖外层 [MAX_PARSE_FILE_BYTES] 兜底。
+     */
+    private const val MAX_XML_ENTRY_BYTES = 50L * 1024 * 1024  // 50MB
+
+    /**
      * 解析文件为 [PreviewContent]。
      *
      * 在 IO 协程执行，解析失败时回退 [PreviewContent.Unsupported]（不抛异常）。
@@ -132,24 +153,19 @@ object FilePreviewParser {
                 }
 
                 ext == "xlsx" -> {
-                    val (columns, rows, truncated) = parseXlsx(file)
+                    val result = parseXlsx(file, sheetIndex = 0)
                     PreviewContent.Tabular(
-                        columns = columns,
-                        rows = rows,
+                        columns = result.columns,
+                        rows = result.rows,
                         editable = false,
                         sourceFilePath = null,  // xlsx 只读，不保存
-                        isTruncated = truncated,
+                        isTruncated = result.truncated,
+                        sheetNames = result.sheetNames,
+                        activeSheetIndex = result.activeSheetIndex,
                     )
                 }
 
-                ext == "docx" -> {
-                    val text = parseDocxText(file)
-                    PreviewContent.Textual(
-                        text = text,
-                        isMarkdown = false,
-                        sourceFilePath = null,  // docx 只读，不保存
-                    )
-                }
+                ext == "docx" -> parseDocxOrFallback(file, charset)
 
                 ext in HTML_EXTS -> {
                     val source = file.readText(charset)
@@ -167,6 +183,8 @@ object FilePreviewParser {
                     )
                 }
             }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Throwable) {
             // Excel 闪退根因修复：原 `catch (e: Exception)` 接不住 OutOfMemoryError
             // （它是 Error 不是 Exception），大文件/宽表解析时一旦真的逼近内存上限，
@@ -260,10 +278,76 @@ object FilePreviewParser {
 
     // ── XLSX 解析（从 BuiltinTools.readXlsxContents 抽离）──────────────────
 
+    /** [parseXlsx] 的返回值：列头/数据行/截断标记 + 多 sheet 元信息。 */
+    private data class XlsxParseResult(
+        val columns: List<String>,
+        val rows: List<List<String>>,
+        val truncated: Boolean,
+        /** 工作簿内全部 sheet 的显示名，按标签顺序；解析失败/非标准文件时为空列表。 */
+        val sheetNames: List<String>,
+        /** 本次返回的 columns/rows 对应第几个 sheet（0-based）。 */
+        val activeSheetIndex: Int,
+    )
+
+    /** 从形如 `<tag attr1="v1" attr2="v2"/>` 的单个标签文本里提取属性表，不关心属性顺序。 */
+    // 注意：不用三引号写法——内容末尾的字面 `"` 紧贴三引号收尾定界符会连成 4 个引号，
+    // Kotlin 词法分析会把前 3 个当作收尾定界符提前截断字符串，导致编译错误。
+    // 改用普通字符串 + 转义，规避这个三引号写法的经典坑。
+    private val ATTR_REGEX = Regex("([\\w:]+)=\"([^\"]*)\"")
+    private fun parseTagAttrs(tag: String): Map<String, String> =
+        ATTR_REGEX.findAll(tag).associate { it.groupValues[1] to it.groupValues[2] }
+
     /**
-     * 解析 xlsx 文件为表格。
+     * xlsx 多 sheet 支持：读取工作簿里全部 sheet 的（显示名, 内部 xml 路径）列表，
+     * 按 `xl/workbook.xml` 里 `<sheet>` 标签出现的顺序（即 Excel 标签栏顺序）排列。
      *
-     * 注意：当前只读取第一个工作表 sheet1。多 sheet 支持待二期。
+     * 为什么不能直接假设"第 N 个标签 = xl/worksheets/sheetN.xml"：sheet 的显示顺序
+     * 由 workbook.xml 决定，每个 `<sheet>` 通过 r:id 关联到
+     * `xl/_rels/workbook.xml.rels` 里的 Relationship，Target 才是真正的文件名——
+     * 一旦工作簿的 sheet 被重命名/重新排序/删除过（很常见的编辑历史），
+     * sheetN.xml 与第 N 个标签就不再一一对应，硬编码 "sheet1.xml" 时旧实现
+     * 展示的也不一定是用户在 Excel 里看到的第一页。
+     *
+     * 解析失败（找不到 workbook.xml / 条目过大 / 非标准生成器导致属性缺失）时返回
+     * 空列表，调用方据此回退到"只认 xl/worksheets/sheet{index+1}.xml"的旧行为，
+     * 保证至少能看到点内容而不是直接报错。
+     */
+    private fun listXlsxSheetEntries(zip: ZipFile): List<Pair<String, String>> {
+        val workbookEntry = zip.getEntry("xl/workbook.xml") ?: return emptyList()
+        if (workbookEntry.size > MAX_XML_ENTRY_BYTES) return emptyList()
+
+        val relMap = mutableMapOf<String, String>()  // r:id -> Target
+        val relsEntry = zip.getEntry("xl/_rels/workbook.xml.rels")
+        if (relsEntry != null && relsEntry.size <= MAX_XML_ENTRY_BYTES) {
+            val relsXml = zip.getInputStream(relsEntry).use { it.readBytes().toString(Charsets.UTF_8) }
+            Regex("""<Relationship\b[^>]*/?>""").findAll(relsXml).forEach { m ->
+                val attrs = parseTagAttrs(m.value)
+                val id = attrs["Id"]
+                val target = attrs["Target"]
+                if (id != null && target != null) relMap[id] = target
+            }
+        }
+        if (relMap.isEmpty()) return emptyList()  // 没有 rels 映射，交给调用方走旧行为兜底
+
+        val workbookXml = zip.getInputStream(workbookEntry).use { it.readBytes().toString(Charsets.UTF_8) }
+        val result = mutableListOf<Pair<String, String>>()
+        Regex("""<sheet\b[^>]*/?>""").findAll(workbookXml).forEach { m ->
+            val attrs = parseTagAttrs(m.value)
+            val name = attrs["name"]?.let { decodeXmlEntities(it) } ?: return@forEach
+            val rId = attrs["r:id"] ?: return@forEach
+            val target = relMap[rId] ?: return@forEach
+            // Target 通常是相对 xl/ 目录的路径（如 "worksheets/sheet2.xml"）。
+            val cleaned = target.removePrefix("/")
+            val path = if (cleaned.startsWith("xl/")) cleaned else "xl/$cleaned"
+            result.add(name to path)
+        }
+        return result
+    }
+
+    /**
+     * 解析 xlsx 文件的指定 sheet 为表格。
+     *
+     * @param sheetIndex 要展示第几个 sheet（0-based，按 [listXlsxSheetEntries] 的标签顺序）。
      *
      * Excel 闪退根因修复（两处）：
      *  1. 资源泄漏：原实现 `val zip = ZipFile(file)` 靠手动散落的 `zip.close()`
@@ -271,34 +355,58 @@ object FilePreviewParser {
      *     ZipFile 持有的文件描述符泄漏，多次触发后可能导致后续文件操作失败甚至
      *     "Too many open files"。改用 `ZipFile(file).use { }`，无论正常返回还是
      *     异常都保证关闭。
-     *  2. 行数没有上限：sheet1.xml 解压后的体积会远大于 xlsx 压缩包本身
+     *  2. 行数没有上限：sheet 解压后的体积会远大于 xlsx 压缩包本身
      *     （文本类内容压缩比高），即使原始文件不超过 [MAX_PARSE_FILE_BYTES] 门槛，
      *     行数极多的宽表仍可能在正则全量扫描 + 构建 `List<List<String>>` 时占用
      *     大量堆内存直至 OOM。这里解析时超过 [MAX_PARSE_ROWS] 直接停止扫描（不会
-     *     把多余的行读进内存），并通过返回值第三项 truncated 告知调用方"已截断"，
+     *     把多余的行读进内存），并通过返回值 truncated 告知调用方"已截断"，
      *     供 UI 提示——只读场景截断不会丢数据（用户改用其他应用仍能看到完整内容）。
      *
-     * @return Triple(列头, 数据行, 是否因超过行数上限而被截断)
+     * P2 修复（条目级大小校验）：在 readBytes() 前对 sharedStrings.xml / 目标 sheet
+     * 的解压后体积做校验，超过 [MAX_XML_ENTRY_BYTES] 直接跳过，避免单条目解压后
+     * 体积远大于压缩包导致 OOM。详见 [MAX_XML_ENTRY_BYTES] 注释中的残留风险说明。
+     *
+     * 多 sheet 支持：切换 sheet 时只解析目标 sheet（不会一次性把所有 sheet 都读进
+     * 内存），延续本文件一贯的限流防 OOM 设计——宽表场景切多个 sheet 同样有风险。
      */
-    private fun parseXlsx(file: File): Triple<List<String>, List<List<String>>, Boolean> {
+    private fun parseXlsx(file: File, sheetIndex: Int): XlsxParseResult {
         return ZipFile(file).use { zip ->
+            val sheetEntries = listXlsxSheetEntries(zip)
+            val sheetNames = sheetEntries.map { it.first }
+            // sheetEntries 为空（非标准生成器/解析失败）时回退旧行为：只认
+            // xl/worksheets/sheet{index+1}.xml，保证至少能看到第一页内容。
+            val targetPath = sheetEntries.getOrNull(sheetIndex)?.second
+                ?: "xl/worksheets/sheet${sheetIndex + 1}.xml"
+
             // 1. 提取共享字符串表
             val sharedStrings = mutableListOf<String>()
             val ssEntry = zip.getEntry("xl/sharedStrings.xml")
             if (ssEntry != null) {
-                val ssXml = zip.getInputStream(ssEntry).use { it.readBytes().toString(Charsets.UTF_8) }
-                val siPattern = Regex("<si>(.*?)</si>", RegexOption.DOT_MATCHES_ALL)
-                val tPattern = Regex("<t[^>]*>([^<]*)</t>")
-                siPattern.findAll(ssXml).forEach { siMatch ->
-                    val text = tPattern.findAll(siMatch.groupValues[1])
-                        .joinToString("") { decodeXmlEntities(it.groupValues[1]) }
-                    sharedStrings.add(text)
+                // P2 修复：在 readBytes() 前添加大小校验，超大 XML 条目拒绝解析，
+                // 避免解压后体积远大于压缩包的 sharedStrings.xml 一次性读入内存导致 OOM。
+                // size==-1（未知）时不拦截（表达式为 false），依赖外层 MAX_PARSE_FILE_BYTES 兜底。
+                if (ssEntry.size <= MAX_XML_ENTRY_BYTES) {
+                    val ssXml = zip.getInputStream(ssEntry).use { it.readBytes().toString(Charsets.UTF_8) }
+                    val siPattern = Regex("<si>(.*?)</si>", RegexOption.DOT_MATCHES_ALL)
+                    val tPattern = Regex("<t[^>]*>([^<]*)</t>")
+                    siPattern.findAll(ssXml).forEach { siMatch ->
+                        val text = tPattern.findAll(siMatch.groupValues[1])
+                            .joinToString("") { decodeXmlEntities(it.groupValues[1]) }
+                        sharedStrings.add(text)
+                    }
                 }
+                // 超大或未知大小跳过：sharedStrings 保持空，下方单元格匹配到 t="s" 时
+                // 因 idx 不在 sharedStrings.indices 内会回退到原始 value，不会崩溃。
             }
 
-            // 2. 读取第一个工作表
-            val sheetEntry = zip.getEntry("xl/worksheets/sheet1.xml")
-                ?: return@use Triple(emptyList<String>(), emptyList(), false)
+            // 2. 读取目标工作表
+            val sheetEntry = zip.getEntry(targetPath)
+                ?: return@use XlsxParseResult(emptyList(), emptyList(), false, sheetNames, sheetIndex)
+            // P2 修复：同 sharedStrings，目标 sheet 解压后体积可能远大于压缩包，
+            // 超过 MAX_XML_ENTRY_BYTES 直接返回空表，避免 readBytes() 触发 OOM。
+            if (sheetEntry.size > MAX_XML_ENTRY_BYTES) {
+                return@use XlsxParseResult(emptyList(), emptyList(), false, sheetNames, sheetIndex)
+            }
             val sheetXml = zip.getInputStream(sheetEntry).use { it.readBytes().toString(Charsets.UTF_8) }
 
             // 3. 解析行和单元格（行级封顶：一旦达到上限立即 break，超出的行不会被
@@ -329,8 +437,32 @@ object FilePreviewParser {
 
             val columns = rows.firstOrNull() ?: emptyList()
             val dataRows = if (rows.size > 1) rows.subList(1, rows.size) else emptyList()
-            Triple(columns, dataRows, truncated)
+            XlsxParseResult(columns, dataRows, truncated, sheetNames, sheetIndex)
         }
+    }
+
+    /**
+     * 切换 xlsx 展示的 sheet（多 sheet 支持）。供 [com.zaijian.zhoumuyun.ui.viewmodel.FilePreviewViewModel]
+     * 在用户点击 sheet 标签时调用，只重新解析目标 sheet。
+     */
+    suspend fun parseXlsxSheet(file: File, sheetIndex: Int): PreviewContent.Tabular = withContext(Dispatchers.IO) {
+        val result = try {
+            parseXlsx(file, sheetIndex)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            com.zaijian.zhoumuyun.util.AgentLog.error("FilePreviewParser", "切换 sheet 解析失败：${file.name}", e)
+            XlsxParseResult(emptyList(), emptyList(), false, emptyList(), sheetIndex)
+        }
+        PreviewContent.Tabular(
+            columns = result.columns,
+            rows = result.rows,
+            editable = false,
+            sourceFilePath = null,
+            isTruncated = result.truncated,
+            sheetNames = result.sheetNames,
+            activeSheetIndex = result.activeSheetIndex,
+        )
     }
 
     // ── DOCX 解析（从 BuiltinTools.readDocxContents 抽离）──────────────────
@@ -364,6 +496,66 @@ object FilePreviewParser {
             }
 
             textBuilder.toString().trim()
+        }
+    }
+
+    /** 嗅探文本开头是否像 HTML（用于伪 docx 兜底判断，见 [parseDocxOrFallback]）。 */
+    private val HTML_SNIFF_REGEX =
+        Regex("<\\s*(!doctype|html|head|body|div|p|table|span|h[1-6])[\\s>]", RegexOption.IGNORE_CASE)
+
+    /**
+     * docx 解析入口，带"伪 docx"兜底（对话框内 docx 无法预览的根因修复）。
+     *
+     * 背景：`docx_gen`/`pdf_export` 等委托生成工具（[CreativeDocTools]）产出的
+     * "docx"实际内容是纯 HTML，只是文件名后缀写成了 `.docx`（见 [CreativeDocTools]
+     * 里的 openHint 机制，本意是提示用户拿浏览器/WPS 打开另存，而不是真正的 Word
+     * 二进制格式）。这类文件不是合法的 zip 容器，[parseDocxText] 内部
+     * `ZipFile(file)` 会直接抛 `ZipException`。此前这里没有区分"真解析失败"和
+     * "根本不是真 docx"，异常一路冒到 [parse] 最外层的 `catch(Throwable)`，
+     * 统一退化成"该文件类型暂不支持应用内预览"，用户只看到预览失败、看不出原因。
+     *
+     * 现在分两步：
+     *  1. 先按真实 docx（zip 容器）解析；成功则正常返回纯文本预览。
+     *  2. 失败后把文件当纯文本读出来嗅探是否像 HTML——是则按 [PreviewContent.Html]
+     *     渲染（WebView 能正常显示真实内容，与 docx_gen 生成的 html_gen 文件走
+     *     同一套渲染器），不是则才真正判定为不支持预览。
+     */
+    private fun parseDocxOrFallback(file: File, charset: Charset): PreviewContent {
+        val realText = try {
+            parseDocxText(file)
+        } catch (e: Throwable) {
+            com.zaijian.zhoumuyun.util.AgentLog.error(
+                "FilePreviewParser", "docx 按 zip 容器解析失败，尝试伪 docx 兜底：${file.name}", e,
+            )
+            null
+        }
+        if (realText != null) {
+            return PreviewContent.Textual(
+                text = realText,
+                isMarkdown = false,
+                sourceFilePath = null,  // docx 只读，不保存
+            )
+        }
+
+        val text = try {
+            file.readText(charset)
+        } catch (e: Throwable) {
+            null
+        }
+        return if (text != null && HTML_SNIFF_REGEX.containsMatchIn(text.take(1000))) {
+            PreviewContent.Html(
+                source = text,
+                // 伪 docx 文件名后缀是 .docx，原地保存会破坏"这是 HTML"这一事实，
+                // 只允许查看/另存为新文件，不允许覆盖写回原文件。
+                sourceFilePath = null,
+            )
+        } else {
+            PreviewContent.Unsupported(
+                filePath = file.absolutePath,
+                fileName = file.name,
+                mimeType = guessMimeType("docx"),
+                reason = "无法解析该 docx 文件的内容",
+            )
         }
     }
 

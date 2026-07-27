@@ -78,7 +78,9 @@ class BriefingViewModel(application: Application) : AndroidViewModel(application
                 daughterNameMap = loadDaughterNameMap(data.attentionItems),
             )
             store.setLastOpenAt(System.currentTimeMillis())
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             ZLog.e("BriefingViewModel", "generateBriefing 失败", e)
             _uiState.value = BriefingUiState(
                 isLoading = false,

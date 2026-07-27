@@ -61,14 +61,18 @@ class ScheduleDeleteTool(
             try {
                 // 同步删除系统日历事件（权限未授予时静默跳过）
                 calendarSync?.deleteEvent(id)
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 android.util.Log.w("ScheduleDeleteTool", "Calendar sync failed for job $id", e)
                 syncWarning = "（日历同步失败，不影响任务）"
             }
             try {
                 // 取消 WorkManager 中对应的 WorkRequest
                 context?.let { WorkManagerScheduler.cancel(it, id) }
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 android.util.Log.w("ScheduleDeleteTool", "WorkManager cancel failed for job $id", e)
                 syncWarning = if (syncWarning.isEmpty()) "（后台调度取消失败，不影响任务删除）"
                               else "$syncWarning，后台调度取消失败"
@@ -80,8 +84,10 @@ class ScheduleDeleteTool(
                 content  = "已删除定时任务（ID: $id）$syncWarning",
                 userHint = "正在删除任务…",
             )
-        } catch (e: Exception) {
-            ToolResult(name, false, "", error = "删除失败：${e.message}")
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            toolFailure(name, "删除定时任务失败，请稍后重试。", "schedule_delete_failed", e)
         }
     }
 }

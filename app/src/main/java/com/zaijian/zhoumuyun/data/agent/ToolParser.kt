@@ -1,5 +1,7 @@
 package com.zaijian.zhoumuyun.data.agent
 
+import com.zaijian.zhoumuyun.util.ZLog
+
 /**
  * Phase 13 · Tool Call Engine（Prompt-based Dispatch）
  *
@@ -260,10 +262,20 @@ class ToolParser {
         // 截掉该片段，避免把内部实现细节（如 `<tool:web_search query="北京`）暴露给用户。
         val pendingStart = findPendingTagStart(remaining)  // S-fix: 兜住 <tool: 部分前缀
         val safeText = if (pendingStart >= 0) remaining.substring(0, pendingStart) else remaining
+        // P0-6 修复：原先无论是否有未闭合片段都硬编码 hasPendingTag=false，调用方
+        // （ToolCallInterceptor）据此判断"本轮没有工具调用"，maxTokens 截断产生的
+        // 半截 <tool: 标签被静默丢弃后，整轮被误判为"模型没调工具"——是文档发送
+        // 链路"没有任何报错记录"的根因之一。改为如实返回 pendingStart>=0，并记一条
+        // 警告日志（用非 suspend 的 ZLog.w，因为 flush() 不是 suspend 函数，不能用
+        // suspend 的 AgentLog.warn）。注意：ParseResult.hasPendingTag 字段早已存在
+        // （feed() 已在用），此处只是一行赋值修正，无需改动调用方签名。
+        if (pendingStart >= 0) {
+            ZLog.w("ToolParser", "检测到未闭合的工具标签片段，已截断: ${remaining.take(80)}")
+        }
         return ParseResult(
             cleanText     = safeText,
             detectedCalls = emptyList(),
-            hasPendingTag = false,
+            hasPendingTag = pendingStart >= 0,
         )
     }
 
@@ -378,7 +390,7 @@ class ToolParser {
                 params   = params,
                 rawTag   = match.value,
             )
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
             null  // 解析失败时静默跳过，不中断流式处理
         }
     }
@@ -543,6 +555,16 @@ class ToolParser {
         // 值重复告警——detectUnescapedQuoteTruncation 是基于 attrString 原文重新扫描，
         // 与 result 是否已被修正无关，所以需要用 skipKeys 参数主动排除。
         detectUnescapedQuoteTruncation(attrString, result, jsonConsumedRanges, skipKeys = correctedKeys)
+
+        // P2 加固：剥离 LLM 标签中自带的 "__" 前缀属性键。
+        // "__" 前缀是内部注入参数命名约定（如 __character_id），由工作流/调度层用
+        // mapOf("__character_id" to ...) 注入，LLM 标签不允许自带——否则可能伪充内部
+        // 参数绕过权限校验。当前各调用点的 + 运算符会用可信值覆盖同名键，此为纵深防御。
+        val injectedKeys = result.keys.filter { it.startsWith("__") }
+        if (injectedKeys.isNotEmpty()) {
+            ZLog.w("ToolParser", "LLM 标签自带内部参数键，已剥离: $injectedKeys")
+            injectedKeys.forEach { result.remove(it) }
+        }
 
         return result
     }

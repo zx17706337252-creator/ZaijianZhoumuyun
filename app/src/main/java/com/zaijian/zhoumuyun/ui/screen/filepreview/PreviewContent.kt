@@ -32,6 +32,9 @@ sealed class PreviewContent {
      *   [com.zaijian.zhoumuyun.data.agent.FilePreviewParser] 的 MAX_PARSE_ROWS），
      *   true 表示实际行数超过预览上限、这里只展示前 N 行。只在只读（xlsx）场景
      *   会为 true——可编辑内容截断后如果允许保存会静默丢数据，所以只对只读表格截断。
+     * @param sheetNames xlsx 多 sheet 支持：工作簿内全部 sheet 的显示名，按标签顺序排列；
+     *   csv 或单 sheet 场景为空列表（UI 据此判断是否展示 sheet 切换标签）。
+     * @param activeSheetIndex 当前 columns/rows 对应 [sheetNames] 里的第几个 sheet（0-based）。
      */
     data class Tabular(
         val columns: List<String>,
@@ -39,6 +42,8 @@ sealed class PreviewContent {
         val editable: Boolean,
         val sourceFilePath: String?,
         val isTruncated: Boolean = false,
+        val sheetNames: List<String> = emptyList(),
+        val activeSheetIndex: Int = 0,
     ) : PreviewContent()
 
     /**

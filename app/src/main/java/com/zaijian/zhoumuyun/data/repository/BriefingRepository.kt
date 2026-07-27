@@ -130,7 +130,9 @@ class BriefingRepository(
                     competitionScore       = avgScore,
                     hasRecentGoodMilestone = config.id.toString() in repairedCharIds,
                 )
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 ZLog.w("BriefingRepository", "characterId=${config.id} 简报聚合失败，跳过", e)
                 partialErrors += "角色「${config.nickname ?: config.name}」(${config.id}) 聚合失败：${e.message?.take(60) ?: "未知错误"}"
                 null // 单个角色失败不影响其他角色

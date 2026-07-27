@@ -27,6 +27,8 @@ import androidx.compose.material.icons.outlined.Block
 import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.Build
 import androidx.compose.material.icons.outlined.CalendarMonth
+import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.TextFields
 import androidx.compose.material.icons.outlined.CameraAlt
 import androidx.compose.material.icons.outlined.Cancel
 import androidx.compose.material.icons.outlined.Check
@@ -132,6 +134,8 @@ object AppIcons {
     val Add: ImageVector               = Icons.Outlined.Add
     val AddFilled: ImageVector         = Icons.Filled.Add
     val Check: ImageVector             = Icons.Outlined.Check
+    val Copy: ImageVector              = Icons.Outlined.ContentCopy
+    val TextSelect: ImageVector        = Icons.Outlined.TextFields
     val Close: ImageVector             = Icons.Outlined.Close
     val CloseFilled: ImageVector       = Icons.Filled.Close
     val Cancel: ImageVector            = Icons.Outlined.Cancel

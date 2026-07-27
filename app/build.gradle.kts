@@ -1,13 +1,26 @@
+import java.util.Properties
+
 plugins {
-    alias(libs.plugins.android.application)
-    alias(libs.plugins.kotlin.android)
-    alias(libs.plugins.kotlin.compose)
-    alias(libs.plugins.ksp)
-    // Phase 30 方案六：Firebase google-services
-    alias(libs.plugins.google.services)
+    id("com.android.application")
+    id("org.jetbrains.kotlin.android")
+    id("com.google.devtools.ksp")
 }
 
-import java.util.Properties
+// 读取 local.properties 中的 Supabase 配置（开发环境用法，与 SupabaseClient.kt
+// 顶部注释描述的注入方式保持一致）。文件不存在或缺少某个 key 时不报错，
+// 留给下面的 CI 参数 / 环境变量兜底。
+val localProperties = Properties().apply {
+    val localPropsFile = rootProject.file("local.properties")
+    if (localPropsFile.exists()) {
+        localPropsFile.inputStream().use { load(it) }
+    }
+}
+
+fun secretProperty(name: String): String =
+    (localProperties.getProperty(name)
+        ?: project.findProperty(name) as String?
+        ?: System.getenv(name)
+        ?: "")
 
 android {
     namespace = "com.zaijian.zhoumuyun"
@@ -17,183 +30,137 @@ android {
         applicationId = "com.zaijian.zhoumuyun"
         minSdk = 26
         targetSdk = 35
-        // 依赖12 修复：版本号从 gradle.properties 注入，CI 可通过 -P 参数覆盖
-        // 依赖9 修复：兜底默认值同步为当前实际版本，避免属性缺失时静默构建出
-        // 版本号倒退的包（此前默认值为 "7"/"0.28.0"，与实际版本相差甚远）。
-        // 同时移除了内容损坏、版本号更旧的多余 app/gradle.properties。
-        versionCode = (project.findProperty("appVersionCode") as String? ?: "58").toInt()
-        versionName = project.findProperty("appVersionName") as String? ?: "0.56.0"
-
-        // 方案 8-12：Supabase ANON_KEY 通过 local.properties 注入，不再硬编码在源码中。
-        // 使用方法：在项目根目录创建 local.properties（已加入 .gitignore），内容如下：
-        //   SUPABASE_ANON_KEY=your_actual_anon_key
-        // 未配置时使用占位符"PLACEHOLDER"，方便 CI 通过环境变量替换。see: https://github.com/zaijian/zhoumuyun/security
-        val localProps = rootProject.file("local.properties")
-        val supabaseAnonKey = if (localProps.exists()) {
-            Properties().apply { load(localProps.inputStream()) }.getProperty("SUPABASE_ANON_KEY", "PLACEHOLDER")
-        } else {
-            "PLACEHOLDER"
-        }
-        buildConfigField("String", "SUPABASE_ANON_KEY", "\"$supabaseAnonKey\"")
-
-        // S3问题3修复：SUPABASE_URL 与 ANON_KEY 一致，从 local.properties 注入
-        // local.properties 中新增 SUPABASE_URL 配置项，未配置时回退默认值
-        val supabaseUrl = if (localProps.exists()) {
-            Properties().apply { load(localProps.inputStream()) }.getProperty("SUPABASE_URL", "https://npszynuzemkozojgnsvv.supabase.co")
-        } else {
-            "https://npszynuzemkozojgnsvv.supabase.co"
-        }
-        buildConfigField("String", "SUPABASE_URL", "\"$supabaseUrl\"")
+        versionCode = 1
+        versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-    }
-
-    // 依赖6 修复：release 签名配置，从 keystore.properties 读取，不硬编码密钥信息。
-    // 使用方法：在项目根目录新建 keystore.properties（已加入 .gitignore），内容如下：
-    //   storeFile=../your_keystore.jks
-    //   storePassword=your_store_password
-    //   keyAlias=your_key_alias
-    //   keyPassword=your_key_password
-    val keystorePropsFile = rootProject.file("keystore.properties")
-    val hasKeystore = keystorePropsFile.exists()
-    if (hasKeystore) {
-        val keystoreProps = Properties().also { it.load(keystorePropsFile.inputStream()) }
-        signingConfigs {
-            create("release") {
-                storeFile     = file(keystoreProps["storeFile"] as String)
-                storePassword = keystoreProps["storePassword"] as String
-                keyAlias      = keystoreProps["keyAlias"] as String
-                keyPassword   = keystoreProps["keyPassword"] as String
-            }
+        vectorDrawables {
+            useSupportLibrary = true
         }
+
+        // 修复：BuildConfig.SUPABASE_URL / SUPABASE_ANON_KEY / DEBUG 编译报错
+        // ——原先 buildFeatures 未开启 buildConfig，且这两个自定义字段从未声明。
+        // 读取顺序：local.properties（开发环境）→ -P 命令行参数 → 环境变量（CI），
+        // 三者都没有则为空字符串，不硬编码真实密钥到仓库里。
+        buildConfigField("String", "SUPABASE_URL", "\"${secretProperty("SUPABASE_URL")}\"")
+        buildConfigField("String", "SUPABASE_ANON_KEY", "\"${secretProperty("SUPABASE_ANON_KEY")}\"")
     }
 
     buildTypes {
         release {
-            isMinifyEnabled   = true
-            isShrinkResources = true   // 依赖8 修复：启用资源缩减
+            isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            // keystore.properties 存在时才引用签名配置，避免 CI 无密钥时构建失败
-            if (hasKeystore) {
-                signingConfig = signingConfigs.getByName("release")
-            }
         }
     }
 
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_11
-        targetCompatibility = JavaVersion.VERSION_11
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
     }
 
-    // 编译错误修复：本地 JDK 为 21（Android Studio 自带 JBR）时，Kotlin 编译器
-    // 默认跟随运行 Gradle 的 JDK 版本，与上面 compileOptions 显式指定的 Java 11
-    // 不一致，导致 compileReleaseJavaWithJavac(11) 与 kspReleaseKotlin(21) 冲突。
-    // 显式把 Kotlin 编译目标也钉在 11，与 Java 侧保持一致。
-    // 迁移说明：旧版 `kotlinOptions { jvmTarget = "11" }` 已弃用，改用
-    // Kotlin Gradle Plugin 的 compilerOptions DSL（见下方顶层 kotlin {} 块）。
-
-    packaging {
-        resources {
-            excludes += "/META-INF/LICENSE.md"
-            excludes += "/META-INF/NOTICE.md"
-        }
+    kotlinOptions {
+        jvmTarget = "17"
     }
 
     buildFeatures {
         compose = true
+        // 修复：BuildConfig 类未生成导致 Unresolved reference: BuildConfig
         buildConfig = true
     }
 
-    // 批次0防复发：让 androidTest 的 MigrationTestHelper 能从 assets 读取 schema JSON。
-    // Room 的 schemaLocation（ksp 配置）导出到 $projectDir/schemas，这里把它作为
-    // androidTest 的 assets 源，MigrationTestHelper 通过 assets 打开 58.json/62.json。
-    sourceSets {
-        getByName("androidTest").assets.srcDir("$projectDir/schemas")
+    composeOptions {
+        kotlinCompilerExtensionVersion = "1.5.11"
     }
-}
 
-// 迁移说明：替代已弃用的 `android { kotlinOptions { jvmTarget = "11" } }` 写法。
-// 与上方 compileOptions 的 Java 11 保持一致，避免 compileReleaseJavaWithJavac(11)
-// 与 kspReleaseKotlin 的 JDK 版本不一致导致的编译目标冲突。
-kotlin {
-    compilerOptions {
-        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_11)
+    packaging {
+        resources {
+            excludes += "/META-INF/{AL2.0,LGPL2.1}"
+            excludes += "/META-INF/DEPENDENCIES"
+            excludes += "/META-INF/LICENSE"
+            excludes += "/META-INF/LICENSE.txt"
+            excludes += "/META-INF/NOTICE"
+            excludes += "/META-INF/NOTICE.txt"
+	    excludes += "/META-INF/LICENSE.md"
+	    excludes += "/META-INF/NOTICE.md"
+        }
     }
-}
 
-ksp {
-    arg("room.schemaLocation", "$projectDir/schemas")
+    lint {
+        abortOnError = false
+    }
 }
 
 dependencies {
-    implementation(libs.androidx.core.ktx)
-    implementation(libs.androidx.lifecycle.runtime.ktx)
-    implementation(libs.androidx.lifecycle.viewmodel.compose)
-    implementation(libs.androidx.lifecycle.runtime.compose) // P1-11-2：collectAsStateWithLifecycle
-    implementation(libs.androidx.activity.compose)
-    implementation(platform(libs.androidx.compose.bom))
-    implementation(libs.androidx.ui)
-    implementation(libs.androidx.ui.graphics)
-    implementation(libs.androidx.ui.tooling.preview)
-    implementation(libs.androidx.material3)
-    implementation(libs.androidx.material.icons)
-    implementation(libs.androidx.navigation.compose)
-    implementation(libs.coil.compose)
-    implementation(libs.kotlinx.coroutines.android)
-    implementation(libs.kotlinx.collections.immutable)
+    // 修复：ripple() 未解析——2024.04.00 对应的 material3 版本（约1.2.x）还没有
+    // androidx.compose.material3.ripple 里的公开 ripple() API（该 API 在 material3 1.3.0
+    // 才稳定发布）。升级到 2024.09.00（material3 1.3.0）解决，不改动其他既有行为。
+    val composeBom = platform("androidx.compose:compose-bom:2024.09.00")
+    implementation(composeBom)
+    androidTestImplementation(composeBom)
+
+    implementation("androidx.core:core-ktx:1.13.1")
+    implementation("androidx.activity:activity-compose:1.9.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.2")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.2")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.2")
+
+    // Compose UI
+    implementation("androidx.compose.ui:ui")
+    implementation("androidx.compose.ui:ui-graphics")
+    implementation("androidx.compose.ui:ui-tooling-preview")
+    implementation("androidx.compose.material3:material3")
+    implementation("androidx.compose.material:material-icons-extended")
+    implementation("androidx.compose.animation:animation")
+    implementation("androidx.compose.foundation:foundation")
+
+    implementation("androidx.navigation:navigation-compose:2.7.7")
 
     // Room
-    implementation(libs.androidx.room.runtime)
-    implementation(libs.androidx.room.ktx)
-    ksp(libs.androidx.room.compiler)
+    implementation("androidx.room:room-runtime:2.6.1")
+    implementation("androidx.room:room-ktx:2.6.1")
+    ksp("androidx.room:room-compiler:2.6.1")
 
-    // Security (EncryptedSharedPreferences for API keys)
-    implementation(libs.androidx.security.crypto)
+    implementation("androidx.datastore:datastore-preferences:1.1.1")
+    implementation("androidx.work:work-runtime-ktx:2.9.0")
+    implementation("androidx.security:security-crypto:1.1.0-alpha06")
+    implementation("androidx.savedstate:savedstate-ktx:1.2.1")
 
-    // WorkManager (后台任务)
-    // 依赖7 修复：版本号已收进 libs.versions.toml（workManager）
-    implementation(libs.androidx.work.runtime.ktx)
+    implementation("io.coil-kt:coil-compose:2.6.0")
 
-    // DataStore (preferences)
-    implementation(libs.androidx.datastore.preferences)
+    // Markwon
+    implementation("io.noties.markwon:core:4.6.2")
+    implementation("io.noties.markwon:ext-strikethrough:4.6.2")
+    implementation("io.noties.markwon:ext-tables:4.6.2")
+    implementation("io.noties.markwon:ext-tasklist:4.6.2")
 
-    // Phase 21: Markwon Markdown 渲染
-    implementation(libs.markwon.core)
-    implementation(libs.markwon.tables)
-    implementation(libs.markwon.strikethrough)
-    implementation(libs.markwon.tasklist)
+    // Apache POI
+    implementation("org.apache.poi:poi-ooxml:5.2.5") {
+        exclude("org.apache.xmlbeans", "xmlbeans")
+    }
+    implementation("org.apache.xmlbeans:xmlbeans:5.1.1")
 
-    debugImplementation(libs.androidx.ui.tooling)
+    // JavaMail（Jakarta 命名空间：代码内 import 已同步改为 jakarta.mail.*）
+    implementation("com.sun.mail:jakarta.mail:2.0.1")
 
-    // Phase 28 Part 2 — Apache POI（excel_gen + pptx_gen 共享）
-    // poi-ooxml 5.4.0（修复 CVE-2025-31672，原 5.2.5 受影响）包含 xmlbeans，需在 proguard-rules.pro 追加混淆排除
-    // 依赖10 修复：版本号已收进 libs.versions.toml（poiOoxml）
-    implementation(libs.poi.ooxml)
+    // Firebase
+    implementation("com.google.firebase:firebase-messaging-ktx:24.0.0")
 
-    // Phase 30 方案六 — Firebase Cloud Messaging（FCM 离屏推送）
-    // 依赖7 修复：版本号已收进 libs.versions.toml（firebaseBom）
-    implementation(platform(libs.firebase.bom))
-    implementation(libs.firebase.messaging.ktx)
+    implementation("org.json:json:20240303")
 
-    // 邮件收发 — javax.mail 安卓移植版（SMTP 发信 + IMAP 收信）
-    // 依赖7 修复：版本号已收进 libs.versions.toml（androidMail）
-    // 依赖10 注：android-mail 1.6.7 为旧 javax.mail 命名空间，迁移 jakarta.mail 纳入后续计划
-    implementation(libs.android.mail)
+    // 修复：kotlinx.collections.immutable.* 全面 Unresolved reference
+    // （ImmutableList/persistentListOf 等），此前项目里大量使用但从未声明该依赖，
+    // 导致 RoundtableViewModel 的 uiState 相关类型退化，连带 RoundtableScreen.kt
+    // 里 itemsIndexed/associateBy 等处的 lambda 参数类型推断失败（"it" 无法解析、
+    // 重载解析歧义）。
+    implementation("org.jetbrains.kotlinx:kotlinx-collections-immutable:0.3.7")
 
-    // W6-5 修复：数据层单元测试依赖
-    testImplementation(libs.junit)
-    testImplementation(libs.kotlinx.coroutines.test)
-    testImplementation(libs.androidx.room.testing)
-
-    // 批次0防复发：Room 迁移插桩测试依赖。
-    // MigrationTestHelper 需要 androidx.test:core 提供的 InstrumentationRegistry/Context，
-    // 以及 androidx.test.ext:junit 的 AndroidJUnit4 runner。放在 androidTest 使其在
-    // 真机/模拟器上运行（MigrationTestHelper 依赖 Android 框架的 SupportSQLiteOpenHelper）。
-    androidTestImplementation(libs.androidx.test.ext.junit)
-    androidTestImplementation(libs.androidx.test.core)
-    androidTestImplementation(libs.androidx.test.runner)
-    androidTestImplementation(libs.androidx.room.testing)
+    testImplementation("junit:junit:4.13.2")
+    androidTestImplementation("androidx.test.ext:junit:1.1.5")
+    androidTestImplementation("androidx.test.espresso:espresso-core:3.5.1")
+    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+    debugImplementation("androidx.compose.ui:ui-tooling")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
 }

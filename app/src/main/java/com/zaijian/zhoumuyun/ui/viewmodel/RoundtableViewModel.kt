@@ -470,7 +470,7 @@ class RoundtableViewModel(app: Application) : AndroidViewModel(app) {
                     daughterCharacterRepo.getCharacterConfig(id)
                 } catch (e: CancellationException) {
                     throw e
-                } catch (e: Exception) {
+                } catch (e: Throwable) {
                     ZLog.w("RoundtableViewModel", "拉入候选女儿 $id 解析失败，跳过", e)
                     null
                 }
@@ -530,7 +530,9 @@ class RoundtableViewModel(app: Application) : AndroidViewModel(app) {
         DefaultCharacters.firstOrNull { it.id == characterId }
             ?: try {
                 daughterCharacterRepo.getCharacterConfig(characterId)
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 ZLog.e("RoundtableViewModel", "characterId=$characterId 女儿数据加载失败", e)
                 null
             }
@@ -642,7 +644,9 @@ class RoundtableViewModel(app: Application) : AndroidViewModel(app) {
                         scale   = scale,
                     )
                 )
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 ZLog.e("RoundtableViewModel", "圆桌背景图设置失败", e)
             }
         }
@@ -652,7 +656,9 @@ class RoundtableViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 chatBgStore.clearBackground(ROUNDTABLE_BG_SENTINEL_ID)
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 ZLog.e("RoundtableViewModel", "圆桌背景图清除失败", e)
             }
         }

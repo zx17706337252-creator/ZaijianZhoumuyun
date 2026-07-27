@@ -6,7 +6,9 @@ import com.zaijian.zhoumuyun.data.db.AppDatabase
 import com.zaijian.zhoumuyun.data.db.dao.WorkflowJobDao
 import com.zaijian.zhoumuyun.data.db.dao.WorkflowStepResultDao
 import com.zaijian.zhoumuyun.data.repository.WorkflowRepository
+import com.zaijian.zhoumuyun.util.ZLog
 import kotlinx.coroutines.delay
+import org.json.JSONObject
 
 data class CiCdParams(
     val filesJson: String,
@@ -30,6 +32,14 @@ object CiCdPipelineRunner {
     private const val POLL_INTERVAL_MS = 15_000L
     private const val MAX_POLL_COUNT = 60
     // P-9 修复：删除死常量 MAX_PIPELINE_STEPS = 6（全局仅定义处引用，无使用）
+
+    // #56 修复：recordStep 的 metadata 参数此前用手写字符串模板拼接
+    // （如 """{"message":"${params.commitMessage}",...}"""），commitMessage/
+    // branch 等字段若含双引号或反斜杠会破坏 JSON 结构，写入的 metadata 列
+    // 变成非法 JSON，后续任何读取/解析该字段的地方都可能出错。改用
+    // JSONObject 统一构造，交给 org.json 处理转义。
+    private fun jsonMeta(vararg pairs: Pair<String, Any?>): String =
+        JSONObject().apply { pairs.forEach { (k, v) -> put(k, v) } }.toString()
 
     suspend fun run(
         context: Context,
@@ -102,9 +112,11 @@ object CiCdPipelineRunner {
                 // 改为解析 filesJson 获取真实文件数量。
                 val filesCount = try {
                     org.json.JSONArray(params.filesJson).length()
-                } catch (_: Exception) { 0 }
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (_: Throwable) { 0 }
                 repo.recordStep(jobId, commitStep, "git_commit_push",
-                    """{"message":"${params.commitMessage}","branch":"${params.branch}","files_count":$filesCount}""",
+                    jsonMeta("message" to params.commitMessage, "branch" to params.branch, "files_count" to filesCount),
                     commitResult.success, commitResult.content, commitResult.error, null,
                     System.currentTimeMillis(), System.currentTimeMillis())
                 if (!commitResult.success) {
@@ -126,7 +138,7 @@ object CiCdPipelineRunner {
                         "build_type" to params.buildType,
                     ))
                     repo.recordStep(jobId, buildStep, "build_apk",
-                        """{"branch":"${params.branch}","build_type":"${params.buildType}"}""",
+                        jsonMeta("branch" to params.branch, "build_type" to params.buildType),
                         buildResult.success, buildResult.content, buildResult.error, null,
                         System.currentTimeMillis(), System.currentTimeMillis())
                     if (!buildResult.success) {
@@ -147,7 +159,7 @@ object CiCdPipelineRunner {
                     "build_type" to params.buildType,
                 ))
                 repo.recordStep(jobId, buildStep, "build_apk",
-                    """{"branch":"${params.branch}","build_type":"${params.buildType}"}""",
+                    jsonMeta("branch" to params.branch, "build_type" to params.buildType),
                     buildResult.success, buildResult.content, buildResult.error, null,
                     System.currentTimeMillis(), System.currentTimeMillis())
                 if (!buildResult.success) {
@@ -183,6 +195,16 @@ object CiCdPipelineRunner {
                 }
                 val statusResult = statusTool.execute(mapOf("run_id" to runId))
                 lastStatusResult = statusResult
+                // P2 修复：单次查询失败时打印日志，避免用户看到 deadline_exceeded
+                // 却不知道中途一直在失败。原实现只把最后一次结果留到循环外记录一条
+                // 汇总，期间每次 statusTool.execute() 返回 success=false（如 token
+                // 失效、API 限流、网络抖动、run_id 不存在等）都被静默吞掉。最终若
+                // 因 deadline 到期退出，用户/排查者会误以为"编译一直在跑只是超时了"，
+                // 实则可能根本没成功查到过一次状态。这里每轮失败都打一条 warning，
+                // 便于事后从日志还原真实的轮询过程。
+                if (lastStatusResult != null && !lastStatusResult.success) {
+                    ZLog.w("CiCdPipelineRunner", "构建状态查询失败: ${lastStatusResult.error}")
+                }
                 val status = statusResult.content ?: ""
 
                 if (status.contains("编译成功")) { pollOutcome = "success"; break }
@@ -191,7 +213,7 @@ object CiCdPipelineRunner {
             }
             val pollStep = stepIndex()
             repo.recordStep(jobId, pollStep, "build_status_check",
-                """{"run_id":"$runId","poll_attempts":$pollCount}""",
+                jsonMeta("run_id" to runId, "poll_attempts" to pollCount),
                 pollOutcome == "success", lastStatusResult?.content, lastStatusResult?.error, null,
                 System.currentTimeMillis(), System.currentTimeMillis())
 
@@ -217,7 +239,7 @@ object CiCdPipelineRunner {
             )
             val downloadResult = downloadTool.execute(mapOf("run_id" to runId))
             repo.recordStep(jobId, downloadStep, "build_apk_download",
-                """{"run_id":"$runId"}""",
+                jsonMeta("run_id" to runId),
                 downloadResult.success, downloadResult.content, downloadResult.error, null,
                 System.currentTimeMillis(), System.currentTimeMillis())
             if (!downloadResult.success) {
@@ -228,7 +250,9 @@ object CiCdPipelineRunner {
             repo.markCompleted(jobId, "编译完成，APK 已下载到本地")
             return CiCdResult.Success
 
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             repo.markFailed(jobId, "流水线异常：${e.message?.take(120)}")
             return CiCdResult.Failed("流水线异常：${e.message?.take(120)}")
         }

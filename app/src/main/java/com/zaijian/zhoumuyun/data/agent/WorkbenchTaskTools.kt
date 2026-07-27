@@ -89,8 +89,10 @@ class TaskStartTool(
                 content  = "[任务已开始]\n标题：$title${if (description.isNotBlank()) "\n说明：$description" else ""}\n\n你现在记住了这个正在进行的任务，之后每一轮都会被提醒，直到你标记它完成或取消。",
                 userHint = "正在开始一个任务…",
             )
-        } catch (e: Exception) {
-            ToolResult(name, false, "开始任务时遇到问题：${e.message?.take(80)}", e.message)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            toolFailure(name, "开始任务时遇到问题，请稍后重试。", "task_start_failed", e)
         }
     }
 }
@@ -157,8 +159,10 @@ class TaskUpdateTool(
                 content  = "[任务进度已更新]\n标题：${task.title}${if (note.isNotBlank()) "\n最新进展：$note" else ""}${progress?.let { "\n进度：${(it * 100).toInt()}%" } ?: ""}",
                 userHint = "正在更新任务进度…",
             )
-        } catch (e: Exception) {
-            ToolResult(name, false, "更新任务进度时遇到问题：${e.message?.take(80)}", e.message)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            toolFailure(name, "更新任务进度时遇到问题，请稍后重试。", "task_update_failed", e)
         }
     }
 }
@@ -218,7 +222,9 @@ class TaskCompleteTool(
                     toolName      = null,
                     sourceEventId = task.id,
                 )
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 ZLog.e("TaskCompleteTool", "任务完成记忆写入失败 taskId=${task.id}", e)
             }
 
@@ -228,8 +234,10 @@ class TaskCompleteTool(
                 content  = "[任务已完成]\n标题：${task.title}\n结果：$result",
                 userHint = "正在完成任务…",
             )
-        } catch (e: Exception) {
-            ToolResult(name, false, "标记任务完成时遇到问题：${e.message?.take(80)}", e.message)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            toolFailure(name, "标记任务完成时遇到问题，请稍后重试。", "task_complete_failed", e)
         }
     }
 }
@@ -272,8 +280,10 @@ class TaskCancelTool(
                 content  = "[任务已取消]\n标题：${task.title}${if (reason.isNotBlank()) "\n原因：$reason" else ""}",
                 userHint = "正在取消任务…",
             )
-        } catch (e: Exception) {
-            ToolResult(name, false, "取消任务时遇到问题：${e.message?.take(80)}", e.message)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            toolFailure(name, "取消任务时遇到问题，请稍后重试。", "task_cancel_failed", e)
         }
     }
 }

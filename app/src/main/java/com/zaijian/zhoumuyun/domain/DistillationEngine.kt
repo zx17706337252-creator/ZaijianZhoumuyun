@@ -293,7 +293,9 @@ class DistillationEngine(
                 .filter { it.isNotEmpty() && it.length >= 5 }  // 过滤过短的无效行
                 .take(MAX_RULES_PER_DISTILL)
                 .map { if (it.length > MAX_RULE_CHARS) it.take(MAX_RULE_CHARS) else it }
-        } catch (_: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (_: Throwable) {
             emptyList()
         }
     }

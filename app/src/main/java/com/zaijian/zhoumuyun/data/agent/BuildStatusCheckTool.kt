@@ -63,14 +63,10 @@ class BuildStatusCheckTool(
                     content  = "[构建状态 #$runId]\n${status.displayText}\n${status.htmlUrl}",
                     userHint = "正在查询编译进度…",
                 )
-            } catch (e: Exception) {
-                ToolResult(
-                    toolName = name,
-                    success  = false,
-                    content  = "",
-                    error    = "查询失败：${e.message?.take(120)}",
-                    userHint = "查询失败",
-                )
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                toolFailure(name, "查询编译状态失败，请稍后重试。", "build_status_check_failed", e)
             }
         }
 
@@ -80,7 +76,9 @@ class BuildStatusCheckTool(
         val runId = params["run_id"]?.trim() ?: return null
         return try {
             queryRunStatus(config, runId)
-        } catch (_: Exception) { null }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (_: Throwable) { null }
     }
 
     private fun queryRunStatus(

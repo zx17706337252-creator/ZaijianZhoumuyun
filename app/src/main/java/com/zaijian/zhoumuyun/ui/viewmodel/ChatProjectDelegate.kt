@@ -28,7 +28,9 @@ class ChatProjectDelegate(
                         activeProjects = if (project != null) persistentListOf(project) else persistentListOf(),
                     )
                 }
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 ZLog.e("ChatProjectDelegate", "设置活跃项目失败 projectId=$projectId", e)
                 _uiState.update { it.copy(error = "设置项目失败，请重试") }
             }

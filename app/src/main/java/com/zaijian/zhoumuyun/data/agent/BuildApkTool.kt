@@ -3,8 +3,10 @@ package com.zaijian.zhoumuyun.data.agent
 import com.zaijian.zhoumuyun.data.datastore.GithubConfigDataStore
 import android.net.Uri
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import java.io.IOException
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
@@ -61,14 +63,10 @@ class BuildApkTool(
                         userHint = "触发失败",
                     )
                 }
-            } catch (e: Exception) {
-                ToolResult(
-                    toolName = name,
-                    success  = false,
-                    content  = "",
-                    error    = "触发编译失败：${e.message?.take(120)}",
-                    userHint = "触发失败",
-                )
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                toolFailure(name, "触发编译失败，请稍后重试。", "build_apk_trigger_failed", e)
             }
         }
 
@@ -76,7 +74,7 @@ class BuildApkTool(
      * POST /repos/{owner}/{repo}/actions/workflows/{workflow_id}/dispatches
      * 返回 run_id（通过反查获取），失败返回 null。
      */
-    private fun triggerWorkflowDispatch(
+    private suspend fun triggerWorkflowDispatch(
         config: com.zaijian.zhoumuyun.data.datastore.GithubConfig,
         branch: String,
         buildType: String,
@@ -104,7 +102,17 @@ class BuildApkTool(
         }
 
         try {
-            OutputStreamWriter(conn.outputStream).use { it.write(body) }
+            // #58 修复：原实现把 body 写入和 responseCode 读取包在同一个 try 里，
+            // 二者任何一步失败都被外层 execute() 的通用 catch 折叠成
+            // "触发编译失败：${e.message}"，写入阶段的 IOException（网络中断/
+            // 连接被服务器提前关闭等）和响应阶段的异常混在一起，错误信息不精确，
+            // 排查时分不清失败发生在"发请求"还是"读响应"。现在单独包一层，
+            // 写入失败时补充更明确的阶段信息。
+            try {
+                OutputStreamWriter(conn.outputStream).use { it.write(body) }
+            } catch (e: IOException) {
+                throw IOException("请求体写入失败（发送 dispatch 载荷时网络中断或连接被提前关闭）：${e.message}", e)
+            }
             val code = conn.responseCode
             if (code != 204) return null
         } finally {
@@ -127,7 +135,7 @@ class BuildApkTool(
      * 2. per_page=5 取多条，逐条比对 created_at >= sinceEpochSec
      * 3. 最多重试 3 次（间隔 2s），等待 GitHub API 最终一致性追上
      */
-    private fun lookupRunId(config: com.zaijian.zhoumuyun.data.datastore.GithubConfig, branch: String): String? {
+    private suspend fun lookupRunId(config: com.zaijian.zhoumuyun.data.datastore.GithubConfig, branch: String): String? {
         // dispatch 发生前约 5s，容忍服务器时钟偏差与本地调用耗时
         val sinceEpochSec = (System.currentTimeMillis() - 5_000L) / 1000L
         val url = "$API_BASE/repos/${config.owner}/${config.repo}/actions/runs" +
@@ -141,7 +149,11 @@ class BuildApkTool(
         // continue 进入下一轮，仍享受完整的 3 次 + 2s 间隔重试预算；
         // 只有 3 次全部用尽（无论是失败还是未匹配）才返回 null。
         attemptLoop@ for (attempt in 0 until 3) {
-            if (attempt > 0) Thread.sleep(2_000L)
+            // #57 修复：原 Thread.sleep(2_000L) 虽跑在 Dispatchers.IO 的弹性线程池上，
+            // 不会真的 ANR 主线程，但仍会占住一个 IO 线程什么都不干地阻塞 2 秒，
+            // 在高并发调用下会挤占线程池资源。lookupRunId 已经是 suspend 函数，
+            // 改用 delay() 让协程在等待期间挂起而不占用线程，符合协程最佳实践。
+            if (attempt > 0) delay(2_000L)
 
             val conn = (URL(url).openConnection() as HttpURLConnection).apply {
                 requestMethod = "GET"
@@ -170,7 +182,9 @@ class BuildApkTool(
                     }
                 }
                 // 当前批次无符合条件的 run，继续重试
-            } catch (_: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (_: Throwable) {
                 // IO 异常（连接超时/读超时/JSON 格式异常等）同样视为瞬时故障，
                 // 不让单次异常提前终止整个查找流程。
             } finally {

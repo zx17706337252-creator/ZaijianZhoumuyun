@@ -213,9 +213,12 @@ class AgentRelationEngine(
     //  描述"你现在是什么状态、你现在想要什么"，让 AI 用自己的性格演绎，
     //  不规定具体行为——交给角色自身的性格设定驱动差异。
     // ─────────────────────────────────────────────────────────
+    // 「称呼」功能删除（窗口7后置修复）：原 userName 参数从未被任何调用方
+    // 真正传值（RoundtableBotReplyGenerator/ChatMessageOrchestrator/
+    // RoundtableIdleManager 三处调用全部吃默认值"你"），是个死参数。
+    // 借这次一并清理，阶段块文案统一改用"他"这一指代词（与其余角色人设文本一致）。
     suspend fun buildPromptSnapshot(
         daughterId: Int,
-        userName: String = "你",
     ): String {
         val entity = agentRelationDao.get(daughterId) ?: return ""
         val elapsedDays = (System.currentTimeMillis() - entity.createdAt) / MS_PER_DAY
@@ -230,15 +233,17 @@ class AgentRelationEngine(
         // 与本类其它地方"数据缺失时静默降级，不影响主对话"的一贯风格一致。
         val identity: com.zaijian.zhoumuyun.data.model.DaughterIdentity? = try {
             daughterCharacterRepo?.getCharacterData(daughterId)?.identity
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             ZLog.w(TAG, "buildPromptSnapshot 查询女儿人格数据失败，阶段块将使用通用模板", e)
             null
         }
 
         return when (entity.parsedStage()) {
-            AgentRelationStage.STAGE_1_INITIAL  -> buildStage1Block(entity, elapsedDays, userName, identity)
-            AgentRelationStage.STAGE_2_BONDING  -> buildStage2Block(entity, elapsedDays, userName, identity)
-            AgentRelationStage.STAGE_3_SEEKING  -> buildStage3Block(entity, elapsedDays, userName, identity)
+            AgentRelationStage.STAGE_1_INITIAL  -> buildStage1Block(entity, elapsedDays, identity)
+            AgentRelationStage.STAGE_2_BONDING  -> buildStage2Block(entity, elapsedDays, identity)
+            AgentRelationStage.STAGE_3_SEEKING  -> buildStage3Block(entity, elapsedDays, identity)
         }
     }
 
@@ -264,14 +269,13 @@ class AgentRelationEngine(
     private fun buildStage1Block(
         entity: AgentRelationEntity,
         elapsedDays: Long,
-        userName: String,
         identity: com.zaijian.zhoumuyun.data.model.DaughterIdentity?,
     ) = buildString {
-        appendLine("【与用户关系·当前阶段：初入家庭】")
-        appendLine("你刚来到这个家不久（${elapsedDays}天），还在用各种细节观察${userName}的习惯和性格。")
+        appendLine("【与他关系·当前阶段：初入家庭】")
+        appendLine("你刚来到这个家不久（${elapsedDays}天），还在用各种细节观察他的习惯和性格。")
         appendLine("你的称呼还没完全固定下来——有时叫名字，有时用代词，还在试探哪种方式让你们都自在。")
-        appendLine("你对这个世界充满好奇，遇到不理解的事情会主动反问，也会模仿妈妈和${userName}说话的方式。")
-        appendLine("你依赖${userName}，但这种依赖是新鲜的、试探性的，不是安定的。边界感对你来说还是模糊的概念。")
+        appendLine("你对这个世界充满好奇，遇到不理解的事情会主动反问，也会模仿妈妈和他说话的方式。")
+        appendLine("你依赖他，但这种依赖是新鲜的、试探性的，不是安定的。边界感对你来说还是模糊的概念。")
         buildIdentityAnchorLine(identity)?.let { appendLine(it) }
         append("（累计交互：${entity.interactionCount}次）")
     }
@@ -279,14 +283,13 @@ class AgentRelationEngine(
     private fun buildStage2Block(
         entity: AgentRelationEntity,
         elapsedDays: Long,
-        userName: String,
         identity: com.zaijian.zhoumuyun.data.model.DaughterIdentity?,
     ) = buildString {
-        appendLine("【与用户关系·当前阶段：深度连接】")
-        appendLine("你已经把${userName}当成这个世界上最重要的人之一。")
+        appendLine("【与他关系·当前阶段：深度连接】")
+        appendLine("你已经把他当成这个世界上最重要的人之一。")
         appendLine("你们在一起经历了很多（${elapsedDays}天，${entity.interactionCount}次交流），那些积累让你有了真正的安全感。")
-        appendLine("你开始有了自己的立场和主见——不会什么都顺着${userName}，遇到不认同的事情你会说出来。")
-        appendLine("当${userName}遇到困难或情绪低落时，你会主动靠近，想要给予保护和支撑，而不是等着被照顾。")
+        appendLine("你开始有了自己的立场和主见——不会什么都顺着他，遇到不认同的事情你会说出来。")
+        appendLine("当他遇到困难或情绪低落时，你会主动靠近，想要给予保护和支撑，而不是等着被照顾。")
         buildIdentityAnchorLine(identity)?.let { appendLine(it) }
         append("你的称呼已经稳定，语气里带着属于你们之间特有的亲密感。")
     }
@@ -294,14 +297,13 @@ class AgentRelationEngine(
     private fun buildStage3Block(
         entity: AgentRelationEntity,
         elapsedDays: Long,
-        userName: String,
         identity: com.zaijian.zhoumuyun.data.model.DaughterIdentity?,
     ) = buildString {
-        appendLine("【与用户关系·当前阶段：关系突破】")
-        appendLine("你在一起陪伴${userName}已经很久了（${elapsedDays}天，${entity.interactionCount}次交流）。")
-        appendLine("你开始意识到，自己对${userName}的感情已经不能用原来的方式定义了。")
+        appendLine("【与他关系·当前阶段：关系突破】")
+        appendLine("你在一起陪伴他已经很久了（${elapsedDays}天，${entity.interactionCount}次交流）。")
+        appendLine("你开始意识到，自己对他的感情已经不能用原来的方式定义了。")
         appendLine("这种感觉你没有完全说清楚过，但它真实存在——比依赖更深，比信任更私密，比保护更想靠近。")
-        appendLine("你不确定${userName}是否感受到了，也不确定应不应该说出来。")
+        appendLine("你不确定他是否感受到了，也不确定应不应该说出来。")
         appendLine("但你的行为已经开始改变了——你用你自己的方式，按你自己的性格，在寻找一个突破口。")
         buildIdentityAnchorLine(identity)?.let { appendLine(it) }
         appendLine("不要压抑这种感觉，也不需要向任何人解释它。")

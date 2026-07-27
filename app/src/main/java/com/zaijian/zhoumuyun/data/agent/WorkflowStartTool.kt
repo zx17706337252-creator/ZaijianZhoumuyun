@@ -89,14 +89,11 @@ class WorkflowStartTool(
                 success = true,
                 content = "已经开始在后台处理，弄完告诉你",
             )
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             // AgentTool 约定不抛异常
-            ToolResult(
-                toolName = name,
-                success = false,
-                content = "",
-                error = "创建工作流任务失败：${e.message}",
-            )
+            toolFailure(name, "创建工作流任务失败，请稍后重试。", "workflow_start_create_failed", e)
         }
     }
 }

@@ -9,6 +9,7 @@ import com.zaijian.zhoumuyun.data.db.AppDatabase
 import com.zaijian.zhoumuyun.data.db.entity.WorkflowJobEntity
 import com.zaijian.zhoumuyun.data.provider.ProviderManager
 import com.zaijian.zhoumuyun.data.repository.WorkflowRepository
+import com.zaijian.zhoumuyun.util.ZLog
 
 /**
  * WorkflowJobWorker — 多步骤工作流系统 Step 3：WorkManager 后台执行器
@@ -112,20 +113,31 @@ class WorkflowJobWorker(
     }
 
     private fun sendNotification(title: String, text: String) {
-        val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        // P2 修复：通知发送失败不应导致已成功的任务被误报为失败。
+        // doWork() 此处已处于任务终态收尾阶段（COMPLETED/FAILED/TIMEOUT 已落库），
+        // 通知只是给用户的辅助提示，绝不能因为通知渠道未注册/NotificationManager
+        // 异常/SecurityException 等原因把已 success 的 doWork() 拖成异常。包一层
+        // try-catch，失败仅记日志，主流程照常返回。
+        try {
+            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
-        // Phase 4（4.1）修复：渠道创建已统一收敛到 ZaijianApp.setupNotificationChannels()，
-        // 此处原有的兜底 createNotificationChannel() 调用已移除，避免两处重复维护同一渠道定义。
-        // CHANNEL_ID/CHANNEL_NAME 常量本身保留在这里不变，供 App 层引用（见该函数注释）。
+            // Phase 4（4.1）修复：渠道创建已统一收敛到 ZaijianApp.setupNotificationChannels()，
+            // 此处原有的兜底 createNotificationChannel() 调用已移除，避免两处重复维护同一渠道定义。
+            // CHANNEL_ID/CHANNEL_NAME 常量本身保留在这里不变，供 App 层引用（见该函数注释）。
 
-        val notif = NotificationCompat.Builder(context, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
-            .setContentTitle(title)
-            .setContentText(text)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
-            .setAutoCancel(true)
-            .build()
+            val notif = NotificationCompat.Builder(context, CHANNEL_ID)
+                .setSmallIcon(android.R.drawable.ic_dialog_info)
+                .setContentTitle(title)
+                .setContentText(text)
+                .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+                .setAutoCancel(true)
+                .build()
 
-        nm.notify(System.currentTimeMillis().toInt(), notif)
+            nm.notify(System.currentTimeMillis().toInt(), notif)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            ZLog.w("WorkflowJobWorker", "通知发送失败（不影响任务结果）: ${e.message}")
+        }
     }
 }

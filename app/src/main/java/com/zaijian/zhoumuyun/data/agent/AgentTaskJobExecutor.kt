@@ -16,7 +16,6 @@ import com.zaijian.zhoumuyun.data.repository.IdentityRepository
 import com.zaijian.zhoumuyun.data.repository.MessageRepository
 import com.zaijian.zhoumuyun.data.repository.AgentActivityRepository
 import com.zaijian.zhoumuyun.data.repository.SkillRepository
-import com.zaijian.zhoumuyun.data.repository.UserProfileRepository
 import com.zaijian.zhoumuyun.domain.ChatTagParser
 import com.zaijian.zhoumuyun.util.ZLog
 import java.util.UUID
@@ -129,7 +128,11 @@ object AgentTaskJobExecutor {
         //   - "system" 中带 [AGENT_MSG: / [ROUNDTABLE_TRIGGER] 前缀的是内部控制信号，丢弃
         //   - 其余 "system"（如文件导入提示）按 user 身份带进历史
         //   - role = characterId.toString() 的主动消息映射为 "assistant"
-        val history = messageRepo.getByCharacter(job.characterId).mapNotNull { msg ->
+        // P1-10 修复（#6）：全量加载角色对话历史（getByCharacter），长期使用后可达
+        // 数千条，headless 工单路径没有截断（ChatMessageOrchestrator 正常路径有）。
+        // 添加 takeLast(20) 截断，只保留最近 20 条消息作为上下文。
+        val MAX_HISTORY = 20
+        val history = messageRepo.getByCharacter(job.characterId).takeLast(MAX_HISTORY).mapNotNull { msg ->
             when (msg.role) {
                 "user", "assistant" -> LLMMessage(role = msg.role, content = msg.content)
                 "system" -> if (msg.content.startsWith("[AGENT_MSG:") ||
@@ -149,23 +152,16 @@ object AgentTaskJobExecutor {
             characterId = job.characterId,
             repo = skillRepo,
         )
-        // 「称呼」功能性缺陷修复：此前工单路径未传 userName，恒为默认值"你"。
-        // 本执行器本就是"Worker 内临时组装依赖、跑完即弃"模式（见类头注释），
-        // 与 messageRepo/identityRepo/daughterRepo/skillRepo 同一处理方式，
-        // 用收到的 context 直接构造，不复用 ViewModel 侧的容器单例。
-        val userProfileRepo = UserProfileRepository(context)
-
         val systemPrompt = PromptOrchestrator.buildSystemPrompt(
             character            = characterConfig,
             identityEntity       = identityRepo.getById(job.characterId),
-            userName             = userProfileRepo.getUserName(),
             toolDescriptionBlock = AgentToolRegistry.buildToolDescriptionBlock(),
             skillCatalogBlock    = skillCatalogBlock,
         )
 
         // stream=false：Worker 后台执行不需要打字机效果，整段返回更稳。
         // model="" 与 ChatMessageOrchestrator 一致——由 provider 内部按用户配置选模型。
-        val config = LLMConfig(model = "", maxTokens = 2000, temperature = 0.8f, stream = false)
+        val config = LLMConfig(model = "", maxTokens = 50000, temperature = 0.8f, stream = false)
 
         // 3. 走完整推理 + 工具调用（复用 ToolCallInterceptor，不重新实现）
         //    streamWithTools 内部：流式接收 LLM 输出 → 解析 <tool:xxx/> → 执行工具
@@ -178,19 +174,52 @@ object AgentTaskJobExecutor {
             sceneType   = AgentActivityRepository.SceneType.WORKFLOW,
         )
         val fullReply = StringBuilder()
+        // Fix D（工单路径文件卡丢失）：此前这里只收 StreamEvent.TextDelta，
+        // excel_gen/pptx_gen/table_export 等工具产出的 StreamEvent.ToolDone
+        // （携带 exportedFileJson/tablePayloadJson 元数据）被完全丢弃——文件
+        // 本身正常落盘，但落库的 MessageEntity 从来没写过 exportedFileJson/
+        // exportedFilesJson/tableDataJson，导致工单触发的文件生成 100% 不会
+        // 出现文件卡，跟"回复被取消"完全无关，是这条路径本身遗漏了收集，
+        // 私聊（ChatMessageOrchestrator）/圆桌（RoundtableBotReplyGenerator）
+        // 早就有对应收集逻辑，只有这条 headless 路径漏掉了。
+        val pendingExportedFiles = mutableListOf<String>()
+        var pendingTablePayloadJson: String? = null
         try {
-            ToolCallInterceptor.streamWithTools(
-                provider         = provider,
-                messages         = history + LLMMessage("user", triggerText),
-                systemPrompt     = systemPrompt,
-                config           = config,
-                activityContext  = activityContext,
-            ).collect { event ->
-                if (event is StreamEvent.TextDelta) fullReply.append(event.text)
+            // Fix E（工单路径落盘身份缺失）：此前这里没有 withVaultContext 包裹，
+            // currentVaultContext() 会退回 VaultCallContextHolder 的进程级默认值——
+            // 那是私聊/圆桌路径最后一次 set 时留下的、跟当前工单角色完全无关的身份，
+            // 工单生成的文件可能落进别的角色的 vault 目录。这里按 job.characterId
+            // 显式绑定 PERSONAL 身份（工单本质是"这个角色自己在处理自己的事"，
+            // 与私聊场景语义一致），与 ChatMessageOrchestrator 的绑定方式对齐。
+            withVaultContext(VaultCallContext(job.characterId, VaultScope.PERSONAL)) {
+                ToolCallInterceptor.streamWithTools(
+                    provider         = provider,
+                    messages         = history + LLMMessage("user", triggerText),
+                    systemPrompt     = systemPrompt,
+                    config           = config,
+                    activityContext  = activityContext,
+                ).collect { event ->
+                    when (event) {
+                        is StreamEvent.TextDelta -> fullReply.append(event.text)
+                        is StreamEvent.ToolDone -> {
+                            extractAgentTaskFileMetaJson(event.result)?.let { pendingExportedFiles.add(it) }
+                            event.result.tablePayloadJson?.let { pendingTablePayloadJson = it }
+                        }
+                        else -> Unit
+                    }
+                }
             }
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            // P2 修复（#35）：CancellationException 必须重新抛出，不能被下面的
+            // catch(e: Exception) 吞掉——否则协程取消信号丢失，job 被取消后
+            // 仍继续执行并返回 ToolResult，可能写入脏数据。
+            throw e
+        } catch (e: Throwable) {
+            // P1-6 修复：catch Throwable 而非 Exception，防 Error 子类击穿
             ZLog.w(TAG, "streamWithTools failed for job=${job.id}", e)
-            return ToolResult(job.toolName, false, "", error = "对话推理失败：${e.message?.take(80)}")
+            // P2 修复：原 error = "对话推理失败：${e.message?.take(80)}" 泄露内部异常，
+            // 改为稳定错误码 + 固定文案，完整异常已由上方 ZLog.w 记录。
+            return toolFailure(job.toolName, "对话推理失败，请稍后重试。", "llm_inference_failed", e, "AgentTaskJob")
         }
 
         // 4. 三步清洗，顺序固定（已核实，见 ChatMessageOrchestrator.kt 第461-463 行）
@@ -216,6 +245,11 @@ object AgentTaskJobExecutor {
                 role        = job.characterId.toString(),
                 content     = cleanReply,
                 createdAt   = System.currentTimeMillis(),
+                // Fix D：把本轮工单执行期间收集到的文件/表格元数据接回消息实体，
+                // 否则工单触发的 excel_gen/pptx_gen/table_export 永远不会有文件卡。
+                exportedFileJson  = pendingExportedFiles.lastOrNull(),
+                exportedFilesJson = packAgentTaskExportedFilesJson(pendingExportedFiles),
+                tableDataJson     = pendingTablePayloadJson,
             )
         )
 
@@ -226,4 +260,21 @@ object AgentTaskJobExecutor {
             userHint = null,
         )
     }
+
+    /**
+     * 从工具结果文本里提取文件元数据 JSON（fileName/absolutePath 字段齐全才算数）。
+     *
+     * P3-2（元数据解析三份副本统一）：唯一实现已下沉到同层的
+     * `data.agent.ExportedFileMeta.kt`（[extractExportedFileJson]），本函数不再
+     * 手写一份重复的正则+JSON校验逻辑，只做委托。
+     */
+    private fun extractAgentTaskFileMetaJson(result: ToolResult): String? =
+        extractExportedFileJson(result)
+
+    /**
+     * 把本轮工单收集到的多个文件元数据 JSON 打包成一个 JSON 数组字符串。
+     * 唯一实现同样已下沉到 [packExportedFilesJson]，本函数只做委托。
+     */
+    private fun packAgentTaskExportedFilesJson(fileJsonList: List<String>): String? =
+        packExportedFilesJson(fileJsonList)
 }

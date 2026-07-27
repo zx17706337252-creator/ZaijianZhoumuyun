@@ -277,24 +277,16 @@ internal fun BotBubble(
                 }
             }
 
-            // v1.38 圆桌场景补齐：气泡簇渲染顺序与私聊 MessageBubble 对齐——
-            // 内心独白（折叠，最上方）→ 心理感受（常显，台词上方）→ 台词。
-            // 圆桌此前从未解析 thinkingText/psychText，字段恒为 null，这两张卡
-            // 不会渲染；补齐解析层（RoundtableBotReplyGenerator/RoundtableIdleManager）
-            // 后，这里同步补上展示，否则解析出来的数据无处可去。
+            // Fix-PsychMergeIntoBubble：与私聊 ChatMessageBubble 同步，取消
+            // PsychCard 独立渲染，psychText 改为合并进下方气泡正文最前段
+            // （见下方气泡内 psychText 渲染）——两处视觉/交互要求保持一致，
+            // 不维护两份会漂移的拷贝。内心独白折叠卡逻辑不变。
             msg.thinkingText?.takeIf { it.isNotBlank() }?.let { thought ->
                 ThoughtCard(
                     thinkingText  = thought,
                     accentColor   = accentColor,
                     characterName = msg.speakerName,
                     maxWidth      = maxW,
-                )
-            }
-            msg.psychText?.takeIf { it.isNotBlank() }?.let { psych ->
-                PsychCard(
-                    psychText   = psych,
-                    accentColor = accentColor,
-                    maxWidth    = maxW,
                 )
             }
 
@@ -348,6 +340,20 @@ internal fun BotBubble(
                             ReplyQuoteBlock(
                                 targetName  = msg.replyTargetName,
                                 targetColor = colors.textSecondary,
+                            )
+                        }
+
+                        // 心理感受合并展示（方案A·克制斜体），与私聊气泡同一逻辑：
+                        // 斜体 + 降透明度，颜色基于 contentOnFill() 派生而非固定金色，
+                        // 保证任意角色 accentColor 底色下都有稳定对比度。
+                        msg.psychText?.takeIf { it.isNotBlank() }?.let { psych ->
+                            Text(
+                                text  = psych,
+                                style = type.body.copy(
+                                    fontStyle = androidx.compose.ui.text.font.FontStyle.Italic,
+                                ),
+                                color    = accentColor.contentOnFill().copy(alpha = 0.72f),
+                                modifier = Modifier.padding(bottom = Spacing.xs),
                             )
                         }
 

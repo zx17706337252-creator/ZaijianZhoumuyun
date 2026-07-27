@@ -103,7 +103,9 @@ class CreateGithubRepoTool(
                     } else {
                         val err = try {
                             conn.errorStream?.bufferedReader()?.use { it.readText() }?.take(200)
-                        } catch (_: Exception) { null }
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            throw e
+                        } catch (_: Throwable) { null }
                         val msg = when (code) {
                             422 -> "仓库名已存在或名称不合法"
                             else -> "HTTP $code: ${err ?: conn.responseMessage}"
@@ -113,8 +115,10 @@ class CreateGithubRepoTool(
                 } finally {
                     conn.disconnect()
                 }
-            } catch (e: Exception) {
-                ToolResult(name, false, "", "创建仓库失败：${e.message?.take(120)}")
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                toolFailure(name, "创建仓库失败，请稍后重试。", "create_github_repo_failed", e)
             }
         }
 }

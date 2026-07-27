@@ -72,7 +72,11 @@ import com.zaijian.zhoumuyun.ui.theme.appSpring
 import com.zaijian.zhoumuyun.ui.theme.snapSpring
 
 
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.unit.IntOffset
 import com.zaijian.zhoumuyun.ui.component.BreathingAvatar
+import com.zaijian.zhoumuyun.ui.component.BubbleActionMenu
 import com.zaijian.zhoumuyun.ui.component.ContentBlockRenderer
 import com.zaijian.zhoumuyun.ui.theme.AvatarSize
 import com.zaijian.zhoumuyun.ui.theme.BubbleDimen
@@ -274,12 +278,13 @@ internal fun MessageBubble(
             Spacer(Modifier.width(Spacing.sm))
 
             Column(verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
-                // v1.36 问题2（三层分离）：气泡簇渲染顺序改为
-                // 内心独白（折叠，最上方）→ 心理感受（常显，台词上方）→ 台词 → 文件卡。
-                // 此前顺序是"台词 → 想法卡 → 文件卡"，想法卡挂在台词下方；
-                // 现在把 thinkingText/psychText 提到台词前面，理由见实施方案问题2：
-                // 内心独白是"戏外"决策过程，心理感受是"戏内"当下状态，读者应该先看到
-                // 角色的心理铺垫，再看她说了什么。
+                // Fix-PsychMergeIntoBubble（3分部→2分部，方案A·克制斜体）：
+                // 心理感受（psychText）不再独立成 PsychCard 卡片，改为拼进台词气泡
+                // 正文最前段，跟台词连续排版——只保留两层：① 内心独白折叠卡（戏外，
+                // 默认收起）② 台词气泡（戏内心理+动作+台词合并为一段连续正文）。
+                // 心理描写用克制斜体（暖金色调 + Italic）与台词区分，不再用独立的
+                // 框/条把它和台词切开。PsychCard 组件本身保留在文件里未删除
+                // （RoundtableBubble.kt 若后续需要可复用），只是这里不再调用。
 
                 // 1. 内心独白（原想法卡，Fix-ThinkingLeak，位置从台词下方提到最上方）
                 message.thinkingText?.takeIf { it.isNotBlank() }?.let { thought ->
@@ -291,16 +296,7 @@ internal fun MessageBubble(
                     )
                 }
 
-                // 2. 心理感受小卡（新增，不折叠，直接展示在台词气泡上方）
-                message.psychText?.takeIf { it.isNotBlank() }?.let { psych ->
-                    PsychCard(
-                        psychText   = psych,
-                        accentColor = accentColor,
-                        maxWidth    = maxBubbleWidth,
-                    )
-                }
-
-                // 3. 台词气泡（原有逻辑不变，只是顺序移到内心独白/心理感受之后）
+                // 2. 台词气泡（心理感受合并进气泡正文最前段，见下方 psychText 渲染）
                 // W12问题1修复：容器改用 WorldOSComponents.kt 的 WorldBubble，接入
                 // L0 纸面底 + L1 光斑 + L2 黄铜描边三层视觉规则，取代此前手写的
                 // clip+background+border 组合。四角圆角（尖角在左下）、描边色
@@ -310,8 +306,17 @@ internal fun MessageBubble(
                 // 纯文件消息（content 为空）本来就没有文字气泡可合并，走原逻辑。
                 val hasAttachment = message.exportedFiles.isNotEmpty() || message.tablePayload != null
                 val mergeIntoBubble = attachFilesTogether && message.content.isNotBlank() && hasAttachment
+                // Fix-PsychOnlyMessageDrop：psychText 现在渲染在气泡内部（合并展示
+                // 方案A），若仍只按 message.content.isNotBlank() 判断要不要画气泡，
+                // 会漏掉"整轮回复只有心理描写、没有台词"的消息——stripPsychText()
+                // 剥离圆括号后 content 可以合法变成空串（例如整轮回复原文就是
+                // "（沉默地看着窗外）"），此时旧版 PsychCard 是独立于台词气泡渲染的、
+                // 仍然会显示；现在 psychText 挪进气泡内部后必须放宽这个条件，
+                // 否则这类消息会静默消失，观感上比改动前更差。
+                val hasPsych = message.psychText?.isNotBlank() == true
+                val showBubble = message.content.isNotBlank() || hasPsych
 
-                if (message.content.isNotBlank()) {
+                if (showBubble) {
                     // 2.1：同用户气泡，长按复制 + 按压缩放反馈。
                     val charInteraction = remember { MutableInteractionSource() }
                     val charPressed by charInteraction.collectIsPressedAsState()
@@ -320,34 +325,103 @@ internal fun MessageBubble(
                         animationSpec = if (charPressed) snapSpring else appSpring,
                         label         = "charBubblePressScale",
                     )
-                    WorldBubble(
-                        modifier    = Modifier
-                            .widthIn(max = maxBubbleWidth)
-                            .graphicsLayer { scaleX = charScale; scaleY = charScale }
-                            .combinedClickable(
-                                interactionSource = charInteraction,
-                                indication        = null,
-                                onClick           = {
-                                    // v1.48：点击气泡全屏查看文本（角色气泡是 Markdown 渲染的）
-                                    if (message.content.isNotBlank()) {
-                                        onOpenFullText(message.content, true)
+                    // Fix-BubbleTextSelect：长按不再是"秒复制整条"，改为先弹一个
+                    // 小菜单，用户自己选"复制"还是"选择文字"。
+                    //   · menuVisible / menuOffset —— 菜单是否显示、显示在哪（贴着
+                    //     长按点，menuOffset 记录的是长按点相对本 Box 左上角的
+                    //     本地坐标，Popup 的 offset 参数按这个来定位）。
+                    //   · isSelecting —— 是否处于"选择文字"模式。为 true 时：
+                    //     1) 气泡的 combinedClickable 让路（不响应点击全屏/长按
+                    //        弹菜单），完全交给 TextView 的原生拖选手势；
+                    //     2) ContentBlockRenderer 下所有 MarkdownText 切到
+                    //        setTextIsSelectable(true)（见 MarkdownText.kt）。
+                    var menuVisible by remember { mutableStateOf(false) }
+                    var menuOffset by remember { mutableStateOf(IntOffset.Zero) }
+                    var isSelecting by remember { mutableStateOf(false) }
+
+                    Box {
+                        WorldBubble(
+                            modifier    = Modifier
+                                .widthIn(max = maxBubbleWidth)
+                                .graphicsLayer { scaleX = charScale; scaleY = charScale }
+                                .then(
+                                    // 选字模式下彻底不挂手势：把触摸事件完全让给
+                                    // TextView 自己的原生选择手势（拖手柄、系统气泡
+                                    // 菜单），不与外层任何点击/长按逻辑竞争。
+                                    //
+                                    // 非选字模式下用单一 pointerInput + detectTapGestures
+                                    // 同时处理"点按=全屏查看"和"长按=弹操作菜单"——
+                                    // 不再叠加 combinedClickable，两套独立手势探测器
+                                    // 同时监听同一批触摸事件会互相干扰（谁先消费、
+                                    // 按压态由谁驱动都不确定），选一套就够。按压缩放
+                                    // 反馈（charPressed）借用 charInteraction 手动
+                                    // 在 onPress 里驱动，效果与之前一致。
+                                    if (isSelecting) {
+                                        Modifier
+                                    } else {
+                                        Modifier.pointerInput(message.id) {
+                                            detectTapGestures(
+                                                onPress = { offset ->
+                                                    val press = androidx.compose.foundation.interaction.PressInteraction.Press(offset)
+                                                    charInteraction.emit(press)
+                                                    val released = tryAwaitRelease()
+                                                    charInteraction.emit(
+                                                        if (released) {
+                                                            androidx.compose.foundation.interaction.PressInteraction.Release(press)
+                                                        } else {
+                                                            androidx.compose.foundation.interaction.PressInteraction.Cancel(press)
+                                                        }
+                                                    )
+                                                },
+                                                onTap = {
+                                                    // v1.48：点击气泡全屏查看文本（角色气泡是 Markdown 渲染的）
+                                                    if (message.content.isNotBlank()) {
+                                                        onOpenFullText(message.content, true)
+                                                    }
+                                                },
+                                                onLongPress = { pos ->
+                                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                    menuOffset = IntOffset(pos.x.toInt(), pos.y.toInt())
+                                                    menuVisible = true
+                                                },
+                                            )
+                                        }
                                     }
-                                },
-                                onLongClick       = {
-                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    onCopyMessage(message.content)
-                                },
-                                onLongClickLabel  = "复制这条消息",
-                            ),
-                        topStart    = Radius.md,
-                        topEnd      = Radius.md,
-                        bottomStart = Radius.xs,
-                        bottomEnd   = Radius.md,
-                        // 角色气泡改版：不再是"accentColor 描边包一层纸面底"，
-                        // 气泡本身纯色填充为该角色的 accentColor。
-                        fillColor   = accentColor,
-                    ) {
+                                ),
+                            topStart    = Radius.md,
+                            topEnd      = Radius.md,
+                            bottomStart = Radius.xs,
+                            bottomEnd   = Radius.md,
+                            // 角色气泡改版：不再是"accentColor 描边包一层纸面底"，
+                            // 气泡本身纯色填充为该角色的 accentColor。
+                            fillColor   = accentColor,
+                        ) {
                         Column(modifier = Modifier.padding(horizontal = Spacing.md, vertical = 12.dp)) {
+                            // 心理感受合并展示（方案A·克制斜体）：圆括号心理描写作为
+                            // 正文第一段，斜体+略降透明度，与下方台词同一 Column 连续
+                            // 排布，视觉上是"一条消息的开头"而不是切开的独立元素。
+                            // 颜色取舍：HTML 方案稿用固定暖金色（#C4A46A），但那是在
+                            // 米白纸面底上；这里气泡本体是纯色填充的 accentColor（每个
+                            // 角色不同、饱和度不定），固定金色在部分角色色上对比度会不
+                            // 稳（比如角色色本身偏金/偏暖时几乎融为一色）。改为在
+                            // contentOnFill() 派生色基础上降透明度——与下方 ACTION 语义
+                            // 分段（ContentBlockRenderer 里 textColor.copy(alpha=0.55f)）
+                            // 同一逻辑，保证任意角色色下都有足够对比度，同时仍与台词
+                            // 满透明度正文区分出层级。
+                            // 取舍：中文字体没有真正斜体字形，是系统强制倾斜渲染，笔画
+                            // 可能显得别扭——如果真机效果不理想，可以把 fontStyle=Italic
+                            // 去掉、只保留透明度区分（即方案B）。
+                            message.psychText?.takeIf { it.isNotBlank() }?.let { psych ->
+                                Text(
+                                    text  = psych,
+                                    style = type.body.copy(
+                                        fontStyle = androidx.compose.ui.text.font.FontStyle.Italic,
+                                    ),
+                                    color    = accentColor.contentOnFill().copy(alpha = 0.72f),
+                                    modifier = Modifier.padding(bottom = Spacing.xs),
+                                )
+                            }
+
                             // 窗口3：角色气泡使用 ContentBlockRenderer 渲染（块级结构化 + 行内语义标记）
                             // 用户气泡（上方）保持原生 Text，FileExportCard 不受影响
                             val contentBlocks = remember(message.content) {
@@ -357,9 +431,12 @@ internal fun MessageBubble(
                             // 为纸面底设计的，配饱和 accentColor 底对比度不稳）——
                             // 改用 contentOnFill() 按每个角色色的亮度自动选深/浅字。
                             ContentBlockRenderer(
-                                blocks    = contentBlocks,
-                                textColor = accentColor.contentOnFill(),
-                                style     = type.body,
+                                blocks     = contentBlocks,
+                                textColor  = accentColor.contentOnFill(),
+                                style      = type.body,
+                                // Fix-BubbleTextSelect：由 BubbleActionMenu"选择
+                                // 文字"驱动，一路传给内部 MarkdownText。
+                                selectable = isSelecting,
                             )
 
                             // 文档发送方式="一起发"（默认）：文件/表格卡片嵌进同一个
@@ -394,6 +471,55 @@ internal fun MessageBubble(
                                         )
                                     }
                                 }
+                            }
+                        }
+                        }
+
+                        // Fix-BubbleTextSelect：长按操作菜单，贴着长按落点弹出。
+                        BubbleActionMenu(
+                            visible      = menuVisible,
+                            anchorOffset = menuOffset,
+                            onCopy       = {
+                                // Fix-PsychOnlyMessageDrop 连带修复：content 为空、
+                                // 只有心理描写时，复制应复制 psychText，而不是复制
+                                // 空字符串。
+                                onCopyMessage(message.content.ifBlank { message.psychText.orEmpty() })
+                            },
+                            onSelectText = { isSelecting = true },
+                            onDismiss    = { menuVisible = false },
+                        )
+
+                        // 选字模式下的退出入口：气泡右上角挂一个小提示条，点一下
+                        // 结束选择、恢复正常点击/长按手势。不用系统返回键或点击
+                        // 气泡外部退出——那样容易和"正在拖手柄选字"这个手势本身
+                        // 冲突（拖到气泡边界外松手可能被误判为"点了外部要退出"）。
+                        if (isSelecting) {
+                            Row(
+                                modifier = Modifier
+                                    .align(Alignment.TopEnd)
+                                    .padding(top = (-28).dp, end = 4.dp)
+                                    .clip(RoundedCornerShape(Radius.xs))
+                                    .background(Palette.Night)
+                                    .clickable(
+                                        interactionSource = remember { MutableInteractionSource() },
+                                        indication        = null,
+                                        onClick           = { isSelecting = false },
+                                    )
+                                    .padding(horizontal = Spacing.sm, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Icon(
+                                    imageVector = AppIcons.Check,
+                                    contentDescription = "完成选择",
+                                    tint     = Palette.GoldSoft,
+                                    modifier = Modifier.size(12.dp),
+                                )
+                                Spacer(Modifier.width(4.dp))
+                                Text(
+                                    text  = "完成",
+                                    style = type.label,
+                                    color = Palette.NightText,
+                                )
                             }
                         }
                     }
@@ -540,6 +666,13 @@ internal fun FileExportCard(
 // v1.38 圆桌场景补齐：从 private 改为 internal，供 RoundtableBubble.kt 复用同一套
 // 内心独白折叠卡实现——两处视觉/交互要求完全一致（标题文案、折叠动效、样式），
 // 没有理由维护两份会漂移的拷贝。
+//
+// Fix-ThoughtCardPolish（方案A·现状打磨版）：在原壳体（WorldCard + 折叠交互）
+// 基础上打磨三处细节，不改函数签名/调用点：
+//   1. 图标从裸 Icon 改成圆形徽标底（icon-badge），视觉重量更接近"标签"而非"装饰"；
+//   2. 折叠态标题行右侧加字数徽标，展开前就知道内容量，不用点开才发现"好长/好短"；
+//   3. 展开正文顶部加"原始输出 · 未改写"角标 + 左侧竖线缩进，强化"这是模型原文，
+//      不是二次摘要"的读者预期——对应产品要求"折叠后展开是原始推理文本，不改写"。
 @Composable
 internal fun ThoughtCard(
     thinkingText: String,
@@ -564,28 +697,52 @@ internal fun ThoughtCard(
         Column(
             modifier = Modifier
                 .clickable { expanded = !expanded }
-                .padding(horizontal = Spacing.md, vertical = 12.dp),
+                .padding(horizontal = Spacing.md, vertical = 10.dp),
         ) {
             Row(
                 verticalAlignment     = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(Spacing.xs),
             ) {
-                Icon(
-                    imageVector        = AppIcons.Lightbulb,
-                    contentDescription = null,
-                    tint               = accentColor,
-                    modifier           = Modifier.size(14.dp),
-                )
+                // 图标徽标：圆形浅底 + 居中图标，替代此前裸 Icon，
+                // 视觉上更像一枚"标签"而不是纯装饰性符号。
+                Box(
+                    modifier          = Modifier
+                        .size(18.dp)
+                        .clip(CircleShape)
+                        .background(accentColor.copy(alpha = 0.12f)),
+                    contentAlignment  = Alignment.Center,
+                ) {
+                    Icon(
+                        imageVector        = AppIcons.Lightbulb,
+                        contentDescription = null,
+                        tint               = accentColor,
+                        modifier           = Modifier.size(11.dp),
+                    )
+                }
                 Text(
                     // v1.36 问题2：标题从"${characterName}的想法"改为固定文案"内心独白"，
                     // 不用角色名前缀（气泡本身已经是该角色的消息，前缀是信息冗余），
                     // 也不用"AI推理过程"这类出戏表述。characterName 参数保留在函数签名
                     // 里未删除，是为了不破坏 ThoughtCard 现有调用方签名。
-                    text     = "内心独白",
+                    text     = "思考过程",
                     style    = type.label,
-                    color    = accentColor,
+                    color    = colors.textPrimary,
                     modifier = Modifier.weight(1f),
+                    fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
                 )
+                // 字数徽标：折叠态就能预判内容量，不用点开才发现"好长"。
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(colors.textDisabled.copy(alpha = 0.15f))
+                        .padding(horizontal = 6.dp, vertical = 1.dp),
+                ) {
+                    Text(
+                        text  = "${thinkingText.length}字",
+                        style = type.caption,
+                        color = colors.textDisabled,
+                    )
+                }
                 Icon(
                     imageVector        = AppIcons.ExpandMore,
                     contentDescription = if (expanded) "收起" else "展开",
@@ -601,13 +758,37 @@ internal fun ThoughtCard(
                 enter   = expandVertically(tween(250)) + fadeIn(tween(200)),
                 exit    = shrinkVertically(tween(200)) + fadeOut(tween(150)),
             ) {
-                Column {
-                    Spacer(Modifier.height(Spacing.xs))
-                    Text(
-                        text  = thinkingText,
-                        style = type.caption,
-                        color = colors.textSecondary,
+                // 左侧竖线 + 缩进模拟"批注在正文旁"的观感；顶部角标点明
+                // "这是模型原始推理文本，未经改写/摘要"，与折叠卡默认收起的
+                // 定位（戏外决策过程，非必须阅读）互相呼应。
+                Row(
+                    modifier = Modifier
+                        .padding(top = Spacing.xs)
+                        .height(IntrinsicSize.Min),
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .width(1.5.dp)
+                            .fillMaxHeight()
+                            .background(colors.border),
                     )
+                    Column(
+                        modifier = Modifier
+                            .padding(start = Spacing.sm)
+                            .padding(vertical = 2.dp),
+                    ) {
+                        Text(
+                            text     = "原始输出 · 未改写",
+                            style    = type.caption,
+                            color    = colors.textDisabled,
+                            modifier = Modifier.padding(bottom = 4.dp),
+                        )
+                        Text(
+                            text  = thinkingText,
+                            style = type.caption,
+                            color = colors.textSecondary,
+                        )
+                    }
                 }
             }
         }

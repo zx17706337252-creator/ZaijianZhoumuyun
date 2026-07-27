@@ -155,7 +155,9 @@ class ScheduleRepository(
             val toolParams: Map<String, String> = try {
                 val json = JSONObject(job.toolParamsJson)
                 json.keys().asSequence().associateWith { json.getString(it) }
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 emptyMap()
             }
 
@@ -260,7 +262,9 @@ class ScheduleRepository(
                 val baseParams: Map<String, String> = try {
                     val json = JSONObject(job.toolParamsJson)
                     json.keys().asSequence().associateWith { json.getString(it) }
-                } catch (e: Exception) {
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
                     emptyMap()
                 }
                 // P-8 修复：注入 __character_id，工具执行时优先从 params 读取角色 ID，
@@ -272,7 +276,9 @@ class ScheduleRepository(
                 val toolResult = if (tool != null) {
                     try {
                         tool.execute(params)
-                    } catch (e: Exception) {
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (e: Throwable) {
                         // P-2 修复：单任务失败不传播（不再 throw），记录失败结果便于 UI 红点提示，继续下一条
                         ZLog.w(TAG, "[runLocalCompensation] 任务执行异常 jobId=${job.id}", e)
                         ToolResult(toolName = job.toolName, success = false, content = "", error = e.message)
@@ -344,7 +350,9 @@ class ScheduleRepository(
                         } else {
                             WorkManagerScheduler.cancel(ctx, job.id)
                         }
-                    } catch (e: Exception) {
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (e: Throwable) {
                         if (job.repeatIntervalMs != null) {
                             ZLog.w(TAG, "[runLocalCompensation] WorkManager 重新调度失败 jobId=${job.id}", e)
                         }
@@ -403,7 +411,9 @@ class ScheduleRepository(
         val toolParams: Map<String, String> = try {
             val json = org.json.JSONObject(toolParamsJson)
             json.keys().asSequence().associateWith { json.getString(it) }
-        } catch (_: Exception) { emptyMap() }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (_: Throwable) { emptyMap() }
 
         val synced = SupabaseClient.updateScheduledJob(
             id               = id,
@@ -458,7 +468,9 @@ class ScheduleRepository(
                     nextRunAt        = nextRunAt,
                     repeatIntervalMs = repeatIntervalMs,
                 )
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 ZLog.w("ScheduleRepository", "日历事件更新失败（日程已更新）: ${e.message}", e)
             }
         }
@@ -469,7 +481,9 @@ class ScheduleRepository(
                 WorkManagerScheduler.cancel(ctx, id)
                 val delayMs = (nextRunAt - System.currentTimeMillis()).coerceAtLeast(0L)
                 WorkManagerScheduler.enqueue(ctx, id, delayMs)
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 ZLog.w("ScheduleRepository", "WorkManager 重新调度失败（日程已更新）: ${e.message}", e)
             }
         }
@@ -552,7 +566,9 @@ class ScheduleRepository(
                     nextRunAt        = nextRunAt,
                     repeatIntervalMs = repeatIntervalMs,
                 )
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 // 日历同步失败不阻塞主流程，日程已成功写入 Room 和 Supabase
                 ZLog.w("ScheduleRepository", "日历同步失败（日程已创建）: ${e.message}", e)
             }
@@ -563,7 +579,9 @@ class ScheduleRepository(
             try {
                 val delayMs = (nextRunAt - System.currentTimeMillis()).coerceAtLeast(0L)
                 WorkManagerScheduler.enqueue(ctx, jobId, delayMs)
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 ZLog.w("ScheduleRepository", "WorkManager 调度失败（日程已创建）: ${e.message}", e)
             }
         }
@@ -605,7 +623,9 @@ class ScheduleRepository(
         calendarSync?.let { sync ->
             try {
                 sync.deleteEvent(jobId)
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 ZLog.w("ScheduleRepository", "日历事件删除失败（继续删除日程主记录）: ${e.message}", e)
             }
         }
@@ -614,7 +634,9 @@ class ScheduleRepository(
         context?.let { ctx ->
             try {
                 WorkManagerScheduler.cancel(ctx, jobId)
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 ZLog.w("ScheduleRepository", "WorkManager 取消失败（继续删除日程主记录）: ${e.message}", e)
             }
         }
@@ -644,7 +666,9 @@ class ScheduleRepository(
             context?.let { ctx ->
                 try {
                     WorkManagerScheduler.cancel(ctx, job.id)
-                } catch (e: Exception) {
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
                     ZLog.w("ScheduleRepository", "toggleJobWithFullSync(disable): WorkManager 取消失败: ${e.message}", e)
                 }
             }
@@ -653,7 +677,9 @@ class ScheduleRepository(
             calendarSync?.let { sync ->
                 try {
                     sync.deleteEvent(job.id)
-                } catch (e: Exception) {
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
                     ZLog.w("ScheduleRepository", "toggleJobWithFullSync(disable): 日历事件删除失败: ${e.message}", e)
                 }
             }
@@ -667,7 +693,9 @@ class ScheduleRepository(
                 try {
                     val delayMs = (job.nextRunAt - System.currentTimeMillis()).coerceAtLeast(0L)
                     WorkManagerScheduler.enqueue(ctx, job.id, delayMs)
-                } catch (e: Exception) {
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
                     ZLog.w("ScheduleRepository", "toggleJobWithFullSync(enable): WorkManager 入队失败: ${e.message}", e)
                 }
             }
@@ -681,7 +709,9 @@ class ScheduleRepository(
                         nextRunAt        = job.nextRunAt,
                         repeatIntervalMs = job.repeatIntervalMs,
                     )
-                } catch (e: Exception) {
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
                     ZLog.w("ScheduleRepository", "toggleJobWithFullSync(enable): 日历事件创建失败: ${e.message}", e)
                 }
             }

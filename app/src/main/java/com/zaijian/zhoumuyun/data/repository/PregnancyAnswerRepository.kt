@@ -225,7 +225,9 @@ class PregnancyAnswerRepository(
                         previousAnswer  = previousAnswer,
                         newAnswer       = answerText,
                     )
-                } catch (e: Exception) {
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
                     ZLog.e(TAG, "consistencyChecker.check() failed for $questionType[$slotIndex], treating as StillOpen", e)
                     ConsistencyResult.CONTRADICTORY
                 }

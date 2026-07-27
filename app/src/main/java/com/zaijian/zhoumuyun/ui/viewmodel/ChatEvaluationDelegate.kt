@@ -87,7 +87,9 @@ class ChatEvaluationDelegate(
                         characterId = getCurrentCharacterId(),
                         goalId      = goalId,
                     )
-                } catch (e: Exception) {
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
                     ZLog.w("ChatEvaluationDelegate", "maybeDistill 异常（不影响打分结果）", e)
                     null
                 }
@@ -102,7 +104,9 @@ class ChatEvaluationDelegate(
                         )
                     ) }
                 }
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 ZLog.w("ChatEvaluationDelegate", "submitEvaluationScore 异常", e)
             }
         }

@@ -56,7 +56,9 @@ class ChatBackgroundManager(
                         scale   = scale,
                     )
                 )
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 ZLog.e("ChatBackgroundManager", "确认背景裁剪失败", e)
             }
         }
@@ -71,7 +73,9 @@ class ChatBackgroundManager(
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 chatBgStore.setBackgroundUri(charId, uri)
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 ZLog.e("ChatBackgroundManager", "设置聊天背景失败", e)
             }
         }
@@ -84,7 +88,9 @@ class ChatBackgroundManager(
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 chatBgStore.clearBackground(charId)
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 ZLog.e("ChatBackgroundManager", "清除聊天背景失败", e)
             }
         }

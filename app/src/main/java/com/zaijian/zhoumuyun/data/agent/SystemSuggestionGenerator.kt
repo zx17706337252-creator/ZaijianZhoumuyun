@@ -4,6 +4,7 @@ import com.zaijian.zhoumuyun.data.db.AppDatabase
 import com.zaijian.zhoumuyun.data.db.entity.SystemSuggestionEntity
 import com.zaijian.zhoumuyun.domain.SpecialtyEvolutionConfig
 import com.zaijian.zhoumuyun.domain.SpecialtyEvolutionEngine
+import com.zaijian.zhoumuyun.util.ZLog
 import java.util.UUID
 
 /**
@@ -20,9 +21,18 @@ import java.util.UUID
  */
 object SystemSuggestionGenerator {
 
+    // #28 修复：buildHistorySummary 原来对 getUnmerged() 返回的全部未合并摘要
+    // 无条数上限地拼接，单条摘要虽各自 take(150/80) 截断，但摘要数量本身不受
+    // 控制——长期不触发合并周期时未合并摘要可持续累积，拼出的 historySummary
+    // 可能超出 LLM 单次调用的输入长度限制导致调用失败。取最近 N 条即可代表
+    // "最近活跃情况"，getUnmerged() 按 createdAt ASC 排序，故取尾部最新的 N 条。
+    private const val MAX_DIGESTS_IN_SUMMARY = 20
+
     /** 用合并次数（mergedIntoProfile=true 的 StageDigest 总数）作为触发计数依据，
      *  不持久化专门的计数字段——直接查询现有数据推导，避免又新增一个需要维护的字段 */
     suspend fun maybeGenerate(db: AppDatabase, engine: SpecialtyEvolutionEngine, specialtyId: String) {
+        // P1 修复：顶层 try-catch，防止异常中断 DailyPracticeWorker
+        try {
         val profile = db.specialtyProfileDao().getById(specialtyId) ?: return
 
         // 统计该专长目前的待处理建议数量，避免在用户还没来得及看上一条建议时
@@ -55,12 +65,19 @@ object SystemSuggestionGenerator {
                 createdAt = System.currentTimeMillis(),
             )
         )
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            ZLog.e("SystemSuggestionGenerator", "maybeGenerate 异常 specialtyId=$specialtyId", e)
+        }
     }
 
     /** 拼装供 LLM 参考的蒸馏历史摘要（不是原文转储，是结构化的简短统计） */
     private suspend fun buildHistorySummary(db: AppDatabase, specialtyId: String): String {
-        val digests = db.stageDigestDao().getUnmerged(specialtyId) // 取近期还未合并的，作为"最近活跃情况"的样本
-        if (digests.isEmpty()) return ""
+        val allDigests = db.stageDigestDao().getUnmerged(specialtyId) // 取近期还未合并的，作为"最近活跃情况"的样本
+        if (allDigests.isEmpty()) return ""
+        // 按 createdAt ASC 排序，取尾部最新的 MAX_DIGESTS_IN_SUMMARY 条
+        val digests = allDigests.takeLast(MAX_DIGESTS_IN_SUMMARY)
         return buildString {
             digests.forEach { d ->
                 append("阶段摘要（覆盖${d.sourceRecordCount}条记录）：${d.digestContent.take(150)}")

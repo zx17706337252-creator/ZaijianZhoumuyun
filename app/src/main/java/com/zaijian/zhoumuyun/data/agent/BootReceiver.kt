@@ -78,11 +78,11 @@ class BootReceiver : BroadcastReceiver() {
                                 val characterId = json.optInt("characterId", -1)
                                 reminderTool.scheduleAlarm(requestCode, text, triggerAtMs, characterId)
                             }
-                        } catch (_: Exception) {
+                        } catch (_: Throwable) {
                             // 单条提醒文件损坏不影响其他提醒的恢复
                         }
                     }
-            } catch (_: Exception) {
+            } catch (_: Throwable) {
                 // 开机恢复提醒是兜底功能，失败不影响 App 正常使用
             }
         }
@@ -159,7 +159,9 @@ class BootReceiver : BroadcastReceiver() {
                         context         = context.applicationContext,  // 批次1 1-5修复：补 context，让 runLocalCompensation 的 finally 块重新入队逻辑生效
                     )
                     scheduleRepository.runLocalCompensation()
-                } catch (e: Exception) {
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
                     // 与其余开机恢复逻辑一致：单次失败不影响 App 后续正常使用，
                     // 用户进入 App 后 ZaijianApp.onCreate 仍会再次兜底执行。
                 }
@@ -209,7 +211,9 @@ class BootReceiver : BroadcastReceiver() {
                                 WorkManagerScheduler.enqueueWorkflow(context, job.id)
                             }
                             processedJobIds.add(job.id)
-                        } catch (e: Exception) {
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            throw e
+                        } catch (e: Throwable) {
                             // 单条 job 处理失败不影响同批其他 job；未处理的 RUNNING job
                             // 会在用户下次查看任务状态时仍显示为进行中，不会造成数据损坏，
                             // 可后续人工介入，日志里能看出它不在本次已处理列表中。
@@ -223,13 +227,17 @@ class BootReceiver : BroadcastReceiver() {
                                 "成功处理 ${processedJobIds.size} 条，已处理 jobId=$processedJobIds",
                         )
                     }
-                } catch (e: Exception) {
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
                     // 外层兜底：findAllRunning() 本身查询失败等场景，此时连"哪些 job
                     // 需要处理"都不知道，只能整体跳过，用户下次查看任务状态时仍显示
                     // 为进行中，不会造成数据损坏，可后续人工介入。
                     ZLog.w("BootReceiver", "开机恢复 workflow job 整体失败", e)
                 }
-            } catch (_: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 // 静默失败：开机恢复闹钟是兜底功能，单次失败不影响 App 后续正常使用，
                 // 用户进入 App 后 ZaijianApp.onCreate 仍会按需重新调度。
             } finally {

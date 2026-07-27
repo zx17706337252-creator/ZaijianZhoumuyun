@@ -288,7 +288,9 @@ class CompetitionEngine(
                 overallComment = overallComment,
                 success = verdicts.isNotEmpty(),
             )
-        } catch (_: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (_: Throwable) {
             // 解析失败时返回空结果，调用方按"漏评"处理（首次调用会走补评，
             // 补评失败则最终由 judgeRound 的默认值兜底）
             JudgeRoundResult(emptyList(), "", false)
@@ -348,7 +350,9 @@ class CompetitionEngine(
                 selfReasoning = obj.optString("reasoning", "").take(400),
                 success = true,
             )
-        } catch (_: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (_: Throwable) {
             SelfEvalResult(50, "（自评解析失败）", false)
         }
     }

@@ -142,7 +142,9 @@ fun FertileWindowConsentDialog(
             // try-catch 保护，这里是额外一层防御，成本很低。
             try {
                 onAccept()
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 ZLog.e("FertileWindowConsentDialog", "onAccept 回调异常", e)
             }
         }
@@ -161,7 +163,9 @@ fun FertileWindowConsentDialog(
             // W6-04 修复：与 handleAccept() 同理，见上方注释。
             try {
                 onReject()
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 ZLog.e("FertileWindowConsentDialog", "onReject 回调异常", e)
             }
         }

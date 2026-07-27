@@ -86,10 +86,7 @@ import com.zaijian.zhoumuyun.ui.design.AppIcons
 // ─────────────────────────────────────────────────────────────
 
 @Composable
-internal fun AiConfigSection(
-    userName: String,
-    onEditNickname: () -> Unit,
-) {
+internal fun AiConfigSection() {
     val colors  = ZaijianTheme.colors
     val type    = ZaijianTheme.typography
     val context = LocalContext.current
@@ -195,38 +192,6 @@ internal fun AiConfigSection(
                     .padding(Spacing.md),
                 verticalArrangement = Arrangement.spacedBy(Spacing.sm),
             ) {
-                // ── 称呼（窗口1方案B：原独立"用户信息模块"撤销，昵称降级
-                //   为本区块顶部的功能性设置项——只是"AI怎么称呼你"，不是档案）──
-                Text(
-                    text  = "称呼",
-                    style = type.label,
-                    color = colors.textSecondary,
-                )
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(Radius.sm))
-                        .background(colors.bgElevated)
-                        .clickable { onEditNickname() }
-                        .padding(horizontal = Spacing.md, vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                ) {
-                    Text(
-                        text  = userName,
-                        style = type.body,
-                        color = colors.textPrimary,
-                    )
-                    Icon(
-                        imageVector        = AppIcons.ChevronRight,
-                        contentDescription = "编辑称呼",
-                        tint               = colors.textSecondary,
-                        modifier           = Modifier.size(20.dp),
-                    )
-                }
-
-                HorizontalDivider(thickness = 0.5.dp, color = colors.border)
-
                 // ── 提供商选择器 ─────────────────────────────────
                 Text(
                     text  = "提供商",

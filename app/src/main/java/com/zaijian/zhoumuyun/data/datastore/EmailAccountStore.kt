@@ -5,7 +5,7 @@ import android.content.SharedPreferences
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.util.Properties
-import javax.mail.Session
+import jakarta.mail.Session
 
 /**
  * 邮件账号配置（真实收发用）。
@@ -115,7 +115,7 @@ class EmailAccountStore(context: Context) {
             return@withContext EmailTestResult.Failure("配置不完整：邮箱地址 / 授权码均不能为空")
         }
 
-        var store: javax.mail.Store? = null
+        var store: jakarta.mail.Store? = null
         try {
             val props = Properties().apply {
                 put("mail.imap.host", account.provider.imapHost)
@@ -129,9 +129,11 @@ class EmailAccountStore(context: Context) {
             store = session.getStore("imap")
             store.connect(account.provider.imapHost, account.address, account.authCode)
             EmailTestResult.Success
-        } catch (e: javax.mail.AuthenticationFailedException) {
+        } catch (e: jakarta.mail.AuthenticationFailedException) {
             EmailTestResult.Failure("登录失败：邮箱地址或授权码不正确（注意 QQ 邮箱需用「授权码」而非 QQ 登录密码）")
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             val msg = e.message ?: "未知错误"
             val friendly = when {
                 msg.contains("timed out", ignoreCase = true) || msg.contains("timeout", ignoreCase = true) ->

@@ -195,7 +195,9 @@ class RelationshipEngine(
                         createdAt     = now,
                     )
                 )
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 ZLog.w("RelationshipEngine", "记录关系转折点(WORSENED)失败（fromId=$fromId, toId=$toId）", e)
             }
         }
@@ -212,7 +214,9 @@ class RelationshipEngine(
                         createdAt     = now,
                     )
                 )
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 ZLog.w("RelationshipEngine", "记录关系转折点(REPAIRED)失败（fromId=$fromId, toId=$toId）", e)
             }
         }
@@ -268,14 +272,16 @@ class RelationshipEngine(
                 val recent = dao.getRecent("user", characterId.toString(), limit = 2)
                 if (recent.isEmpty()) null
                 else recent.joinToString("；") { it.description }
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 ZLog.w("RelationshipEngine", "读取关系转折点失败（characterId=$characterId）", e)
                 null
             }
         }
 
         return buildString {
-            appendLine("与用户的关系阶段：$stageLabel$suppressionHint")
+            appendLine("与他的关系阶段：$stageLabel$suppressionHint")
             appendLine("Trust ${rel.trust}  Affection ${rel.affection}  Conflict ${rel.conflict}  Dependence ${rel.dependence}  Curiosity ${rel.curiosity}")
             val curiosityHint = if (rel.curiosity >= 70) "，对你充满好奇，主动发问" else ""
             if (conflictHint.isNotEmpty() || dependenceHint.isNotEmpty() || curiosityHint.isNotEmpty()) {
@@ -410,7 +416,9 @@ class RelationshipEngine(
                 try {
                     val recent = dao.getRecent(forCharacterId.toString(), otherId.toString(), limit = 1)
                     recent.firstOrNull()?.description?.let { "，$it" } ?: ""
-                } catch (e: Exception) {
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
                     ZLog.w("RelationshipEngine", "读取角色间转折点失败（from=$forCharacterId, to=$otherId）", e)
                     ""
                 }

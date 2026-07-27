@@ -214,7 +214,9 @@ class RoundtableIdleManager(
                         characterStateForPresence = daughterData.stateLayer.toCharacterStateLayer()
                     }
                 }
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 ZLog.w("RoundtableViewModel", "女儿状态数据查询失败（自发发言），State Layer 渲染将回退到通用描述", e)
             }
         }
@@ -223,7 +225,7 @@ class RoundtableIdleManager(
 
         // 最近 6 条消息作为上下文摘要
         val recentContext = _uiState.value.messages.takeLast(6).joinToString("\n") { msg ->
-            val speaker = if (msg.speakerId == "user") "用户" else msg.speakerName
+            val speaker = if (msg.speakerId == "user") "他" else msg.speakerName
             "[$speaker]: ${msg.content.take(80)}"
         }
 
@@ -248,10 +250,6 @@ class RoundtableIdleManager(
                 identityEntity          = identityDao.getById(initiator.id),
                 coreMemories            = coreMemories,
                 relevantMemories        = emptyList(),
-                // 「称呼」功能性缺陷修复：此前自发发言路径未传 userName，恒为默认值
-                // "你"。与 AppContainer.instance.agentActivityRepo（本文件 362/382 行）
-                // 同一模式：直接引用容器单例，不新增构造参数。
-                userName                = AppContainer.instance.userProfileRepo.getUserName(),
                 presenceActivity        = presenceSnap?.activity ?: "",
                 presenceFocus           = presenceSnap?.goalTitle ?: "",
                 presenceMood            = presenceSnap?.mood?.name ?: "",
@@ -321,7 +319,7 @@ class RoundtableIdleManager(
             } + LLMMessage("user", "（沉默了一会儿，请自然地开口说一句话）")
 
         var fullReply = ""
-        val config = LLMConfig(model = "", maxTokens = 200, temperature = 0.92f, stream = true)
+        val config = LLMConfig(model = "", maxTokens = 50000, temperature = 0.92f, stream = true)
         // v1.39 圆桌工具调用接入：与常规回复路径同语义，暂存本轮工具产出的文件元数据。
         // v66（1.7 P3）：改用 list 收集本轮全部文件，与另外两条路径同步升级。
         val pendingExportedFiles = mutableListOf<String>()
@@ -376,7 +374,7 @@ class RoundtableIdleManager(
                                 )
                             } catch (e: CancellationException) {
                                 throw e
-                            } catch (e: Exception) {
+                            } catch (e: Throwable) {
                                 ZLog.w("RoundtableViewModel", "心迹事件落库失败（不影响主流程）", e)
                             }
                         }
@@ -399,7 +397,7 @@ class RoundtableIdleManager(
                                 )
                             } catch (e: CancellationException) {
                                 throw e
-                            } catch (e: Exception) {
+                            } catch (e: Throwable) {
                                 ZLog.w("RoundtableViewModel", "心迹事件落库失败（不影响主流程）", e)
                             }
                             // v66（1.7 P3）：add 而不是覆盖赋值。
@@ -418,8 +416,11 @@ class RoundtableIdleManager(
             }
         } catch (e: CancellationException) {
             throw e  // P1-11-4 修复：CancellationException 必须 rethrow
-        } catch (e: Exception) {
-            ZLog.w("RoundtableViewModel", "自发发言流式生成中断（msgId=$msgId），已生成长度=${fullReply.length}", e)
+        } catch (e: Throwable) {
+            // catch Throwable 而非 Exception：与私聊 ChatMessageOrchestrator:584 对齐，
+            // 防止工具层 Error 击穿到独立 CoroutineScope 静默终止（idle 自发发言路径更隐蔽）。
+            ZLog.e("RoundtableViewModel", "自发发言流式生成中断（msgId=$msgId），已生成长度=${fullReply.length}", e)
+            _uiState.update { it.copy(error = "回复时遇到问题，请稍后重试。") }
         } finally {
             // P0-02 修复：与 RoundtableBotReplyGenerator.generateBotReply 同一根因——
             // catch(CancellationException) 里的 throw e 会让原本写在 try-catch 之外的
@@ -478,7 +479,9 @@ class RoundtableIdleManager(
                                     tableDataJson = pendingTablePayloadJson,
                                 ).toEntity(rtId)
                             )
-                        } catch (e: Exception) {
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            throw e
+                        } catch (e: Throwable) {
                             ZLog.e("RoundtableViewModel", "自发发言落库失败（msgId=$msgId）", e)
                             _uiState.update { it.copy(error = "消息保存失败，可能会在下次打开时丢失") }
                         }

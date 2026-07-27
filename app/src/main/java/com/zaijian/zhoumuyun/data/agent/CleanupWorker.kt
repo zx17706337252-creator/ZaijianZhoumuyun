@@ -69,7 +69,9 @@ class CleanupWorker(
             )
 
             Result.success()
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             ZLog.e(TAG, "清理任务执行失败，下次定期调度时会重试", e)
             Result.retry()
         }

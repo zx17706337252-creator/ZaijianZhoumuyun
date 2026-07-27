@@ -110,6 +110,7 @@ class ChatToolRegistrar(
         )
         AgentToolRegistry.register(
             ProjectDailyPlannerTool(
+                db         = db,
                 projectDao = db.projectDao(),
                 goalDao    = db.characterGoalDao(),
                 taskDao    = db.taskDao(),
@@ -320,6 +321,7 @@ class ChatToolRegistrar(
             ),
             TaskDelegateTool(
                 providerFn          = providerFn,
+                db                  = db,
                 taskDao             = agentTaskDao,
                 characterIdProvider = { currentCharacterId },
             ),

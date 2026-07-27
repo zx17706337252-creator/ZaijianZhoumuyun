@@ -9,6 +9,8 @@ import com.zaijian.zhoumuyun.data.provider.LLMConfig
 import com.zaijian.zhoumuyun.data.provider.LLMMessage
 import com.zaijian.zhoumuyun.data.provider.ProviderManager
 import com.zaijian.zhoumuyun.data.provider.chatSyncWithRetry
+import androidx.room.withTransaction
+import com.zaijian.zhoumuyun.data.db.AppDatabase
 import com.zaijian.zhoumuyun.util.TimeFormatUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -42,6 +44,7 @@ import java.util.concurrent.TimeUnit
  * 但为保持两条路径参数命名一致，调用方 ProjectViewModel.kt 的 toolParams 已同步改名。
  */
 class ProjectDailyPlannerTool(
+    private val db: AppDatabase,
     private val projectDao: ProjectDao,
     private val goalDao: CharacterGoalDao,
     private val taskDao: TaskDao,
@@ -130,20 +133,23 @@ class ProjectDailyPlannerTool(
             }
 
             val now = System.currentTimeMillis()
-            lines.forEach { line ->
-                taskDao.insert(
-                    TaskEntity(
-                        id            = UUID.randomUUID().toString(),
-                        characterId   = characterId,
-                        projectId     = projectId,
-                        title         = line,
-                        description   = "由成长规划自动生成",
-                        source        = SOURCE,
-                        status        = "PENDING",
-                        createdAt     = now,
-                        updatedAt     = now,
+            // P1 修复：多条 insert 用 withTransaction 包裹，保证原子性
+            db.withTransaction {
+                lines.forEach { line ->
+                    taskDao.insert(
+                        TaskEntity(
+                            id            = UUID.randomUUID().toString(),
+                            characterId   = characterId,
+                            projectId     = projectId,
+                            title         = line,
+                            description   = "由成长规划自动生成",
+                            source        = SOURCE,
+                            status        = "PENDING",
+                            createdAt     = now,
+                            updatedAt     = now,
+                        )
                     )
-                )
+                }
             }
 
             // ⑤ 返回——ScheduledJobWorker 用 content 作为通知标题
@@ -153,8 +159,10 @@ class ProjectDailyPlannerTool(
                 content  = "${charName}为「${project.title}」规划了今日${lines.size}件事",
                 userHint = "正在规划今日成长任务…",
             )
-        } catch (e: Exception) {
-            ToolResult(name, false, "", error = "规划失败：${e.message}")
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            toolFailure(name, "今日任务规划失败，请稍后重试。", "daily_planner_failed", e)
         }
     }
 

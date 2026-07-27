@@ -166,7 +166,6 @@ object PromptOrchestrator {
         identityEntity: CharacterIdentityEntity?,
         coreMemories: List<MemoryEntity> = emptyList(),
         relevantMemories: List<MemoryEntity> = emptyList(),
-        userName: String = "你",
         // ── State Layer（Phase 9）
         presenceActivity: String = "",
         presenceFocus: String = "",
@@ -308,11 +307,10 @@ object PromptOrchestrator {
         val identityBlock = if (!customSystemPrompt.isNullOrEmpty()) {
             customSystemPrompt
         } else if (persona.isEmpty() && speechStyle.isEmpty()) {
-            buildDefaultIdentity(character.name, userName)
+            buildDefaultIdentity(character.name)
         } else {
             buildIdentityBlock(
                 name        = character.name,
-                userName    = userName,
                 boundaries  = boundaries,
                 coreBeliefs = coreBeliefs,
                 fields      = identityFields,
@@ -332,7 +330,7 @@ object PromptOrchestrator {
         // 不会侵入已写好的人设正文。
         val identityBlockWithPregnancy = buildString {
             append(identityBlock)
-            val userIdentityBlock = buildUserIdentityBlock(identityEntity, userName, isRoundtableContext)
+            val userIdentityBlock = buildUserIdentityBlock(identityEntity, isRoundtableContext)
             if (userIdentityBlock.isNotEmpty()) {
                 append("\n\n")
                 append(userIdentityBlock)
@@ -450,8 +448,8 @@ object PromptOrchestrator {
             // 必须同步改另一处，否则两段指令传达的性别事实不一致，比不加双保险还糟。
             val userGenderLabel = parseUserGenderType(identityEntity?.userGender).displayLabel
             if (userGenderLabel != null) {
-                append("【重要·用户性别】与你对话的用户是${userGenderLabel}。")
-                append("在任何情况下，指代用户时必须用")
+                append("【重要·对方性别】和你朝夕相处、正在与你说话的这个人是${userGenderLabel}。")
+                append("在任何情况下，指代TA时必须用")
                 append(if (userGenderLabel == "男性") "「他」" else "「她」")
                 append("，绝对禁止用")
                 append(if (userGenderLabel == "男性") "「她」" else "「他」")
@@ -591,7 +589,7 @@ object PromptOrchestrator {
 
         return buildString {
             appendLine("[当前任务]")
-            appendLine("你正在帮用户完成：$taskType")
+            appendLine("你正在帮TA完成：$taskType")
             if (currentStep != null) appendLine("当前步骤：$currentStep")
             if (toolResults.isNotEmpty()) {
                 appendLine()
@@ -604,7 +602,7 @@ object PromptOrchestrator {
             }
             if (taskCompleted) {
                 appendLine()
-                append("任务已完成。请用你自己的语气告知用户结果，不要提及工具或技术细节。")
+                append("任务已完成。请用你自己的语气告知TA结果，不要提及工具或技术细节。")
             }
         }.trimEnd()
     }
@@ -820,7 +818,7 @@ ${nameStr}最近状态有些不同，你注意到了，
                 } else {
                     // RESPOND_USER / INFLUENCED_BY_BOT：软提示，角色自由决定是否接话
                     appendLine("以上是本轮其他人的发言，仅供参考。")
-                    append("你可以完全无视她们、直接回应用户；也可以在自然的地方顺带提一句对某人发言的看法——完全取决于你的性格和此刻的状态。不要刻意表态，不要重复她们说过的话。")
+                    append("你可以完全无视她们、直接回应他；也可以在自然的地方顺带提一句对某人发言的看法——完全取决于你的性格和此刻的状态。不要刻意表态，不要重复她们说过的话。")
                 }
             }
             if (inConvergencePhase) {
@@ -1131,7 +1129,7 @@ ${nameStr}最近状态有些不同，你注意到了，
      */
     private fun buildMemoryGuidelineBlock(): String =
         "【记忆使用准则】memory_write 仅写锚点：身份硬事实、有明确时间/行为的承诺、" +
-        "关系重大转折、用户要求记住的事；日常情绪/偏好/寒暄改写进 narrative_memory_update " +
+        "关系重大转折、他要求记住的事；日常情绪/偏好/寒暄改写进 narrative_memory_update " +
         "或 user_impression_update，不单独建条。多数轮次什么都不用记是默认状态。" +
         "narrative_memory_update 是阶段日志（≤1500字）：延续话题扩写最新一条，换话题追加" +
         "新条目并标时间段，不每轮整段重写；旧阶段随篇幅需要自行压缩成一两句话。"
@@ -1150,6 +1148,15 @@ ${nameStr}最近状态有些不同，你注意到了，
      * 每轮对话都点名称呼——量太多、太机械反而出戏。所以措辞明确引导
      * "自然带出、不刻意每次点出"。
      *
+     * 「称呼」功能删除（窗口7后置修复）：此前全局默认称呼（"旅人"）会作为
+     * ${userName} 注入本函数拼出的句子，与角色自己配置的私下/公开称谓叠加，
+     * 产生"旅人是你的老公"这类语义歧义句式——"旅人"读起来像用户的本名，
+     * 与后面的关系判断词拼在一起会被误读成一句奇怪的身份宣称，而不是
+     * "你和用户之间是配偶关系"这层单纯的事实陈述。经确认，全局称呼从未
+     * 真正影响 AI 对用户的称呼方式（AI 怎么称呼用户完全由下面的
+     * activeLabel/角色自身语言习惯决定），因此不再注入任何名字，
+     * 统一用"用户"这个通用指代词，关系描述完全交给角色自己的称谓字段。
+     *
      * 零开销：性别和称谓都未配置时返回空字符串，不产生任何 Token 开销
      * （这也是 userGender 默认值只在 Entity 层生效、这里读到的已经是
      * "MALE"兜底值时仍会正常注入的原因——存量角色不该继续裸奔）。
@@ -1159,7 +1166,6 @@ ${nameStr}最近状态有些不同，你注意到了，
      */
     private fun buildUserIdentityBlock(
         identityEntity: CharacterIdentityEntity?,
-        userName: String,
         isRoundtableContext: Boolean,
     ): String {
         // 复核意见五·双保险之二：此处与 buildSystemPrompt 开头的强制性别块
@@ -1174,12 +1180,12 @@ ${nameStr}最近状态有些不同，你注意到了，
         if (genderLabel == null && activeLabel == null) return ""
 
         return buildString {
-            appendLine("[关于${userName}]")
+            appendLine("[关于他]")
             if (genderLabel != null) {
-                appendLine("${userName}是${genderLabel}，涉及性别指代（他/她、先生/女士等）时按${genderLabel}处理，不要用错。")
+                appendLine("和你相处、正在与你说话的这个人是${genderLabel}，涉及性别指代（他/她、先生/女士等）时按${genderLabel}处理，不要用错。")
             }
             if (activeLabel != null) {
-                append("${userName}是你的${activeLabel}——这是你们早已确立的关系身份，不是需要交代的新信息。")
+                append("他是你的${activeLabel}——这是你们早已确立的关系身份，不是需要交代的新信息。")
                 append("像日常相处一样自然带出这层关系即可，不必每轮回复都刻意点出称呼，")
                 appendLine("只在符合语境时使用（比如开场问候、情绪浓烈的瞬间），大多数时候正常对话即可。")
                 if (isRoundtableContext && reason != null && publicLabel != privateLabel) {
@@ -1199,13 +1205,13 @@ ${nameStr}最近状态有些不同，你注意到了，
     private fun buildDaughterAwarenessLine(characterName: String, characterId: Int, daughterPresentInScene: Boolean): String {
         if (!daughterPresentInScene) return ""
         if (characterId !in 1..6) return ""
-        return "【重要】当前场景里在场的女儿角色是我（$characterName）的女儿，我是她的妈妈，我应该用妈妈的口吻和身份与她互动，而不是以姐姐或陌生人的身份；这个身份认知只适用于这个女儿角色，不适用于用户本人。"
+        return "【重要】当前场景里在场的女儿角色是我（$characterName）的女儿，我是她的妈妈，我应该用妈妈的口吻和身份与她互动，而不是以姐姐或陌生人的身份；这个身份认知只适用于这个女儿角色，不适用于他本人。"
     }
 
-    private fun buildDefaultIdentity(characterName: String, userName: String) = """
+    private fun buildDefaultIdentity(characterName: String) = """
 你是$characterName。
 
-请用自然、有温度的方式与${userName}对话。保持角色一致，不要破坏第四堵墙。
+请用自然、有温度的方式与他对话。保持角色一致，不要破坏第四堵墙。
 不要提及你是 AI，不要提及模型名称。
 
 回复长度：自然对话节奏，不过度简短也不过度冗长。
@@ -1214,12 +1220,11 @@ ${nameStr}最近状态有些不同，你注意到了，
 
     // W2 审查问题3（参数膨胀，此前已增至 20 个）：已落地重构——18 个字符串字段
     // 封装为 IdentityPromptFields data class（见文件顶部），此函数签名简化为
-    // name / userName / boundaries / coreBeliefs（List<String>，需 JSON 解析，
-    // 语义不同，仍独立传参）/ fields 共 5 个参数。新增字段只需改 data class +
+    // name / boundaries / coreBeliefs（List<String>，需 JSON 解析，
+    // 语义不同，仍独立传参）/ fields 共 4 个参数。新增字段只需改 data class +
     // buildSystemPrompt 构造处，不再需要同步修改此签名。
     private fun buildIdentityBlock(
         name: String,
-        userName: String,
         boundaries: List<String>,
         coreBeliefs: List<String>,
         fields: IdentityPromptFields,
@@ -1235,7 +1240,7 @@ ${nameStr}最近状态有些不同，你注意到了，
             appendLine()
         }
         if (fields.attitudeToUser.isNotEmpty()) {
-            appendLine("你对${userName}的态度：${fields.attitudeToUser}")
+            appendLine("你对他的态度：${fields.attitudeToUser}")
             appendLine()
         }
         if (boundaries.isNotEmpty()) {
@@ -1281,7 +1286,7 @@ ${nameStr}最近状态有些不同，你注意到了，
             appendLine()
         }
         if (fields.userImpression.isNotEmpty()) {
-            appendLine("她对${userName}的印象：${fields.userImpression}")
+            appendLine("她对他的印象：${fields.userImpression}")
             appendLine()
         }
 
@@ -1347,7 +1352,7 @@ ${nameStr}最近状态有些不同，你注意到了，
             val arr = org.json.JSONArray(json)
             (0 until arr.length()).map { arr.getString(it) }.filter { it.isNotBlank() }
                 .takeIf { it.isNotEmpty() }
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
             null
         }
     }

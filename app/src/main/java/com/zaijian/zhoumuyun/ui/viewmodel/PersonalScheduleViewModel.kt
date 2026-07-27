@@ -239,7 +239,7 @@ class PersonalScheduleViewModel(application: Application) : AndroidViewModel(app
             val json = JSONObject(job.toolParamsJson)
             json.keys().asSequence()
                 .joinToString(",") { k -> "$k=\"${json.getString(k)}\"" }
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
             ""
         }
         // 批次4：按 job.toolName 是否 == 哨兵值映射 TaskKind。
@@ -485,7 +485,9 @@ class PersonalScheduleViewModel(application: Application) : AndroidViewModel(app
                     )
                 }
                 _draft.value = null
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 // P2-29 修复：保存失败时保留草稿，让用户可以重试或修改后再次保存，
                 // 避免辛苦填写的日程参数因为一次网络错误就永久丢失。
                 ZLog.w("PersonalScheduleVM", "saveDraft 失败", e)
@@ -523,7 +525,9 @@ class PersonalScheduleViewModel(application: Application) : AndroidViewModel(app
         viewModelScope.launch {
             try {
                 scheduleRepository.toggleJobWithFullSync(job)
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 ZLog.e("PersonalScheduleViewModel", "切换日程状态失败 jobId=${job.id}", e)
                 _uiState.update { it.copy(error = "切换失败：${e.message}") }
             }

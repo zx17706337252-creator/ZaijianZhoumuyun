@@ -44,7 +44,9 @@ import java.io.PrintWriter
  *
  * ## 性能
  * - 不阻塞调用方：`log()` 是 `suspend fun`，走 `Dispatchers.IO`
- * - 日志超长自动截断（单条上限 [MAX_ENTRY_CHARS] = 4KB），避免大 payload 撑爆日志
+ * - 单条日志不做诊断性截断，完整保留 message + 堆栈；只在
+ *   [HARD_SAFETY_CAP_CHARS]（约 200KB）这个远超正常场景的失控防线上兜底，
+ *   避免误把超大 payload 整段写入日志把本地存储写爆
  *
  * ## 导出
  * [exportLog] 返回日志文件的 [File]，调用方可通过 FileProvider 分享。
@@ -55,8 +57,13 @@ object AgentLog {
     /** 当前日志文件最大字节数，超过则滚动。 */
     private const val MAX_FILE_BYTES = 2L * 1024 * 1024  // 2MB
 
-    /** 单条日志最大字符数，超过截断（避免大 payload 撑爆日志）。 */
-    private const val MAX_ENTRY_CHARS = 4096
+    /**
+     * 单条日志的失控防线上限——不是为了保证可读性而做的诊断性截断
+     * （那个已经按用户要求去掉了），只是防止极端情况（比如误把整段数据库
+     * dump 或超大 payload 写进一条日志）把本地存储写爆。
+     * 设得远高于任何正常日志场景（堆栈、JSON payload 等），正常使用不会触发。
+     */
+    private const val HARD_SAFETY_CAP_CHARS = 200_000  // 约 200KB 文本
 
     /** 日志文件名。 */
     private const val LOG_FILE_NAME = "agent_log.txt"
@@ -76,10 +83,20 @@ object AgentLog {
         writeLog("WARN", tag, message, null)
     }
 
-    /** 错误（工具失败/超时/异常堆栈）。 */
+    /** 警告（带堆栈，供 ZLog.w 转发等场景使用）。堆栈完整保留，不做预截断。 */
+    suspend fun warn(tag: String, message: String, throwable: Throwable?) {
+        val fullMessage = if (throwable != null) {
+            "$message\n  ${throwable.stackTraceString}"
+        } else {
+            message
+        }
+        writeLog("WARN", tag, fullMessage, null)
+    }
+
+    /** 错误（工具失败/超时/异常堆栈）。堆栈完整保留，不做预截断。 */
     suspend fun error(tag: String, message: String, throwable: Throwable? = null) {
         val fullMessage = if (throwable != null) {
-            "$message\n  ${throwable.stackTraceString.take(MAX_ENTRY_CHARS)}"
+            "$message\n  ${throwable.stackTraceString}"
         } else {
             message
         }
@@ -122,7 +139,10 @@ object AgentLog {
             val ctx = appContext ?: return@withLock
             val logFile = getLogFile(ctx)
 
-            // 滚动检查：当前文件超过上限，滚动到 .old
+            // 滚动检查：当前文件超过上限，滚动到 .old。
+            // 单条日志有 HARD_SAFETY_CAP_CHARS（约 200KB 字符，UTF-8 最坏情况
+            // 约 600KB 字节）的失控防线，远小于这里的 2MB 文件阈值，所以不存在
+            // "单条日志本身就超过文件滚动阈值"的情况，滚动检查逻辑保持简单。
             if (logFile.exists() && logFile.length() > MAX_FILE_BYTES) {
                 val oldFile = getOldLogFile(ctx)
                 if (oldFile.exists()) oldFile.delete()
@@ -132,24 +152,30 @@ object AgentLog {
             // 确保目录存在
             logFile.parentFile?.mkdirs()
 
-            // 写入
-            val timestamp = TimeFormatUtils.formatLogTimestamp(System.currentTimeMillis())
-            val truncated = if (message.length > MAX_ENTRY_CHARS) {
-                "${message.take(MAX_ENTRY_CHARS)}...(截断，共 ${message.length} 字符)"
+            // 写入：不做诊断性截断（4096 字符的旧上限已移除），完整保留
+            // message + 堆栈。只保留一个远高于正常场景的失控防线——
+            // 防止误把整段数据库 dump 或超大 payload 写进日志把本地存储写爆，
+            // 这个上限本身不是为了"保护日志可读性"，只是最后兜底。
+            val safe = if (message.length > HARD_SAFETY_CAP_CHARS) {
+                "${message.take(HARD_SAFETY_CAP_CHARS)}\n  ...(单条日志超过 $HARD_SAFETY_CAP_CHARS 字符安全上限，" +
+                    "已截断，原文共 ${message.length} 字符——这是极端保护阈值，正常日志不会触发)"
             } else {
                 message
             }
-            val line = "[$timestamp] [$level] [$tag] $truncated\n"
+
+            val timestamp = TimeFormatUtils.formatLogTimestamp(System.currentTimeMillis())
+            val line = "[$timestamp] [$level] [$tag] $safe\n"
 
             FileOutputStream(logFile, /* append = */ true).use { fos ->
                 fos.write(line.toByteArray(Charsets.UTF_8))
             }
 
-            // 同时输出到 logcat（方便 adb 调试）
+            // 同时输出到 logcat（方便 adb 调试）。logcat 本身对单条有其自身长度
+            // 限制，这里输出不影响已经完整落盘的文件内容。
             when (level) {
-                "ERROR" -> Log.e(tag, truncated)
-                "WARN"  -> Log.w(tag, truncated)
-                else    -> Log.i(tag, truncated)
+                "ERROR" -> Log.e(tag, safe)
+                "WARN"  -> Log.w(tag, safe)
+                else    -> Log.i(tag, safe)
             }
         }
     }

@@ -86,7 +86,7 @@ object SupabaseClient {
             }
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e  // S3问题2修复：rethrow，避免吞掉协程取消信号
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             ZLog.w("SupabaseClient", "upsertScheduledJob failed", e)
             false
         }
@@ -137,7 +137,7 @@ object SupabaseClient {
                 results
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e  // S3问题2修复：rethrow，避免吞掉协程取消信号
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 ZLog.w("SupabaseClient", "fetchUnreadResults failed", e)
                 emptyList()
             } finally {
@@ -160,7 +160,7 @@ object SupabaseClient {
                 code in 200..299
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e  // S3问题2修复：rethrow，避免吞掉协程取消信号
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 ZLog.w("SupabaseClient", "markResultRead failed", e)
                 false
             } finally {
@@ -180,7 +180,7 @@ object SupabaseClient {
             code in 200..299
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e  // S3问题2修复：rethrow，避免吞掉协程取消信号
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             ZLog.w("SupabaseClient", "deleteScheduledJob failed", e)
             false
         } finally {
@@ -233,7 +233,7 @@ object SupabaseClient {
             }
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e  // S3问题2修复：rethrow，避免吞掉协程取消信号
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             ZLog.w("SupabaseClient", "updateScheduledJob failed", e)
             false
         }
@@ -274,7 +274,7 @@ object SupabaseClient {
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e  // S3问题2修复：rethrow，避免吞掉协程取消信号
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 ZLog.w("SupabaseClient", "FCM token upload failed", e)
                 false
             }

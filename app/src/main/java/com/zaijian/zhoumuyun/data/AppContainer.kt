@@ -34,7 +34,6 @@ import com.zaijian.zhoumuyun.data.repository.RoundtableMessageRepository
 import com.zaijian.zhoumuyun.data.repository.ScheduleRepository
 import com.zaijian.zhoumuyun.data.repository.SpecialtyProfileRepository
 import com.zaijian.zhoumuyun.data.repository.TaskRepository
-import com.zaijian.zhoumuyun.data.repository.UserProfileRepository
 import com.zaijian.zhoumuyun.data.repository.WorkflowRepository
 import com.zaijian.zhoumuyun.data.repository.AgentActivityRepository
 import com.zaijian.zhoumuyun.data.repository.CapabilityPanelRepository
@@ -109,14 +108,6 @@ class AppContainer private constructor(context: Context) {
     // ProfileScreen（设置入口）都通过 AppContainer.instance 引用同一份实例。
     val splashBackgroundDataStore: SplashBackgroundDataStore = SplashBackgroundDataStore(context)
 
-    // 「称呼」功能性缺陷修复：全项目原先没有 Repository 层封装 SharedPreferences
-    // ("user_profile")，ProfileScreen.kt 直接裸持有读写，四条真实对话路径
-    // （ChatMessageOrchestrator/RoundtableBotReplyGenerator/RoundtableIdleManager/
-    // AgentTaskJobExecutor）均未接入，buildSystemPrompt 的 userName 参数恒为默认值
-    // "你"，「称呼」设置对 AI 完全不生效。与其余 DataStore/Repository 同一持有模式：
-    // 容器构造函数收到的 context 直接构造单例，ProfileScreen（写）与四条调用路径
-    // （读）共用同一实例，key 名/默认值只在 UserProfileRepository 内部一处硬编码。
-    val userProfileRepo: UserProfileRepository = UserProfileRepository(context)
 
     // 阶段2 S-1 收尾：TimelineViewModel 原先本地独立构造，构造参数与此处完全
     // 一致，已切换为引用此实例。
@@ -574,7 +565,7 @@ class AppContainer private constructor(context: Context) {
                 // 必须重新抛出：结构化并发约定要求取消信号不能被吞掉
                 // （与 FertileWindowConsentJudge/UserConsentIntentJudge 同款处理）。
                 throw e
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 ZLog.e("AppContainer", "竞争引擎装配失败，competitionEngine/competitionRoundManager 保持 null", e)
                 // 不重新抛出：装配失败不应该导致 App 启动流程或 Provider 配置
                 // 变更回调所在的协程崩溃。competitionEngine 保持 null，下次

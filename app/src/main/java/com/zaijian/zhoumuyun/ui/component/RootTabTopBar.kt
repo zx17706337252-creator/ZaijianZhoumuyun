@@ -60,11 +60,15 @@ fun RootTabTopBar(
                 color = colors.borderSubtle,
                 shape = RoundedCornerShape(0.dp),
             )
-            .statusBarsPadding()
+            // Fix-顶栏点击穿透（复查修复，同 ChatHeader.kt 同一根因）：clickable 必须
+            // 放在 statusBarsPadding() 之前，否则命中区域只覆盖状态栏以下的部分，
+            // 状态栏那一条视觉上是顶栏背景的一部分（background/border 画满整个外层
+            // 尺寸），触摸却会穿透到下方页面内容。
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication        = null,
-            ) {},
+            ) {}
+            .statusBarsPadding(),
     ) {
         Row(
             modifier          = Modifier

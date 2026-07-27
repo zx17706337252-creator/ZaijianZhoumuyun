@@ -60,7 +60,9 @@ object PregnancySettlementScheduler {
                 memoryRepo    = memoryRepo,
                 daughterRepo  = daughterRepo,
             )
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             ZLog.w("PregnancySettlementScheduler", "立即结算检查失败", e)
         }
     }

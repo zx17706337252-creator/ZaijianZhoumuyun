@@ -369,7 +369,7 @@ private fun shareFile(context: android.content.Context, file: java.io.File) {
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
         context.startActivity(Intent.createChooser(intent, "分享文件"))
-    } catch (e: Exception) {
+    } catch (e: Throwable) {
         com.zaijian.zhoumuyun.util.ZLog.e("FileVaultScreen", "分享文件失败：${file.absolutePath}", e)
         android.widget.Toast.makeText(context, "无法分享该文件：${e.message?.take(60)}", android.widget.Toast.LENGTH_LONG).show()
     }

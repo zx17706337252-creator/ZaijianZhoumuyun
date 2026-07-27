@@ -64,6 +64,16 @@ fun BriefingCharacterCard(entry: BriefingCharacterEntry, modifier: Modifier = Mo
                     statusType      = StatusType.OFFLINE,
                     enableBreath    = false,
                     size            = AvatarSize.shelf,
+                    // 简报页头像是"过去 7 天"的静态历史汇总，不代表角色当前
+                    // 是否在线，之前传 StatusType.OFFLINE 只是为了不显示状态环，
+                    // 但 BreathingAvatar 内部 OFFLINE 会触发 50% 灰蓝遮罩
+                    // （Palette.OfflineOverlay），把角色专属色（蒂法酒红、
+                    // 露娜浅蓝等）全部拉灰拉暗——这是简报页头像看起来
+                    // 寡淡无生气的直接原因。showStatusIndicator = false 会让
+                    // BreathingAvatar 完全跳过状态环/状态点/离线灰遮罩三者
+                    // （见 BreathingAvatar.kt 第 470/489 行判断），效果上和
+                    // "不显示状态环"这个原始意图完全一致，但不再连带拉灰头像。
+                    showStatusIndicator = false,
                 )
 
                 Spacer(Modifier.width(Spacing.sm))

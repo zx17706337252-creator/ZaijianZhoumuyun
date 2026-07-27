@@ -139,7 +139,7 @@ class JudgeProfileRepository(
                 if (trait != entryText) newArr.put(obj)
             }
             newArr.toString()
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
             json
         }
     }

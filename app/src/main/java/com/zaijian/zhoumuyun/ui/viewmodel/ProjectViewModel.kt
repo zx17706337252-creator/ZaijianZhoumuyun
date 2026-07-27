@@ -142,7 +142,7 @@ class ProjectViewModel(application: Application) : AndroidViewModel(application)
      */
     private inline fun <T> safeRun(tag: String, block: () -> T): T? = try {
         block()
-    } catch (e: Exception) {
+    } catch (e: Throwable) {
         ZLog.w("ProjectVM", "$tag 失败", e)
         null
     }
@@ -151,13 +151,17 @@ class ProjectViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             val ids = try {
                 daughterCharacterRepo.getAllDaughterCharacterIds()
-            } catch (_: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (_: Throwable) {
                 emptyList()
             }
             val configs = ids.mapNotNull { id ->
                 try {
                     daughterCharacterRepo.getCharacterConfig(id)
-                } catch (_: Exception) {
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (_: Throwable) {
                     null
                 }
             }

@@ -10,6 +10,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -29,6 +30,10 @@ import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
  * @param isTruncated Excel 闪退修复：数据是否因超过 FilePreviewParser 的行数上限
  *   被截断（只在 xlsx 只读场景可能为 true）。为 true 时顶部展示提示条，
  *   避免用户误以为文件本身只有这么多行数据。
+ * @param sheetNames xlsx 多 sheet 支持：全部 sheet 显示名；size<=1 时不展示切换标签
+ *   （csv/单 sheet xlsx 场景）。
+ * @param activeSheetIndex 当前展示的是第几个 sheet（0-based）。
+ * @param onSheetSelect 点击某个 sheet 标签的回调，由上层触发重新解析。
  * @param onSave 保存回调（editable=true 时显示保存按钮）
  */
 @Composable
@@ -37,6 +42,9 @@ internal fun TablePreviewEditor(
     rows: List<List<String>>,
     editable: Boolean,
     isTruncated: Boolean = false,
+    sheetNames: List<String> = emptyList(),
+    activeSheetIndex: Int = 0,
+    onSheetSelect: (Int) -> Unit = {},
     onSave: (List<String>, List<List<String>>) -> Unit,
 ) {
     val colors = ZaijianTheme.colors
@@ -50,6 +58,37 @@ internal fun TablePreviewEditor(
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
+        // xlsx 多 sheet 支持：多于一个 sheet 时展示可横滑的切换标签栏。
+        if (sheetNames.size > 1) {
+            val safeIndex = activeSheetIndex.coerceIn(0, sheetNames.lastIndex)
+            ScrollableTabRow(
+                selectedTabIndex = safeIndex,
+                containerColor = Color.Transparent,
+                contentColor = colors.accent,
+                edgePadding = Spacing.screenHorizontal,
+                divider = {
+                    HorizontalDivider(color = colors.borderSubtle)
+                },
+            ) {
+                sheetNames.forEachIndexed { index, name ->
+                    Tab(
+                        selected = index == safeIndex,
+                        onClick = { onSheetSelect(index) },
+                        text = {
+                            Text(
+                                text = name,
+                                style = type.label,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        },
+                        selectedContentColor = colors.accent,
+                        unselectedContentColor = colors.textSecondary,
+                    )
+                }
+            }
+        }
+
         // Excel 闪退修复：截断提示条，仅在 isTruncated=true（超出解析行数上限）时展示。
         if (isTruncated) {
             Row(

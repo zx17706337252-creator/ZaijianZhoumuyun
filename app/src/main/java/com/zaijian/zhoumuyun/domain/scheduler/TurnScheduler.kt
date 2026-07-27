@@ -393,7 +393,7 @@ object TurnScheduler {
         parseAIScheduleResponse(raw, ctx, maxSpeakers)
     } catch (e: kotlinx.coroutines.CancellationException) {
         throw e  // S2审查修复：必须 rethrow，保证协程取消信号正常向上传播，不被吞掉
-    } catch (_: Exception) {
+    } catch (_: Throwable) {
         scheduleHeuristic(ctx)
     }
 
@@ -443,7 +443,7 @@ $botsDesc
 
         val arr: JSONArray = try {
             JSONObject(cleaned).getJSONArray("speakers")
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
             // JSON 结构不合法 → 直接 fallback 启发式
             return scheduleHeuristic(ctx)
         }

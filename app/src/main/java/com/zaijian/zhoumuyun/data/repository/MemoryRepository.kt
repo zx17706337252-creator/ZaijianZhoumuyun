@@ -306,7 +306,9 @@ class MemoryRepository(
         val primaryFts = buildFtsQueryWordLevel(query)
         val primaryResults = try {
             memoryDao.searchGroupByFts(roundtableId, primaryFts, limit * 2)
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             emptyList()
         }
         val scored = primaryResults
@@ -320,7 +322,9 @@ class MemoryRepository(
         val fallbackFts = buildFtsQuery(query)
         val fallbackResults = try {
             memoryDao.searchGroupByFts(roundtableId, fallbackFts, limit * 2)
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             emptyList()
         }
         return fallbackResults
@@ -605,7 +609,9 @@ class MemoryRepository(
         val l2MemoryIds = if (queryTags.isNotEmpty()) {
             try {
                 memoryTagDao.searchByTags(characterId, queryTags, limit)
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 emptyList()
             }
         } else emptyList()
@@ -619,7 +625,9 @@ class MemoryRepository(
                            else buildFtsQueryWordLevel(ftsRawQuery)
             try {
                 memoryDao.searchByFts(characterId, ftsQuery, limit * 2)
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 emptyList()
             }
         } else emptyList()
@@ -631,7 +639,9 @@ class MemoryRepository(
             l2MemoryIds.mapNotNull { result ->
                 try {
                     memoryDao.getById(result.memoryId)
-                } catch (e: Exception) { null }
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Throwable) { null }
             }
         } else emptyList()
 
@@ -715,7 +725,7 @@ class MemoryRepository(
                 val u = java.util.UUID.fromString(uuid)
                 val combined = (u.mostSignificantBits xor u.leastSignificantBits) and 0x7FFF_FFFFL
                 combined.toInt().let { if (it == 0) 1 else it }
-            } catch (_: Exception) {
+            } catch (_: Throwable) {
                 // 非标准 UUID 格式兜底：取绝对值哈希，0 替换为 1
                 uuid.hashCode().let { h -> if (h <= 0) -(h - 1) else h }
             }

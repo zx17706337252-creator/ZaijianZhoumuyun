@@ -145,18 +145,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         projectRepo      = projectRepo,
     )
 
-    init {
-        evaluationDelegate.rebuildEngines()
-        ProviderManager.instance.addOnProviderConfigChangedListener(evaluationDelegate.providerConfigListener)
-        toolRegistrar.registerStaticTools()
-        // 文档发送方式：启动时订阅持久化值，覆盖 ChatUiState 默认值（true=合并）。
-        viewModelScope.launch {
-            fileDeliveryStore.attachTogetherFlow.collect { together ->
-                _uiState.update { it.copy(attachFilesTogether = together) }
-            }
-        }
-    }
-
     // ── 孕期 + 背景图 + 女儿注册 ────────────────────────────────
     private val chatBgStore = ChatBackgroundDataStore(getApplication())
 
@@ -286,7 +274,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         projectRepo                   = projectRepo,
         workflowRepo                  = workflowRepo,
         eventRepo                     = eventRepo,
-        getUserName                   = { AppContainer.instance.userProfileRepo.getUserName() },
         pregnancyDelegate             = pregnancyDelegate,
         agentRelationEngine           = agentRelationEngine,
         daughterGenerator             = daughterGenerator,
@@ -301,6 +288,24 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         loadMessages                  = { sessionDelegate.loadMessages(it) },
         MAX_HISTORY_CHARS             = MAX_HISTORY_CHARS,
     )
+
+    // 崩溃修复：init 块原先插在字段声明中间（evaluationDelegate 之后、githubConfigStore
+    // 之前），但块内访问的 fileDeliveryStore 声明在文件更靠后的位置——Kotlin 类主体按
+    // 声明顺序初始化，init 块在 fileDeliveryStore 赋值之前执行，此时访问
+    // fileDeliveryStore.attachTogetherFlow 会拿到 null 引用，NPE 崩溃（ChatViewModel 是
+    // App 内单例，首次构造即触发，表现为一点开角色私聊就闪退）。
+    // 移到全部字段声明完成之后，保证 init 块内引用的所有属性都已初始化。
+    init {
+        evaluationDelegate.rebuildEngines()
+        ProviderManager.instance.addOnProviderConfigChangedListener(evaluationDelegate.providerConfigListener)
+        toolRegistrar.registerStaticTools()
+        // 文档发送方式：启动时订阅持久化值，覆盖 ChatUiState 默认值（true=合并）。
+        viewModelScope.launch {
+            fileDeliveryStore.attachTogetherFlow.collect { together ->
+                _uiState.update { it.copy(attachFilesTogether = together) }
+            }
+        }
+    }
 
     // ── 公共 API（委托转发 + trivial state updates）──────────────
 

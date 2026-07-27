@@ -166,7 +166,7 @@ class UserConsentIntentJudge(
                 "REFUSAL" -> ConsentJudgeResult.REFUSAL
                 else      -> ConsentJudgeResult.UNCLEAR
             }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             null
         }
         if (fromJson != null) return fromJson

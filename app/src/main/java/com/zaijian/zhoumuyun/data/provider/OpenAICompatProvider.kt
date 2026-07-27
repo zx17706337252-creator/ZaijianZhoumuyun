@@ -5,6 +5,8 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.filterIsInstance
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
@@ -43,7 +45,29 @@ class OpenAICompatProvider(
         messages: List<LLMMessage>,
         systemPrompt: String,
         config: LLMConfig,
-    ): Flow<String> = callbackFlow {
+    ): Flow<String> =
+        // P0-5 修复：chat() 现在委托给 chatStream()，只保留 TextDelta 的文本部分。
+        // 这样所有 SSE 解析逻辑只有一份（在 chatStream 里），避免重复维护。
+        chatStream(messages, systemPrompt, config)
+            .filterIsInstance<ChatStreamItem.TextDelta>()
+            .map { it.text }
+
+    /**
+     * 带元数据的流式输出（P0-5 修复）。
+     *
+     * 与 [chat] 的差异：在流结束时额外 emit [ChatStreamItem.FinishReason]，
+     * 携带 SSE 最后一个 chunk 的 `finish_reason` 字段。调用方据此判断是否
+     * 被 maxTokens 截断（`finish_reason == "length"`）。
+     *
+     * 原先 chat() 直接返回 `Flow<String>`，SSE 解析里只读 `delta.content`，
+     * 完全忽略 `finish_reason`——截断和正常结束无法区分，是"文档发送失败但
+     * 无任何报错记录"的协议层根因之一。
+     */
+    override suspend fun chatStream(
+        messages: List<LLMMessage>,
+        systemPrompt: String,
+        config: LLMConfig,
+    ): Flow<ChatStreamItem> = callbackFlow {
         // 用一个后台 Job 做阻塞 IO 读取，awaitClose 负责取消它。
         // 这样 callbackFlow 生命周期与 IO 线程完全对齐：
         //   - 读取正常结束 → close()，下方 job 内部会先 flush 未发送的推理内容
@@ -74,6 +98,11 @@ class OpenAICompatProvider(
                 // 首次出现 content 时一次性 flush，之后 content 正常逐 chunk 流式 emit
                 val reasoningAccumulated = StringBuilder()
                 var reasoningFlushed = false
+                // P0-5 修复：捕获 SSE 最后一个 chunk 的 finish_reason。
+                // OpenAI 协议在流末尾通过此字段标识结束原因：
+                //   stop=正常结束, length=maxTokens截断, content_filter=被过滤
+                // 原先完全未读取，截断和正常结束无法区分。
+                var capturedFinishReason: String? = null
                 BufferedReader(InputStreamReader(conn.inputStream, "UTF-8")).use { reader ->
                     while (true) {
                         // L-2 修复：原先用 var line: String? + line!! 强制断言，
@@ -91,32 +120,57 @@ class OpenAICompatProvider(
                         }
                         if (data == "[DONE]" || data.isEmpty()) continue
                         try {
-                            val deltaObj = JSONObject(data)
+                            // P0-5 修复：先取 choice 对象，再分别读 finish_reason 和 delta。
+                            // 原先直接 getJSONObject("delta")，最后一个 chunk 只有 finish_reason
+                            // 没有 delta 时会抛异常被 catch 吞掉——finish_reason 就这样丢了。
+                            val choice = JSONObject(data)
                                 .getJSONArray("choices")
-                                .getJSONObject(0)
-                                .getJSONObject("delta")
-                            // 读取 content（主输出）
-                            val contentDelta = if (deltaObj.isNull("content")) ""
-                                        else deltaObj.optString("content", "")
-                            // 读取 reasoning_content / thinking（推理模型的思考过程）
-                            // DeepSeek-R1 用 reasoning_content，Qwen-QwQ 用 thinking
-                            val reasoningDelta = if (deltaObj.isNull("reasoning_content")) ""
-                                        else deltaObj.optString("reasoning_content", "")
-                            val thinkingDelta = if (deltaObj.has("thinking") && !deltaObj.isNull("thinking"))
-                                        deltaObj.optString("thinking", "") else ""
-                            // 推理阶段：累积 reasoning/thinking，不立即 emit
-                            if (reasoningDelta.isNotEmpty()) reasoningAccumulated.append(reasoningDelta)
-                            if (thinkingDelta.isNotEmpty())  reasoningAccumulated.append(thinkingDelta)
-                            // 正文阶段：首次出现 contentDelta 时先 flush 全部推理内容，
-                            // 确保展示顺序为「完整推理块 → 流式正文」
-                            if (contentDelta.isNotEmpty()) {
-                                if (!reasoningFlushed && reasoningAccumulated.isNotEmpty()) {
-                                    trySend(reasoningAccumulated.toString())
-                                    reasoningFlushed = true
-                                }
-                                trySend(contentDelta)
+                                .optJSONObject(0)
+                            // 读取 finish_reason（最后一个 chunk 携带）
+                            if (choice != null && choice.has("finish_reason") && !choice.isNull("finish_reason")) {
+                                capturedFinishReason = choice.optString("finish_reason", "")
                             }
-                        } catch (e: Exception) {
+                            val deltaObj = choice?.optJSONObject("delta")
+                            if (deltaObj != null) {
+                                // 读取 content（主输出）
+                                val contentDelta = if (deltaObj.isNull("content")) ""
+                                    else deltaObj.optString("content", "")
+                                // 读取 reasoning_content / thinking（推理模型的思考过程）
+                                // DeepSeek-R1 用 reasoning_content，Qwen-QwQ 用 thinking
+                                val reasoningDelta = if (deltaObj.isNull("reasoning_content")) ""
+                                    else deltaObj.optString("reasoning_content", "")
+                                val thinkingDelta = if (deltaObj.has("thinking") && !deltaObj.isNull("thinking"))
+                                    deltaObj.optString("thinking", "") else ""
+                                // 推理阶段：累积 reasoning/thinking，不立即 emit
+                                if (reasoningDelta.isNotEmpty()) reasoningAccumulated.append(reasoningDelta)
+                                if (thinkingDelta.isNotEmpty())  reasoningAccumulated.append(thinkingDelta)
+                                // 正文阶段：首次出现 contentDelta 时先 flush 全部推理内容，
+                                // 确保展示顺序为「完整推理块 → 流式正文」
+                                //
+                                // Fix-ReasoningLeak：此前这里是 trySend(reasoningAccumulated.toString())——
+                                // 推理原文不带任何标记，与之后的 contentDelta 拼进同一个 Flow<String>，
+                                // 到 ChatMessageOrchestrator/RoundtableBotReplyGenerator 手里已经和正文
+                                // 融为一体，ChatTagParser 的 stripThinkingTag 只认模型在 content 里主动
+                                // 写出的字面 `[thinking:...]` 标签，对这段"协议层就分离好、但从未打标"的
+                                // 推理文本无能为力，于是原样出现在用户看到的气泡里，且不会进入
+                                // MessageEntity.thinkingText → ChatMessageBubble 的折叠 ThoughtCard。
+                                // 之前几轮修复（Fix-MoodLeak/Fix-ThinkingLeak/三层分离）都是在
+                                // ChatTagParser 正则层面加强，从未触及这里——从根上就没有产生
+                                // `[thinking:...]` 标记，下游再怎么剥离都剥不到。
+                                // 现在把 reasoningAccumulated 包一层 [thinking:...]，复用
+                                // ChatTagParser.stripThinkingTag 已验证的落库路径，让推理内容正确
+                                // 落进 thinkingText 字段、渲染进折叠卡片，不再混进正文。
+                                if (contentDelta.isNotEmpty()) {
+                                    if (!reasoningFlushed && reasoningAccumulated.isNotEmpty()) {
+                                        trySend(ChatStreamItem.TextDelta(wrapAsThinkingTag(reasoningAccumulated.toString())))
+                                        reasoningFlushed = true
+                                    }
+                                    trySend(ChatStreamItem.TextDelta(contentDelta))
+                                }
+                            }
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            throw e
+                        } catch (e: Throwable) {
                             // 跳过解析失败的行；debug 级别避免流式场景下高频刷屏
                             ZLog.d("OpenAICompatProvider", "SSE 行解析失败，已跳过: ${e.message}")
                         }
@@ -126,14 +180,28 @@ class OpenAICompatProvider(
                 // 部分模型（如 DeepSeek-R1）可能只输出 reasoning_content 而无
                 // content delta，原逻辑仅在 contentDelta 非空时 flush，
                 // 导致纯推理输出内容永久丢失。
+                // Fix-ReasoningLeak：同上，包一层 [thinking:...] 再 flush，
+                // 这种"整轮只有推理没有正文"的极端情况尤其需要标记——不包裹的话，
+                // 这段推理原文会被当成唯一的"正文"逃过 ChatTagParser 的清洗、
+                // 整段裸露展示给用户，是本类泄漏里最容易被忽略的分支。
                 if (!reasoningFlushed && reasoningAccumulated.isNotEmpty()) {
-                    trySend(reasoningAccumulated.toString())
+                    trySend(ChatStreamItem.TextDelta(wrapAsThinkingTag(reasoningAccumulated.toString())))
                 }
+                // P0-5 修复：流结束时 emit FinishReason，让调用方知道结束原因。
+                // finish_reason=="length" 表示被 maxTokens 截断——ToolCallInterceptor
+                // 据此注入续写/自查指令，避免截断后的半截工具标签被静默丢弃后
+                // 整轮被误判为"模型没调工具"。
+                if (capturedFinishReason == "length") {
+                    ZLog.w("OpenAICompatProvider", "检测到 finish_reason=length（maxTokens 截断）")
+                }
+                trySend(ChatStreamItem.FinishReason(capturedFinishReason))
                 close()   // 正常结束：关闭 channel，collect 端会收到完成信号
                 } // end withTimeout
             } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
                 close(IllegalStateException("LLM 流式响应超时（超过 ${CHAT_TOTAL_TIMEOUT_MS / 1000}s）"))
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 close(e)  // 异常结束：把错误传给 collect 端
             } finally {
                 conn.disconnect()
@@ -147,7 +215,7 @@ class OpenAICompatProvider(
             job.cancel()
             // 审查项 2.19：补充日志。此处属于收尾清理（连接可能已被 job 内部关闭），
             // 用 debug 级别避免正常场景下产生噪音，仅用于排查异常关闭路径。
-            try { conn.disconnect() } catch (e: Exception) {
+            try { conn.disconnect() } catch (e: Throwable) {
                 ZLog.d("OpenAICompatProvider", "awaitClose 断开连接异常（可能已关闭）: ${e.message}")
             }
         }
@@ -189,7 +257,9 @@ class OpenAICompatProvider(
                         .getJSONObject(0)
                         .getJSONObject("message")
                         .getString("content")
-                } catch (e: Exception) {
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
                     val preview = if (responseText.length > 200) responseText.take(200) + "…" else responseText
                     throw IllegalStateException("API 返回了非预期的响应格式：$preview", e)
                 }
@@ -209,12 +279,48 @@ class OpenAICompatProvider(
                 config = LLMConfig(model = defaultModel, maxTokens = 10, stream = false),
             )
             true
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             false
         }
     }
 
     // ── 内部工具 ─────────────────────────────────────────────
+
+    /**
+     * Fix-ReasoningLeak：把推理模型（DeepSeek-R1 用 reasoning_content，
+     * Qwen-QwQ 用 thinking）的思考过程原文包装成 `[thinking:...]` 结构化标签，
+     * 复用 [com.zaijian.zhoumuyun.domain.ChatTagParser.stripThinkingTag] 已验证的
+     * "结构化标记 + 客户端剥离"路径。
+     *
+     * 背景：此前这里对 reasoningAccumulated 是裸 emit（不带任何标记），与之后的
+     * contentDelta 拼进同一个 Flow<String>，到 ChatMessageOrchestrator /
+     * RoundtableBotReplyGenerator / AgentTaskJobExecutor 手里已经和正文融为一体——
+     * ChatTagParser 的三个 strip 函数只认模型在 content 里主动写出的字面
+     * `[thinking:...]`/`[mood:...]` 标签或圆括号，对这段"API 协议层本就分离好、
+     * 但客户端从未打标"的推理文本完全无能为力，于是原样出现在用户看到的气泡里，
+     * 且不会进入 MessageEntity.thinkingText → ChatMessageBubble 的折叠 ThoughtCard。
+     * 这也是为什么此前多轮基于 ChatTagParser 正则层面的修复（Fix-MoodLeak/
+     * Fix-ThinkingLeak/三层分离）都堵不住这个口子：从根上就没有产生
+     * `[thinking:...]` 标记，下游解析器再怎么加强也无标可剥。
+     *
+     * 把 reasoning 原文里的 '[' ']' 替换成全角字符（［］）再包裹，避免推理内容
+     * 本身含方括号时截断 THINKING_TAG_REGEX 的外层标签匹配（该正则要求标签
+     * 内部不含方括号，见 ChatTagParser 内"已知局限"注释）——模型自己写的
+     * `[thinking:]` 内容通常是可控的中文叙述，含方括号概率低，那里可以接受
+     * 截断；但 reasoning_content 是推理模型自由生成的思维链，出现代码片段、
+     * 脚注序号（如"[1]"）等方括号内容的概率高得多，不做这层替换，本次修复
+     * 很容易在这些场景下退化成"部分推理仍然裸露"的同类问题。全角替换只影响
+     * 视觉字符，不改变原意。
+     *
+     * chat() 内两处 flush 点（中途首现 content 时 / 流结束兜底）共用本函数，
+     * 保证包装规则唯一。
+     */
+    private fun wrapAsThinkingTag(reasoning: String): String {
+        val safe = reasoning.replace('[', '［').replace(']', '］')
+        return "[thinking:$safe]"
+    }
 
     private fun buildRequestBody(
         messages: List<LLMMessage>,

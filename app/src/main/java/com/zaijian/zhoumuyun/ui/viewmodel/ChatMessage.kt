@@ -155,14 +155,14 @@ internal fun parseExportedFilesWithFallback(filesJson: String?, legacyJson: Stri
         return try {
             val arr = org.json.JSONArray(json)
             (0 until arr.length()).mapNotNull { i -> parseExportedFile(arr.optJSONObject(i)) }
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
             emptyList()
         }
     }
     val legacy = legacyJson ?: return emptyList()
     return try {
         listOfNotNull(parseExportedFile(org.json.JSONObject(legacy)))
-    } catch (_: Exception) {
+    } catch (_: Throwable) {
         emptyList()
     }
 }

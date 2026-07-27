@@ -186,7 +186,9 @@ class GoalViewModel(application: Application) : AndroidViewModel(application) {
                     projectRepo.setGoalId(d.relatedProjectId, goalId)
                 }
                 _uiState.update { it.copy(isSaved = true, error = null) }
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 ZLog.e("GoalViewModel", "保存目标失败", e)
                 _uiState.update { it.copy(isSaved = false, error = "保存失败：${e.message}") }
                 // 失败时恢复 draft，允许用户重新提交
@@ -201,7 +203,9 @@ class GoalViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             try {
                 goalRepo.updateProgress(goalId, progress.coerceIn(0f, 1f))
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 ZLog.e("GoalViewModel", "更新目标进度失败 goalId=$goalId", e)
                 _uiState.update { it.copy(error = "更新进度失败：${e.message}") }
             }
@@ -214,7 +218,9 @@ class GoalViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             try {
                 goalRepo.deactivate(goalId)
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 ZLog.e("GoalViewModel", "停用目标失败 goalId=$goalId", e)
                 _uiState.update { it.copy(error = "停用失败：${e.message}") }
             }
@@ -232,7 +238,9 @@ class GoalViewModel(application: Application) : AndroidViewModel(application) {
                     projectRepo.setGoalId(linkedProject.id, null)
                 }
                 goalRepo.delete(goalId)
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 ZLog.e("GoalViewModel", "删除目标失败 goalId=$goalId", e)
                 _uiState.update { it.copy(error = "删除失败：${e.message}") }
             }

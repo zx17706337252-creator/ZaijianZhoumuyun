@@ -61,7 +61,9 @@ class ChatMessageActionsDelegate(
                     )
                 )
                 reloadMessages(characterId)
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 ZLog.e("ChatMessageActionsDelegate", "文件导入失败 fileName=$fileName", e)
                 _uiState.update { it.copy(error = "文件导入失败，请重试") }
             }
@@ -75,7 +77,9 @@ class ChatMessageActionsDelegate(
             try {
                 messageRepo.deleteByCharacter(characterId)
                 reloadMessages(characterId)
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 ZLog.e("ChatMessageActionsDelegate", "清空消息失败", e)
                 _uiState.update { it.copy(error = "清空消息失败，请重试") }
             }

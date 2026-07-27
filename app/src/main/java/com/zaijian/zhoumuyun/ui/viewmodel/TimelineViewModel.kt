@@ -48,7 +48,9 @@ class TimelineViewModel(application: Application) : AndroidViewModel(application
                     else eventRepo.queryLatest(100)
                 }
                 _uiState.update { it.copy(events = events, isLoading = false) }
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 _uiState.update { it.copy(
                     isLoading = false,
                     error = "加载时间线失败：${e.message?.take(80) ?: "未知错误"}"

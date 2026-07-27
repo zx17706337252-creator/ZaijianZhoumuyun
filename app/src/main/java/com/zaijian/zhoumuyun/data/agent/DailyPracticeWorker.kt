@@ -56,7 +56,7 @@ class DailyPracticeWorker(
         // 确保 scheduleNext 始终被调用，每日修炼链路不会永久中断。
         val (hour, minute) = try {
             readConfiguredTime()
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             ZLog.w("DailyPracticeWorker", "读取配置时间失败，使用默认值", e)
             DailyPracticeScheduler.DEFAULT_HOUR to DailyPracticeScheduler.DEFAULT_MINUTE
         }
@@ -83,7 +83,9 @@ class DailyPracticeWorker(
             // 这里只需要把播报这一步补上，不重新生成内容、不重复计数。
             try {
                 repostPendingRecords(db, daughterRepo)
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 ZLog.w("DailyPracticeWorker", "补发未播报的修炼记录失败", e)
                 // 补发失败不影响当天新的修炼流程继续执行
             }
@@ -92,12 +94,16 @@ class DailyPracticeWorker(
             for (profile in activeProfiles) {
                 try {
                     runSinglePractice(db, repo, engine, daughterRepo, profile, provider)
-                } catch (e: Exception) {
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
                     ZLog.w("DailyPracticeWorker", "专长 ${profile.id} 修炼失败", e)
                     // 单个专长失败不影响其余专长，继续下一个
                 }
             }
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             ZLog.w("DailyPracticeWorker", "doWork failed", e)
             // 不重试，下一天自然会再跑
         } finally {
@@ -186,7 +192,9 @@ class DailyPracticeWorker(
                     )
                 )
                 db.practiceRecordDao().markRoundtablePosted(record.id)
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 ZLog.w("DailyPracticeWorker", "补发记录 ${record.id} 失败", e)
                 // 单条补发失败不影响其余 PENDING 记录，留到下次继续尝试
             }
@@ -285,7 +293,9 @@ class DailyPracticeWorker(
         // 7. 容量检查：是否触发蒸馏（异步，不阻塞本次播报；失败不影响本次修炼已落库的事实）
         try {
             DistillationTrigger.checkAndRun(db, provider, profile.id)
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             ZLog.w("DailyPracticeWorker", "蒸馏触发检查失败 specialtyId=${profile.id}", e)
         }
     }
@@ -333,7 +343,9 @@ class DailyPracticeWorker(
             val topic = obj.optString("topic", "今日练习").take(40)
             val content = obj.optString("content", "")
             topic to content
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             ZLog.w("DailyPracticeWorker", "生成今日练习失败", e)
             "" to ""
         }
@@ -407,7 +419,7 @@ class DailyPracticeWorker(
                 sizeBytes = file.length(),
                 absolutePath = file.absolutePath,
             )
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             ZLog.w("DailyPracticeWorker", "写入修炼产出文件失败", e)
             null
         }

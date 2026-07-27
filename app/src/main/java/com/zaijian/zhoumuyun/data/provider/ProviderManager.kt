@@ -73,7 +73,7 @@ private val prefs: SharedPreferences
     fun preloadAsync() {
         if (!preloadStarted.compareAndSet(false, true)) return
         Thread {
-            try { prefs } catch (e: Exception) { ZLog.w("ProviderManager", "预加载 prefs 失败: ${e.message}") }
+            try { prefs } catch (e: Throwable) { ZLog.w("ProviderManager", "预加载 prefs 失败: ${e.message}") }
         }.start()
     }
 

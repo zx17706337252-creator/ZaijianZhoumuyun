@@ -170,7 +170,9 @@ class PregnancyPromptDelegate(
                         // （只有 triggerMiscarriage() 会），穷尽 when 分支需要，安全忽略。
                     }
                 }
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 ZLog.w("PregnancyPromptDelegate", "evaluateConsent 判定链异常（不影响主流程）", e)
             }
         }
@@ -220,7 +222,9 @@ class PregnancyPromptDelegate(
         if (failureContextPatch.isNotEmpty()) {
             try {
                 pregnancyTriggerManager.markFailureContextInjected(characterId, nowSnapshot)
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 // 落库失败不应该丢弃这一轮已经生成好的 Prompt 文案（用户体验
                 // 优先于"下一轮冷却计时是否精确"），但要记录日志——如果这个
                 // 异常反复出现，说明 lastFailureInjectedAt 的持久化链路本身
@@ -428,7 +432,9 @@ class PregnancyPromptDelegate(
                 if (trigger.triggered) {
                     pendingKeywordTriggerMap[characterId] = true
                 }
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 ZLog.w("PregnancyPromptDelegate", "checkTrigger 扫描异常（不影响主流程）", e)
             }
         }
@@ -580,7 +586,9 @@ class PregnancyPromptDelegate(
                         // 穷尽 when 分支需要，安全忽略。
                     }
                 }
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 ZLog.w("PregnancyPromptDelegate", "onFertileWindowDialogResult: proceedAfterDialogConsent 异常", e)
             }
         }

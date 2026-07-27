@@ -156,7 +156,9 @@ class GithubConfigDataStore(context: Context) {
                 setRequestProperty("Authorization", "Bearer ${config.token}")
                 setRequestProperty("X-GitHub-Api-Version", "2022-11-28")
             }
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             return@withContext GithubTestResult.Failure("网络连接失败：${e.message?.take(100) ?: "未知错误"}")
         }
 
@@ -187,7 +189,9 @@ class GithubConfigDataStore(context: Context) {
                 setRequestProperty("Authorization", "Bearer ${config.token}")
                 setRequestProperty("X-GitHub-Api-Version", "2022-11-28")
             }
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             return@withContext GithubTestResult.Failure("网络连接失败：${e.message?.take(100) ?: "未知错误"}")
         }
 

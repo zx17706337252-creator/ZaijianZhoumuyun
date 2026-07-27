@@ -180,7 +180,9 @@ class GlobalScheduleViewModel(application: Application) : AndroidViewModel(appli
                 userId      = null,
                 characterId = null,
             )
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             ZLog.e("GlobalScheduleViewModel", "删除日程失败 jobId=$jobId", e)
             _uiState.update { it.copy(error = "删除失败：${e.message}") }
         }
@@ -193,7 +195,9 @@ class GlobalScheduleViewModel(application: Application) : AndroidViewModel(appli
     suspend fun toggleEnabled(job: ScheduledJobEntity) {
         try {
             scheduleRepo.toggleJobWithFullSync(job)
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             ZLog.e("GlobalScheduleViewModel", "切换日程状态失败 jobId=${job.id}", e)
             _uiState.update { it.copy(error = "切换失败：${e.message}") }
         }

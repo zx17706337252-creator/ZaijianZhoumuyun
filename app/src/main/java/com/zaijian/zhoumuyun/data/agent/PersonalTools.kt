@@ -85,15 +85,20 @@ class NoteSaveTool(private val context: Context) : AgentTool {
 
             file.writeText(noteText, Charsets.UTF_8)
 
-            val noteCount = notesDir.listFiles()?.size ?: 1
+            // #48 修复：原先 listFiles() 返回 null（目录不可读/IO异常）时固定回退成
+            // "1"，无论实际有多少条笔记都会显示"共1条"，是会误导用户的假数据。
+            // 现在 null 时不编造具体数字，只说"笔记已保存"。
+            val noteCountLine = notesDir.listFiles()?.size?.let { "\n\n你现在共有 $it 条笔记。" } ?: ""
             ToolResult(
                 toolName = name,
                 success  = true,
-                content  = "[笔记已保存]\n标题：$title${if (tag.isNotBlank()) "\n标签：$tag" else ""}\n时间：$now\n\n你现在共有 $noteCount 条笔记。",
+                content  = "[笔记已保存]\n标题：$title${if (tag.isNotBlank()) "\n标签：$tag" else ""}\n时间：$now$noteCountLine",
                 userHint = "正在保存笔记…",
             )
-        } catch (e: Exception) {
-            ToolResult(name, false, "保存笔记时遇到问题：${e.message?.take(80)}", e.message)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            toolFailure(name, "保存笔记时遇到问题，请稍后重试。", "note_save_failed", e)
         }
     }
 }
@@ -145,7 +150,8 @@ class ReminderTool(
             val id        = System.currentTimeMillis()
             val file      = java.io.File(remindersDir, "${id}.json")
 
-            val triggerAtMs = parseTriggerTime(date, time, id)
+            val triggerResult = parseTriggerTime(date, time, id)
+            val triggerAtMs = triggerResult.triggerAtMs
             // 重新核实的 P1-13 修复：原重构（toJson/fromJson 合并为内联 JSONObject）
             // 遗漏了 characterId 字段——execute() 内部算出的 characterId 只传给了
             // scheduleAlarm() 用于本次注册，从未写入持久化 JSON。设备重启后
@@ -189,10 +195,16 @@ class ReminderTool(
                 if (time.isNotBlank()) append(time)
             }
 
-            val confirmText = if (timeDesc.isNotBlank()) {
-                "[提醒已设置]\n内容：$text\n时间：$timeDesc"
-            } else {
-                "[提醒已设置]\n内容：$text\n时间：待定（你可以告诉我具体时间）"
+            val confirmText = when {
+                triggerResult.timeWasInvalid -> {
+                    // #50 修复：不再对着用户原样展示一个实际不会生效的非法时间
+                    // （如"25:99"），而是如实告知已忽略，并给出真正会触发的时刻。
+                    "[提醒已设置]\n内容：$text\n你填写的时间「$time」不是有效时间，已忽略。" +
+                        "实际会在 ${TimeFormatUtils.formatDateTimeMinute(triggerAtMs)} 提醒你，" +
+                        "如需改期请告诉我准确的时间。"
+                }
+                timeDesc.isNotBlank() -> "[提醒已设置]\n内容：$text\n时间：$timeDesc"
+                else -> "[提醒已设置]\n内容：$text\n时间：待定（你可以告诉我具体时间）"
             }
 
             ToolResult(
@@ -201,8 +213,10 @@ class ReminderTool(
                 content  = confirmText,
                 userHint = "正在设置提醒…",
             )
-        } catch (e: Exception) {
-            ToolResult(name, false, "设置提醒时遇到问题：${e.message?.take(80)}", e.message)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            toolFailure(name, "设置提醒时遇到问题，请稍后重试。", "reminder_set_failed", e)
         }
     }
 
@@ -217,16 +231,34 @@ class ReminderTool(
      * 提醒在错误时间静默触发。现优先匹配完整的 yyyy-MM-dd 格式，
      * 匹配不到再回退到原有的 MM-dd / MM月dd日 格式。
      */
-    private fun parseTriggerTime(date: String, time: String, fallback: Long): Long {
+    /**
+     * #50 修复：原先返回值只有一个 Long（触发时间戳），非法时间值（如 "25:99"）
+     * 会被 Calendar 的 isLenient=true 默认行为静默进位滚动成别的合法时间，用户
+     * 界面上确认文案还照样显示用户原样输入的「25:99」，实际却在完全不同的时刻
+     * 触发——用户毫无感知。现在额外带一个 timeWasInvalid 标记，execute() 据此
+     * 在确认文案里如实告知「你填的时间无效，实际会在几点提醒你」。
+     */
+    private data class TriggerTimeResult(val triggerAtMs: Long, val timeWasInvalid: Boolean)
+
+    private fun parseTriggerTime(date: String, time: String, fallback: Long): TriggerTimeResult {
+        var timeWasInvalid = false
         return try {
             val cal = Calendar.getInstance()
             // 解析时间（HH:mm 或 HH时mm分）
             val timeMatch = Regex("(\\d{1,2})[：:时](\\d{1,2})").find(time)
             if (timeMatch != null) {
-                cal.set(Calendar.HOUR_OF_DAY, timeMatch.groupValues[1].toInt())
-                cal.set(Calendar.MINUTE,      timeMatch.groupValues[2].toInt())
-                cal.set(Calendar.SECOND, 0)
-                cal.set(Calendar.MILLISECOND, 0)
+                val hour   = timeMatch.groupValues[1].toInt()
+                val minute = timeMatch.groupValues[2].toInt()
+                if (hour in 0..23 && minute in 0..59) {
+                    cal.set(Calendar.HOUR_OF_DAY, hour)
+                    cal.set(Calendar.MINUTE,      minute)
+                    cal.set(Calendar.SECOND, 0)
+                    cal.set(Calendar.MILLISECOND, 0)
+                } else {
+                    // 越界时间值不再交给 Calendar 静默滚动，直接忽略这个时间段，
+                    // 保留 Calendar 默认的"当前时刻"，并标记出来。
+                    timeWasInvalid = true
+                }
             }
             // 解析日期：优先匹配 yyyy-MM-dd（LLM 最常生成的格式），
             // 匹配不到再回退匹配 MM-dd 或 MM月dd日
@@ -247,9 +279,12 @@ class ReminderTool(
             // 不执行 +1 天（ts 保持过去时间戳），外层 triggerAtMs > now 检查
             // 走到 else 分支，闹钟完全不注册，提醒静默失效。
             // 去掉 dateMatch == null 条件，始终检查并 +1 天。
-            if (ts <= System.currentTimeMillis()) ts + 86400_000L else ts
-        } catch (e: Exception) {
-            fallback + 3600_000L  // 默认 1 小时后
+            val finalTs = if (ts <= System.currentTimeMillis()) ts + 86400_000L else ts
+            TriggerTimeResult(finalTs, timeWasInvalid)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            TriggerTimeResult(fallback + 3600_000L, timeWasInvalid)  // 默认 1 小时后
         }
     }
 
@@ -259,7 +294,11 @@ class ReminderTool(
      */
     // 批次4-3-1 修复：改为 internal，供 BootReceiver 开机恢复提醒闹钟时复用
     internal fun scheduleAlarm(requestCode: Int, text: String, triggerAtMs: Long, characterId: Int) {
-        val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        // #49 修复：原先 "as AlarmManager" 强转无防御，理论上 getSystemService 返回
+        // null 时会直接抛 NPE（虽然真实设备上几乎不可能拿不到这个系统服务）。
+        // 改为安全转换，取不到时直接跳过闹钟注册（提醒本身已经持久化到本地文件，
+        // 不影响笔记/提醒记录本身），而不是让异常一路抛到调用方。
+        val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return
 
         val intent = Intent(context, ReminderReceiver::class.java).apply {
             putExtra("reminder_text", text)
@@ -319,8 +358,11 @@ class ClipboardWriteTool(private val context: Context) : AgentTool {
 
         return try {
             withContext(Dispatchers.Main) {
+                // #49 修复：原先 "as ClipboardManager" 强转无防御，改为安全转换 + 显式
+                // 报错，而不是依赖拿到 null 时的 NPE 被下面 catch(Exception) 兜底。
                 val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE)
-                    as android.content.ClipboardManager
+                    as? android.content.ClipboardManager
+                    ?: throw IllegalStateException("剪贴板服务不可用")
                 val clip = android.content.ClipData.newPlainText("zaijian_copy", text)
                 clipboard.setPrimaryClip(clip)
             }
@@ -330,8 +372,10 @@ class ClipboardWriteTool(private val context: Context) : AgentTool {
                 content  = "已将内容复制到剪贴板（${text.length} 个字符）。",
                 userHint = "正在复制到剪贴板…",
             )
-        } catch (e: Exception) {
-            ToolResult(name, false, "复制到剪贴板时出了问题：${e.message?.take(60)}", e.message)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            toolFailure(name, "复制到剪贴板时出了问题，请稍后重试。", "clipboard_copy_failed", e)
         }
     }
 }
@@ -373,7 +417,9 @@ class QrDecodeTool : AgentTool {
                     content.startsWith("http://") || content.startsWith("https://") -> {
                         val domain = try {
                             java.net.URL(content).host
-                        } catch (_: Exception) { "未知域名" }
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            throw e
+                        } catch (_: Throwable) { "未知域名" }
                         appendLine("域名：$domain")
                     }
                     content.startsWith("WIFI:") -> {
@@ -397,8 +443,10 @@ class QrDecodeTool : AgentTool {
                 content  = analysis,
                 userHint = "正在解析二维码…",
             )
-        } catch (e: Exception) {
-            ToolResult(name, false, "二维码解析出错：${e.message?.take(80)}", e.message)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            toolFailure(name, "二维码解析出错，请稍后重试。", "qr_decode_failed", e)
         }
     }
 

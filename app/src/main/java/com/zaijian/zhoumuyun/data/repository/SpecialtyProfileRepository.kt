@@ -191,7 +191,7 @@ class SpecialtyProfileRepository(
                     lastSeenAt = obj.getLong("lastSeenAt"),
                 )
             }.toMutableList()
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             // U-3 修复：抛专用异常，调用方精确 catch 后备份日志 + 以空列表重置。
             // 用 CandidatePoolCorruptedException 而非 IllegalStateException，
             // 避免误拦调用栈上其他代码的 IllegalStateException。

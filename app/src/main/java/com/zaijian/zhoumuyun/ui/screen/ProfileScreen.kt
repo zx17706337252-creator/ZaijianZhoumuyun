@@ -87,8 +87,6 @@ fun ProfileScreen(
     // Phase 16：用户昵称（用 SharedPreferences 持久化）
     // 窗口1方案B：签名字段已删除，不保留、不迁移。
     // 「称呼」功能性缺陷修复：不再由本 Composable 裸持有 SharedPreferences 实例，
-    // 改走 ProfileViewModel.getUserName()——与 buildSystemPrompt 四条读取路径
-    // 共用同一份 key 名/默认值定义（UserProfileRepository），避免两处硬编码字面量漂移。
     val context = LocalContext.current
     // 通知设置持久化（Phase 16 起沿用的简单 SharedPreferences 存储）。
     // P1-30 修复：原使用 "profile_prefs" 文件，但所有读取方
@@ -98,10 +96,6 @@ fun ProfileScreen(
     // 现改为写入 "user_profile"，与所有读取方对齐；
     // ZaijianApp 中注册的 OnSharedPreferenceChangeListener 也将正确触发。
     val userPrefs = remember { context.getSharedPreferences("user_profile", android.content.Context.MODE_PRIVATE) }
-    // E0 分层收口：原直接 AppContainer.instance.userProfileRepo.getUserName()，
-    // 改走 ProfileViewModel.getUserName()，Composable 不再持有 Repository。
-    var userName  by remember { mutableStateOf(profileViewModel.getUserName()) }
-    var showEditNicknameDialog by remember { mutableStateOf(false) }
 
     // ── 外观设置（Fix-11: DataStore 持久化，响应式 Flow 驱动）──────
     val themeOptions     = remember { listOf("跟随系统", "深色", "浅色") }
@@ -142,7 +136,7 @@ fun ProfileScreen(
                 android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION,
             )
             pendingSplashBgCropUri = uri.toString()
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             com.zaijian.zhoumuyun.util.ZLog.w("ProfileScreen", "启动页背景图设置失败: uri=$uri", e)
         }
     }
@@ -184,9 +178,28 @@ fun ProfileScreen(
                                 android.net.Uri.parse("https://zaijian.app/privacy")
                             )
                             context.startActivity(intent)
-                        } catch (e: Exception) {
+                        } catch (e: Throwable) {
                             com.zaijian.zhoumuyun.util.ZLog.e("ProfileScreen", "打开隐私政策链接失败", e)
                             android.widget.Toast.makeText(context, "无法打开链接，请检查是否安装浏览器", android.widget.Toast.LENGTH_LONG).show()
+                        }
+                    }),
+                // 修复：诊断日志此前只能靠 diag_export_log 这个 AI 工具触发导出——
+                // 而它自己也注册在 registerBuiltinTools() 那一批里，跟 file_export/
+                // zip_export 同批。这批一旦真的注册失败或整条 Agent 工具调用链路
+                // 出问题（本次排查的起因），连诊断日志本身都拿不到，用户只能等
+                // adb，形成"诊断入口寄生在它要诊断的链路上"的死结构。
+                // 现改为设置页直接按钮，跳过 LLM/ToolParser/ToolCallInterceptor/
+                // AgentToolRegistry 整条链路，直接调 AgentLog.exportLog(context)——
+                // 无论 Agent 工具链是否健康，日志都能导出。
+                SettingItem("导出诊断日志", description = "工具调用/文件生成异常时用来排查",
+                    onClick = {
+                        scope.launch {
+                            val logFile = com.zaijian.zhoumuyun.util.AgentLog.exportLog(context)
+                            if (logFile != null) {
+                                shareDiagLogFile(context, logFile)
+                            } else {
+                                android.widget.Toast.makeText(context, "暂无诊断日志", android.widget.Toast.LENGTH_SHORT).show()
+                            }
                         }
                     }),
             ),
@@ -224,10 +237,7 @@ fun ProfileScreen(
 
             // ── AI 配置（接真实 ProviderManager）────────────
             item {
-                AiConfigSection(
-                    userName       = userName,
-                    onEditNickname = { showEditNicknameDialog = true },
-                )
+                AiConfigSection()
                 Spacer(Modifier.height(Spacing.lg))
             }
 
@@ -315,19 +325,6 @@ fun ProfileScreen(
             headerBg = headerBg,
             modifier = Modifier.align(Alignment.TopCenter),
         )
-
-        // ── 编辑称呼 Dialog（窗口1方案B：不再是"编辑资料"，只编辑称呼）──
-        if (showEditNicknameDialog) {
-            EditNicknameDialog(
-                initialName = userName,
-                onConfirm   = { newName ->
-                    profileViewModel.setUserName(newName)
-                    userName = profileViewModel.getUserName()
-                    showEditNicknameDialog = false
-                },
-                onDismiss = { showEditNicknameDialog = false },
-            )
-        }
 
         // ── 外观选择 Dialogs ──────────────────────────────
         if (showThemeDialog) {
@@ -448,6 +445,28 @@ fun ProfileScreen(
 
 // ─────────────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────
+
+/**
+ * 分享诊断日志文件（agent_log.txt）。
+ * 与 FileVaultScreen.shareFile 同款 FileProvider + ACTION_SEND + try-catch 风格，
+ * 避免 getUriForFile() 在路径未落入 file_paths.xml 声明范围时裸抛异常导致点击闪退。
+ */
+private fun shareDiagLogFile(context: android.content.Context, file: java.io.File) {
+    try {
+        val uri = androidx.core.content.FileProvider.getUriForFile(
+            context, "${context.packageName}.fileprovider", file,
+        )
+        val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(android.content.Intent.EXTRA_STREAM, uri)
+            addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        context.startActivity(android.content.Intent.createChooser(intent, "导出诊断日志"))
+    } catch (e: Throwable) {
+        com.zaijian.zhoumuyun.util.ZLog.e("ProfileScreen", "分享诊断日志失败：${file.absolutePath}", e)
+        android.widget.Toast.makeText(context, "无法导出日志：${e.message?.take(60)}", android.widget.Toast.LENGTH_LONG).show()
+    }
+}
 
 @Preview(
     name            = "Profile · Dark",

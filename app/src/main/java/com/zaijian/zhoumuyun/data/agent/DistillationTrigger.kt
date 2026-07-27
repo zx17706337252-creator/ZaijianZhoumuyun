@@ -13,7 +13,6 @@ import com.zaijian.zhoumuyun.data.repository.SpecialtyProfileRepository
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.util.UUID
-import java.util.concurrent.ConcurrentHashMap
 
 /**
  * DistillationTrigger — P6 专长进化系统的容量驱动蒸馏入口
@@ -39,10 +38,20 @@ import java.util.concurrent.ConcurrentHashMap
  */
 object DistillationTrigger {
 
-    private val mutexes = ConcurrentHashMap<String, Mutex>()
+    // #62 修复：与 CandidatePromotionChecker#53 / IdentityPromotionEvaluator#54
+    // 同类问题——原先 ConcurrentHashMap + computeIfAbsent 只增不删，每个出现过的
+    // specialtyId 永久占一条 Mutex 记录。改为带上限的 access-order LinkedHashMap：
+    // 超过上限时淘汰最久未用的一条，但正被持有（isLocked）的条目跳过淘汰，避免
+    // 破坏互斥语义。读写都在 synchronized 块里保证"查询已有 / 新建 / 淘汰"三步原子。
+    private const val MAX_TRACKED_MUTEXES = 256
+    private val mutexes = object : LinkedHashMap<String, Mutex>(16, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Mutex>): Boolean =
+            size > MAX_TRACKED_MUTEXES && !eldest.value.isLocked
+    }
 
-    private fun getMutex(specialtyId: String): Mutex =
-        mutexes.computeIfAbsent(specialtyId) { Mutex() }
+    private fun getMutex(specialtyId: String): Mutex = synchronized(mutexes) {
+        mutexes.getOrPut(specialtyId) { Mutex() }
+    }
 
     suspend fun checkAndRun(db: AppDatabase, provider: LLMProvider, specialtyId: String) {
         getMutex(specialtyId).withLock {
@@ -94,6 +103,8 @@ object DistillationTrigger {
         specialtyId: String,
         candidates: List<PracticeRecordEntity>,
     ) {
+        // P1 修复：顶层 try-catch，防止 LLM 调用或 DB 写入异常中断 DailyPracticeWorker
+        try {
         val profile = db.specialtyProfileDao().getById(specialtyId) ?: return
 
         // candidates 由调用方（checkAndRunInternal）通过 snapshotOldestRawRecordsIfThresholdMet
@@ -162,6 +173,11 @@ object DistillationTrigger {
             )
         }
         } // end db.withTransaction
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            ZLog.e("DistillationTrigger", "runRawToDigest 异常 specialtyId=$specialtyId", e)
+        }
     }
 
     // ─────────────────────────────────────────────────────────
@@ -175,6 +191,8 @@ object DistillationTrigger {
         specialtyId: String,
         unmerged: List<StageDigestEntity>,
     ) {
+        // P1 修复：顶层 try-catch，防止 LLM 调用或 DB 写入异常中断 DailyPracticeWorker
+        try {
         val profile = db.specialtyProfileDao().getById(specialtyId) ?: return
         // unmerged 由调用方（checkAndRunInternal）通过 snapshotUnmergedIfThresholdMet
         // 事务内一致性快照传入（W1-005 修复），不在此处重新查询。
@@ -210,15 +228,24 @@ object DistillationTrigger {
                 profileId = specialtyId,
                 previousStyleNotes = previousStyleNotes,
             )
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             ZLog.w("DistillationTrigger", "晋升判定失败 specialtyId=$specialtyId", e)
         }
 
         // AI 自我提案检查（独立模块，低频，见 SystemSuggestionGenerator）
         try {
             SystemSuggestionGenerator.maybeGenerate(db, engine, specialtyId)
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             ZLog.w("DistillationTrigger", "AI自我提案生成失败 specialtyId=$specialtyId", e)
+        }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            ZLog.e("DistillationTrigger", "runDigestToProfile 异常 specialtyId=$specialtyId", e)
         }
     }
 }

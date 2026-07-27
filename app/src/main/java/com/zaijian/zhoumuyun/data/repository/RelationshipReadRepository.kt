@@ -62,7 +62,9 @@ class RelationshipReadRepository(
         worldEventDao
             .queryByType(EventType.RELATIONSHIP_CHANGED.name, queryLimit)
             .filter { it.actorId == actorId && it.targetId == targetId }
-    } catch (e: Exception) {
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (e: Throwable) {
         ZLog.e("RelationshipReadRepo", "getRecentRelationshipEvents($actorId→$targetId) 查询失败", e)
         emptyList()
     }
@@ -77,7 +79,9 @@ class RelationshipReadRepository(
         limit: Int = 10,
     ): List<RelationshipMilestoneEntity> = try {
         milestoneDao.getRecent(fromId, toId, limit)
-    } catch (e: Exception) {
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (e: Throwable) {
         ZLog.e("RelationshipReadRepo", "getRecentMilestones($fromId→$toId) 查询失败", e)
         emptyList()
     }

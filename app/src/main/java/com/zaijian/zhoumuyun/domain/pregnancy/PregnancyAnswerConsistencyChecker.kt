@@ -137,7 +137,9 @@ class PregnancyAnswerConsistencyChecker(
             )
 
             parseResult(response)
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             ZLog.e(TAG, "LLM call failed, defaulting to CONTRADICTORY", e)
             ConsistencyResult.CONTRADICTORY
         }
@@ -169,7 +171,7 @@ class PregnancyAnswerConsistencyChecker(
                 "CONSISTENT" -> ConsistencyResult.CONSISTENT
                 else         -> ConsistencyResult.CONTRADICTORY
             }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             ZLog.w(TAG, "Failed to parse LLM JSON: $cleaned", e)
             parseConsistencyFallback(cleaned)  // P1-2-3：委托共用词边界正则解析
         }

@@ -7,13 +7,13 @@ import com.zaijian.zhoumuyun.util.ZLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.util.Properties
-import javax.mail.Flags
-import javax.mail.Folder
-import javax.mail.Message
-import javax.mail.Session
-import javax.mail.Transport
-import javax.mail.internet.InternetAddress
-import javax.mail.internet.MimeMessage
+import jakarta.mail.Flags
+import jakarta.mail.Folder
+import jakarta.mail.Message
+import jakarta.mail.Session
+import jakarta.mail.Transport
+import jakarta.mail.internet.InternetAddress
+import jakarta.mail.internet.MimeMessage
 
 /**
  * EmailTools.kt — 真实邮件收发（恢复版）
@@ -66,7 +66,7 @@ private fun buildImapSession(provider: EmailProvider): Session {
 }
 
 /** 友好化常见鉴权/网络错误，避免把 javax.mail 原始堆栈丢给用户。 */
-private fun friendlyMailError(e: Exception): String = when {
+private fun friendlyMailError(e: Throwable): String = when {
     e.message?.contains("authentication failed", ignoreCase = true) == true ||
         e.message?.contains("Authentication", ignoreCase = true) == true ->
         "登录失败：请检查邮箱地址和授权码是否正确（注意：QQ邮箱需用「授权码」而非QQ密码，在QQ邮箱网页版-设置-账户中生成）"
@@ -76,7 +76,7 @@ private fun friendlyMailError(e: Exception): String = when {
     e.message?.contains("Unknown SMTP host", ignoreCase = true) == true ||
         e.message?.contains("Unknown IMAP host", ignoreCase = true) == true ->
         "无法连接邮件服务器：请检查网络连接"
-    else -> "邮件操作失败：${e.message?.take(100) ?: "未知错误"}"
+    else -> "邮件操作失败，请稍后重试。"
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -102,7 +102,13 @@ class EmailSendTool(
 
     override suspend fun execute(params: Map<String, String>): ToolResult =
         withContext(Dispatchers.IO) {
-            val account: EmailAccount = accountStore.getAccount()
+            // P1 修复：getAccount() 移入 try，避免读取邮箱配置异常导致未捕获崩溃
+            val account: EmailAccount = try { accountStore.getAccount() }
+                catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    return@withContext toolFailure(name, "读取邮箱配置失败，请稍后重试。", "email_account_read_failed", e)
+                }
             if (!account.isConfigured) {
                 return@withContext ToolResult(
                     toolName = name, success = false, content = "",
@@ -147,8 +153,10 @@ class EmailSendTool(
                     content  = "[邮件已发送]\n收件人：$to\n主题：$subject",
                     userHint = "正在发送邮件…",
                 )
-            } catch (e: Exception) {
-                ToolResult(name, false, friendlyMailError(e), e.message, userHint = "邮件发送失败")
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                toolFailure(name, friendlyMailError(e), "email_send_failed", e, tag = "EmailSend")
             }
         }
 }
@@ -179,11 +187,21 @@ class EmailFetchTool(
         const val DEFAULT_LIMIT = 5
         const val MAX_LIMIT = 20
         const val MAX_PREVIEW_CHARS = 200
+        // #25 修复：正文解析失败与"邮件本身无正文"此前都返回同一个空字符串，
+        // 报告里两种情况都表现为不出现"摘要："这一行，用户无法区分。用哨兵值
+        // 区分两种情况，解析失败时改为显式提示而不是静默消失。
+        const val PREVIEW_PARSE_FAILED = "\u0000__PREVIEW_PARSE_FAILED__"
     }
 
     override suspend fun execute(params: Map<String, String>): ToolResult =
         withContext(Dispatchers.IO) {
-            val account: EmailAccount = accountStore.getAccount()
+            // P1 修复：getAccount() 移入 try，避免读取邮箱配置异常导致未捕获崩溃
+            val account: EmailAccount = try { accountStore.getAccount() }
+                catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    return@withContext toolFailure(name, "读取邮箱配置失败，请稍后重试。", "email_account_read_failed", e)
+                }
             if (!account.isConfigured) {
                 return@withContext ToolResult(
                     toolName = name, success = false, content = "",
@@ -195,7 +213,7 @@ class EmailFetchTool(
             val limit = params["limit"]?.toIntOrNull()?.coerceIn(1, MAX_LIMIT) ?: DEFAULT_LIMIT
             val unreadOnly = params["unread_only"]?.lowercase() == "true"
 
-            var store: javax.mail.Store? = null
+            var store: jakarta.mail.Store? = null
             var folder: Folder? = null
             try {
                 val session = buildImapSession(account.provider)
@@ -233,13 +251,18 @@ class EmailFetchTool(
                         } ?: "未知发件人"
                         val subject = msg.subject ?: "(无主题)"
                         val date = msg.sentDate ?: msg.receivedDate
-                        val preview = extractTextPreview(msg).take(MAX_PREVIEW_CHARS)
+                        val previewRaw = extractTextPreview(msg)
                         val unread = !msg.isSet(Flags.Flag.SEEN)
 
                         appendLine("${idx + 1}. ${if (unread) "【未读】" else ""}$subject")
                         appendLine("   发件人：$from")
                         if (date != null) appendLine("   时间：$date")
-                        if (preview.isNotBlank()) appendLine("   摘要：$preview")
+                        // #25 修复：解析失败时明确提示，不再和"邮件本身无正文"一样静默不显示
+                        if (previewRaw == PREVIEW_PARSE_FAILED) {
+                            appendLine("   摘要：（正文解析失败，无法预览，可能是不支持的邮件格式）")
+                        } else if (previewRaw.isNotBlank()) {
+                            appendLine("   摘要：${previewRaw.take(MAX_PREVIEW_CHARS)}")
+                        }
                     }
                 }.trimEnd()
 
@@ -249,8 +272,10 @@ class EmailFetchTool(
                     content  = report,
                     userHint = "正在查收邮件…",
                 )
-            } catch (e: Exception) {
-                ToolResult(name, false, friendlyMailError(e), e.message, userHint = "邮件查收失败")
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                toolFailure(name, friendlyMailError(e), "email_fetch_failed", e, tag = "EmailFetch")
             } finally {
                 runCatching { folder?.close(false) }
                 runCatching { store?.close() }
@@ -262,24 +287,26 @@ class EmailFetchTool(
         return try {
             extractTextFromContent(message.content)
                 .replace(Regex("\\s+"), " ").trim()
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             ZLog.d("EmailTools", "extractTextPreview 解析邮件正文失败: ${e.message}")
-            ""
+            PREVIEW_PARSE_FAILED
         }
     }
 
     /** 递归提取 text/plain 内容，支持嵌套 multipart/mixed → multipart/alternative → text/plain */
-    private fun extractTextFromContent(content: Any): String {
+    // P2 修复：添加 depth 参数防止恶意嵌套邮件导致 StackOverflow
+    private fun extractTextFromContent(content: Any, depth: Int = 0): String {
+        if (depth > 10) return ""  // 防止恶意嵌套邮件导致 StackOverflow
         return when (content) {
             is String -> content
-            is javax.mail.Multipart -> {
+            is jakarta.mail.Multipart -> {
                 for (i in 0 until content.count) {
                     val part = content.getBodyPart(i)
                     if (part.isMimeType("text/plain")) {
                         val text = part.content as? String
                         if (!text.isNullOrBlank()) return text
                     } else if (part.isMimeType("multipart/*")) {
-                        val nested = extractTextFromContent(part.content)
+                        val nested = extractTextFromContent(part.content, depth + 1)
                         if (nested.isNotBlank()) return nested
                     }
                 }

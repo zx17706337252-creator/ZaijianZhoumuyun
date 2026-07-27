@@ -300,7 +300,7 @@ fun ChatScreen(
                     .getMimeTypeFromExtension(safeName.substringAfterLast('.', "").lowercase())
                 ?: "*/*"
             chatViewModel.notifyFileImported(safeName, dest.absolutePath, mimeType, dest.length())
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             // UI M13 修复：原 catch (_: Exception) { } 完全静默吞掉异常——
             // 文件选择器返回 uri 后，复制失败时用户毫无反馈，只会觉得"点了没反应"。
             // 现在补 ZLog 留痕，并通过已有的 snackbarHostState 给出可见提示。
@@ -334,7 +334,7 @@ fun ChatScreen(
                 } else {
                     android.widget.Toast.makeText(ctx2, "文件不存在：${ef.fileName}", android.widget.Toast.LENGTH_SHORT).show()
                 }
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 com.zaijian.zhoumuyun.util.ZLog.e("ChatScreen", "打开文件失败：${ef.absolutePath}", e)
                 android.widget.Toast.makeText(ctx2, "无法打开文件：${e.message?.take(60)}", android.widget.Toast.LENGTH_LONG).show()
             }
@@ -356,7 +356,7 @@ fun ChatScreen(
                 android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION,
             )
             chatViewModel.requestChatBackgroundCrop(uri.toString())
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             com.zaijian.zhoumuyun.util.ZLog.w("ChatScreen", "背景图设置失败: uri=$uri", e)
             scope.launch { snackbarHostState.showSnackbar("背景图设置失败，请重试") }
         }
@@ -663,12 +663,20 @@ fun ChatScreen(
                 .imePadding(),
             contentPadding   = PaddingValues(
                 // Fix-ChatHeaderOverlap（批次修复）：顶部 padding 直接用 ChatHeader 的
-                // 实测高度（headerHeightPx，含状态栏 + 关系胶囊行，无论换行多少行都
-                // 准确），不再用"topBarHeight + 固定22dp"这种假设胶囊只有一行的公式。
+                // 实测高度（headerHeightPx，含状态栏，无论关系信息展示与否都准确），
+                // 不再用"topBarHeight + 固定22dp"这种假设胶囊单独成行的公式。
                 // 首帧 headerHeightPx 尚未回调（值为0）时，用旧公式估算兜底避免闪烁。
+                //
+                // 顶栏压缩v1 连带修复：这个 22dp 是为旧版"关系胶囊 FlowRow 单独占一整行"
+                // 设计的补偿值——旧顶栏有关系信息时会多出约22dp高度。新顶栏（单行合一
+                // 方案）已经把关系信息合并进角色名同一行展示，不再有这条额外的胶囊行，
+                // 顶栏内容区是固定的 42dp（heightIn(min=42.dp)）。继续按旧公式估算会在
+                // 有关系信息时把首帧 padding 多估约 24dp（导致消息列表顶部短暂多出一截
+                // 空白，下一帧 onSizeChanged 回调后才收回）——只影响首帧，不是持续性
+                // 布局错位，但既然顶栏高度已经不再随关系信息变化，公式也应该同步去掉
+                // 这个不再成立的条件分支。
                 top    = (if (headerHeightPx > 0) headerHeightDp
-                          else statusBarHeightDp + Spacing.topBarHeight +
-                               (if (headerStageLabel != null || headerMood != null || headerSuppressionLabel != null) 22.dp else 0.dp)) +
+                          else statusBarHeightDp + 42.dp) +
                          (if (emotionCardVisible && presence?.activityHint != null) 40.dp else 0.dp) +
                          Spacing.md,
                 // P2 修复：底部 padding 改为动态测量的输入栏实际高度（含安全区），

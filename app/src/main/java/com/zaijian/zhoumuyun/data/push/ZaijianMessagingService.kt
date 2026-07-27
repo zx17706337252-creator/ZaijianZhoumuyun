@@ -127,7 +127,9 @@ class ZaijianMessagingService : FirebaseMessagingService() {
             // 稍后通过 DB 同步写入同一 id，会自然覆盖这里的临时记录，不会冲突。
             try {
                 AppContainer.instance.jobResultDao.insert(fakeResult)
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 ZLog.w(TAG, "Persist fakeResult failed for jobResultId=$jobResultId", e)
                 // 落库失败不影响本次浮层展示，仅记录日志——用户仍能看到 Toast，
                 // 只是"立即查看"跳转到任务中心时可能查不到这条（与此前行为一致，未劣化）。

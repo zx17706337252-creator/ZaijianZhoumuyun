@@ -98,7 +98,7 @@ class FertileWindowConsentJudge(
         } catch (e: kotlinx.coroutines.CancellationException) {
             // 必须重新抛出：结构化并发约定要求取消信号不能被吞掉
             throw e
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             ZLog.e(TAG, "LLM call failed, defaulting to NO", e)
             false
         }
@@ -112,7 +112,7 @@ class FertileWindowConsentJudge(
 
         return try {
             JSONObject(cleaned).getString("result").uppercase() == "YES"
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             ZLog.w(TAG, "Failed to parse LLM JSON: $cleaned", e)
             // P1-3 修复：词边界匹配兜底，复用 LlmIntentParse 的 \b 正则模式。
             // 原先 contains("YES") 会误匹配 "EYES" / "YESTERDAY" 等包含子串的单词；

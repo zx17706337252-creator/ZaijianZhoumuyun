@@ -1,5 +1,6 @@
 package com.zaijian.zhoumuyun.ui.viewmodel
 
+import com.zaijian.zhoumuyun.data.agent.ToolCallInterceptor
 import com.zaijian.zhoumuyun.data.db.entity.RelationshipEntity
 import com.zaijian.zhoumuyun.data.db.entity.RoundtableMessageEntity
 import com.zaijian.zhoumuyun.data.model.CharacterConfig
@@ -8,6 +9,7 @@ import com.zaijian.zhoumuyun.data.provider.LLMMessage
 import com.zaijian.zhoumuyun.data.provider.LLMProvider
 import com.zaijian.zhoumuyun.data.provider.ProviderManager
 import com.zaijian.zhoumuyun.data.provider.chatSyncWithRetry
+import com.zaijian.zhoumuyun.data.repository.AgentActivityRepository
 import com.zaijian.zhoumuyun.data.repository.EventRepository
 import com.zaijian.zhoumuyun.data.repository.RoundtableMessageRepository
 import com.zaijian.zhoumuyun.domain.MoodType
@@ -77,7 +79,7 @@ class RoundtableMessageOrchestrator(
 
     fun buildAiCall(
         systemPrompt: String,
-        maxTokens: Int = 100,
+        maxTokens: Int = 50000,
         temperature: Float = 0.2f,
     ): suspend (String) -> String {
         val provider = ProviderManager.instance.activeProvider
@@ -138,7 +140,12 @@ class RoundtableMessageOrchestrator(
     suspend fun schedulePlans(ctx: ScheduleContext): List<SpeakPlan> {
         val provider = ProviderManager.instance.activeProvider
             ?: return TurnScheduler.scheduleAuto(ctx, apiCall = null)
-        val aiApiCall = buildAiCall("你是一个调度助手，只返回 JSON，不要任何其他文字。", maxTokens = 200, temperature = 0.3f)
+        // P2 修复（用户遗留项）：此处原硬编码 maxTokens=200，绕过了 buildAiCall
+        // 已统一到 50000 的默认值。调度 JSON 通常很短，200 本来看似够用，但
+        // 参与调度的角色数量多、@提及/发言意愿等字段膨胀时仍可能被截断，
+        // 且与私聊/圆桌回复/工单任务统一 maxTokens 标准的要求相悖。改为不传
+        // maxTokens，直接沿用 buildAiCall 的默认值（50000）。
+        val aiApiCall = buildAiCall("你是一个调度助手，只返回 JSON，不要任何其他文字。", temperature = 0.3f)
         return when (_uiState.value.scheduleMode) {
             ScheduleMode.AUTO      -> TurnScheduler.scheduleAuto(ctx, aiApiCall)
             ScheduleMode.HEURISTIC -> TurnScheduler.scheduleAuto(ctx, apiCall = null)
@@ -178,8 +185,8 @@ class RoundtableMessageOrchestrator(
             } ?: false
         } catch (e: CancellationException) {
             throw e
-        } catch (e: Exception) {
-            ZLog.d("RoundtableMessageOrchestrator", "judgeIsGroupTask 裁判调用失败，降级为 false", e)
+        } catch (e: Throwable) {
+            ZLog.w("RoundtableMessageOrchestrator", "judgeIsGroupTask 裁判调用失败，降级为 false", e)
             false
         }
     }
@@ -223,8 +230,8 @@ $digest
             } ?: true   // 超时 → 保守结束
         } catch (e: CancellationException) {
             throw e
-        } catch (e: Exception) {
-            ZLog.d("RoundtableMessageOrchestrator", "judgeDiscussionConcluded 裁判调用失败，降级为 true（保守结束）", e)
+        } catch (e: Throwable) {
+            ZLog.w("RoundtableMessageOrchestrator", "judgeDiscussionConcluded 裁判调用失败，降级为 true（保守结束）", e)
             true          // 异常 → 保守结束
         }
     }
@@ -279,7 +286,10 @@ $digest
                 )?.let { fullReply -> alreadyReplied[bot.id] = fullReply }
             } catch (e: CancellationException) {
                 throw e
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
+                // catch Throwable 而非 Exception：与私聊 ChatMessageOrchestrator:584 对齐，
+                // 防止工具层 Error 击穿。补 ZLog.e 消除静默失败（原仅 UI error 无日志）。
+                ZLog.e("RoundtableViewModel", "${bot.name} 回复异常", e)
                 val prev = _uiState.value.error
                 _uiState.update { it.copy(error = if (prev.isNullOrEmpty()) "${bot.name} 回复出了点问题" else "$prev；${bot.name} 回复出了点问题") }
             } finally {
@@ -361,6 +371,20 @@ $digest
             return
         }
 
+        // Fix-孤儿文件 ③（与 ChatMessageOrchestrator.sendMessage 同款防线，
+        // 详见 ToolCallInterceptor.isToolInFlight 顶部说明）：圆桌里 excel_gen/
+        // pptx_gen 这类工具是某个具体成员（bot.id）在执行，正常情况下
+        // waitingForUser/isAutoDiscussing 等状态已经会避免用户在这时候插话，
+        // 这里是同一道"万一状态没挡住"的兜底——发现活跃成员里有任何一位正在
+        // 执行工具，就不取消 roundJob，只提示稍候，避免文件写到一半被打断。
+        val memberWithToolInFlight = members.firstOrNull {
+            ToolCallInterceptor.isToolInFlight(AgentActivityRepository.SceneType.ROUNDTABLE_BOT, it.id)
+        }
+        if (memberWithToolInFlight != null) {
+            _uiState.update { it.copy(error = "${memberWithToolInFlight.name}还在处理上一个操作，请稍候再发送") }
+            return
+        }
+
         getRoundJob()?.cancel()
         getIdleWatchJob()?.cancel()
 
@@ -398,7 +422,9 @@ $digest
                     viewModelScope.launch(Dispatchers.IO) {
                         try {
                             roundtableMessageDao.insert(userMsg.toEntity(rtId))
-                        } catch (e: Exception) {
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Throwable) {
                             ZLog.e("RoundtableMessageOrchestrator", "用户消息落库失败 rtId=$rtId", e)
                             _uiState.update { it.copy(error = "消息保存失败，可能无法在下次打开时看到") }
                         }
@@ -543,7 +569,10 @@ $digest
                 finishDiscussion()
             } catch (e: CancellationException) {
                 throw e
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
+                // catch Throwable 而非 Exception：与私聊 ChatMessageOrchestrator:584 对齐，
+                // 防止工具层 Error 击穿。补 ZLog.e 消除静默失败（原仅 UI error 无日志）。
+                ZLog.e("RoundtableViewModel", "圆桌讨论异常", e)
                 _uiState.update { it.copy(error = "发生错误，请重试") }
             } finally {
                 _uiState.update {

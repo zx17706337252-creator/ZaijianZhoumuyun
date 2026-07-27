@@ -104,7 +104,9 @@ class ProactiveMessageWorker(
             com.zaijian.zhoumuyun.data.manager.PregnancyTriggerManager.resyncFertileWindowFlags(db)
 
             Result.success()
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             ZLog.w("ProactiveMsgWorker", "doWork failed", e)
             // 不重试：下一个周期的 PeriodicWorkRequest 自然会再跑一次，
             // 不需要走 WorkManager 的退避重试机制（这不是一次性必达任务）。

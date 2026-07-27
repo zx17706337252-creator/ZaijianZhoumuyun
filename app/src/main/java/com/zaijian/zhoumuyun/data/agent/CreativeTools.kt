@@ -85,8 +85,10 @@ class CodeGenTool(
                 content  = "[生成的 $lang 代码]\n$result",
                 userHint = "正在生成代码…",
             )
-        } catch (e: Exception) {
-            ToolResult(name, false, "代码生成失败：${e.message?.take(80)}", e.message)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            toolFailure(name, "代码生成失败，请稍后重试。", "code_gen_failed", e)
         }
     }
 }
@@ -162,8 +164,10 @@ $truncatedCode
                 content  = "[代码审查结果]\n$result",
                 userHint = "正在审查代码…",
             )
-        } catch (e: Exception) {
-            ToolResult(name, false, "代码审查失败：${e.message?.take(80)}", e.message)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            toolFailure(name, "代码审查失败，请稍后重试。", "code_review_failed", e)
         }
     }
 }

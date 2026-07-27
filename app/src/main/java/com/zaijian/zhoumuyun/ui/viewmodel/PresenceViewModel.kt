@@ -347,7 +347,9 @@ class PresenceViewModel(application: Application) : AndroidViewModel(application
         viewModelScope.launch {
             try {
                 scheduleRepo.markResultRead(jobResultId)
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 ZLog.w("PresenceViewModel", "markRead failed: ${e.message}")
             }
         }
@@ -375,7 +377,9 @@ class PresenceViewModel(application: Application) : AndroidViewModel(application
                     map[char.id] = descendants.map { it.config.id }
                 }
                 _uiState.update { it.copy(familyChainMap = map, isFamilyChainLoaded = true) }
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 ZLog.w("PresenceViewModel", "loadFamilyChainMap failed: ${e.message}")
                 // 加载失败也标记为完成，避免 WorldScreen 永远阻塞等待
                 _uiState.update { it.copy(isFamilyChainLoaded = true) }

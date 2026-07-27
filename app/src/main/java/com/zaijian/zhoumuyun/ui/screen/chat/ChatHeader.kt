@@ -6,9 +6,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -18,48 +15,60 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.dp
-import com.zaijian.zhoumuyun.data.model.ChatMode
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 
+import com.zaijian.zhoumuyun.data.model.ChatMode
+import com.zaijian.zhoumuyun.domain.MoodType
+import com.zaijian.zhoumuyun.ui.design.AppIcons
 import com.zaijian.zhoumuyun.ui.theme.Palette
 import com.zaijian.zhoumuyun.ui.theme.Spacing
 import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
 
 
-import com.zaijian.zhoumuyun.domain.MoodType
-import com.zaijian.zhoumuyun.ui.design.AppIcons
-
-
 // ─────────────────────────────────────────────────────────────
-//  顶栏簇：ChatHeader / ModeChip / ChatRelCapsule
+//  顶栏簇：ChatHeader / ModeChip
 //  拆分自 ChatScreen.kt（v87 Phase 2）。
-//  ModeChip 和 ChatRelCapsule 原先物理位置在文件末尾，但实际只被
-//  ChatHeader 调用——三者是同一簇，随 ChatHeader 一起搬迁。
 // ─────────────────────────────────────────────────────────────
 
 // ─────────────────────────────────────────────────────────────
-//  ChatHeader — 毛玻璃顶栏
-//  规范 §13：返回箭头 / 角色名+关系胶囊行 / 模式切换 / 更多图标
-//  v1.36：移除时间段活动文案（statusText，如"还没睡"），保留心情+关系状态胶囊。
-//  v152：去掉头像（32dp 头像+两侧 spacer 共占约 44dp，在这条本就紧张的
-//  顶栏里性价比很低——头像详情页本身已有大尺寸头像，这里纯展示意义不大）。
-//  空出的横向空间直接并入角色名（weight(1f)），"工作/陪伴"切换器仍留在
-//  主 Row 里、不下移成单独一行——下移会让顶栏从两行变三行，比头像本身
-//  更占纵向空间。原头像的"点击进详情页"入口改到角色名上（onProfileClick），
-//  保证功能不丢。
+//  ChatHeader — 单行紧凑顶栏（顶栏压缩v1 · 方案A：单行合一）
+//  规范 §13：返回箭头 / 角色名+关系信息合并行 / 模式切换 / 更多图标
+//  v1.36：移除时间段活动文案（statusText），保留心情+关系状态。
+//  v152：去掉头像，空出的横向空间并入角色名，原头像点击入口改到角色名上。
+//
+//  顶栏压缩v1（本次）：v152 之后顶栏内容区（不含系统状态栏）实测仍有约
+//  84dp——主 Row 因两个 IconButton 各自维持系统默认 48dp 触控热区被撑到
+//  56dp，关系胶囊（FlowRow）又单独占一整行约 28dp。三个方案对比后选定
+//  "单行合一"：
+//    1) 关系信息（阶段/心情/压抑提示）不再各占一个独立胶囊、单独成行，
+//       合并成一段用"·"分隔、按语义分色的文字，跟在角色名后面同一行，
+//       maxLines=1 + ellipsis 兜底，超宽自动截断。
+//    2) 返回/更多按钮触控区从系统默认 48dp 显式收到 32dp——写法参照
+//       FileVaultScreen.kt / ProjectDetailScreen.kt 已验证过的
+//       Modifier.size(32.dp).minimumInteractiveComponentSize() 组合。
+//    3) 工作/陪伴切换器只保留图标、去掉文字标签，整体再缩小一档。
+//  压缩后内容区约 42dp，较此前减少约 50%。
+//  取舍：关系信息挤在同一行里，稳定展示上限约1~2条短文案；如果后续发现
+//  压抑提示这类较长文案经常被截断，再考虑把关系信息整体挪到消息区悬浮条
+//  （对比方案里的方案C），本次先按单行合一上线看实际效果。
 // ─────────────────────────────────────────────────────────────
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun ChatHeader(
     name: String,
@@ -70,36 +79,48 @@ internal fun ChatHeader(
     onProfileClick: () -> Unit,
     onMoreClick: () -> Unit = {},
     onChatModeChange: (ChatMode) -> Unit = {},
-    // 待办10：关系状态胶囊（均可为 null，null = 不展示）
+    // 待办10：关系状态（均可为 null，null = 不展示）
     relStageLabel: String? = null,
-    relMood: com.zaijian.zhoumuyun.domain.MoodType? = null,
+    relMood: MoodType? = null,
     relSuppressionHint: String? = null,
     modifier: Modifier = Modifier,
 ) {
     val colors = ZaijianTheme.colors
     val type   = ZaijianTheme.typography
 
-    // 待办10：关系状态胶囊行数据（心情/关系阶段/压抑提示）。
-    // Fix-ChatHeaderTagsRow：把这几个值的计算提到最外层，因为胶囊行现在
-    // 从"角色名下方的窄 Column"里搬出来、独立成顶栏最下面单独一整行，
-    // 主 Row 和胶囊行两处都要用到 hasRelInfo。
     val moodLabel = when (relMood) {
-        com.zaijian.zhoumuyun.domain.MoodType.EXCITED    -> "✨ 兴奋"
-        com.zaijian.zhoumuyun.domain.MoodType.SATISFIED  -> "😊 愉快"
-        com.zaijian.zhoumuyun.domain.MoodType.CURIOUS    -> "🤔 好奇"
-        com.zaijian.zhoumuyun.domain.MoodType.FOCUSED    -> "🎯 专注"
-        com.zaijian.zhoumuyun.domain.MoodType.CALM       -> "🌿 平静"
-        com.zaijian.zhoumuyun.domain.MoodType.REFLECTIVE -> "💭 沉思"
-        com.zaijian.zhoumuyun.domain.MoodType.TIRED      -> "😴 疲惫"
-        com.zaijian.zhoumuyun.domain.MoodType.CONCERNED  -> "😟 担心"
+        MoodType.EXCITED    -> "✨兴奋"
+        MoodType.SATISFIED  -> "😊愉快"
+        MoodType.CURIOUS    -> "🤔好奇"
+        MoodType.FOCUSED    -> "🎯专注"
+        MoodType.CALM       -> "🌿平静"
+        MoodType.REFLECTIVE -> "💭沉思"
+        MoodType.TIRED      -> "😴疲惫"
+        MoodType.CONCERNED  -> "😟担心"
         null                -> null
     }
-    val hasRelInfo = relStageLabel != null || moodLabel != null || relSuppressionHint != null
 
-    // 返回按钮的默认触控宽度。M3 IconButton 即使图标只有 24dp，
-    // 组件本身也会强制保留 48dp 最小触控热区，这部分空间胶囊行缩进时要算进去，
-    // 不然胶囊行会跟角色名对不齐。
-    val backButtonWidth = 48.dp
+    // 顶栏压缩v1：三段关系信息不再各自是独立胶囊，合并成一段按语义分色的
+    // AnnotatedString，跟在角色名后面同一行展示。分隔符固定用 textDisabled
+    // 弱化，三段本身各自保留原来的语义色（阶段=accentColor / 心情=
+    // textSecondary / 压抑提示=textDisabled），信息层级基本不丢。
+    val segments = listOfNotNull(
+        relStageLabel?.let { it to accentColor },
+        moodLabel?.let { it to colors.textSecondary },
+        relSuppressionHint?.let { it to colors.textDisabled },
+    )
+    val relInfoText = if (segments.isEmpty()) null else buildAnnotatedString {
+        segments.forEachIndexed { index, (text, color) ->
+            if (index > 0) {
+                withStyle(SpanStyle(color = colors.textDisabled)) { append(" · ") }
+            }
+            withStyle(SpanStyle(color = color)) { append(text) }
+        }
+    }
+
+    // 紧凑触控尺寸：系统 IconButton 默认强制 48dp 最小触控热区，单行顶栏
+    // 放不下两个 48dp 按钮还要留位置给名字/关系信息/模式切换器。
+    val compactIconSize = 32.dp
 
     Box(
         modifier = modifier
@@ -109,216 +130,154 @@ internal fun ChatHeader(
                 color  = colors.borderSubtle,
                 shape  = RoundedCornerShape(bottomStart = 0.dp, bottomEnd = 0.dp),
             )
-            .statusBarsPadding()
-            // Fix-顶栏点击穿透：顶栏此前只是纯展示 Box，不消费触摸事件，
-            // 隔着顶栏能点到下方消息列表里滚到顶栏视觉区域下面的气泡。
-            // 加空 clickable 拦截，indication=null 避免多余水波纹。
+            // Fix-顶栏点击穿透（复查修复）：clickable 拦截必须放在 statusBarsPadding()
+            // 之前。Compose 里链式修饰符的可点击命中区域，按它在链上所处位置时的尺寸
+            // 计算——原写法是 .statusBarsPadding().clickable(){}，statusBarsPadding()
+            // 先把状态栏高度那一截让给内部 Row，clickable 排在后面，命中区域只覆盖了
+            // 状态栏以下的部分；但 background/border 是更早声明的，会画满整个外层尺寸
+            // （含状态栏那一条，这本身是对的——顶栏底色需要延伸到状态栏后面）。两者一
+            // 结合，状态栏那一条视觉上是顶栏的一部分，触摸却会穿透到下方消息列表。
+            // 调整为 .clickable(){}.statusBarsPadding()：clickable 命中区域改为覆盖
+            // 链上此刻的完整尺寸（含状态栏），statusBarsPadding() 挪到后面依然正常
+            // 生效——它只影响内部 Row 的位置/可用空间，不影响 clickable 已经拿到的
+            // 命中区域大小。
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication        = null,
-            ) {},
+            ) {}
+            .statusBarsPadding(),
     ) {
-        Column(modifier = Modifier.fillMaxWidth()) {
-            Row(
-                modifier          = Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = Spacing.topBarHeight)
-                    .padding(horizontal = Spacing.sm, vertical = Spacing.xs),
-                verticalAlignment = Alignment.CenterVertically,
+        Row(
+            modifier          = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 42.dp)
+                .padding(horizontal = Spacing.sm, vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            // 返回箭头
+            IconButton(
+                onClick  = onBack,
+                modifier = Modifier
+                    .size(compactIconSize)
+                    .minimumInteractiveComponentSize(),
             ) {
-                // 返回箭头
-                IconButton(
-                    onClick  = onBack,
-                    modifier = Modifier
-                        .align(Alignment.CenterVertically)
-                        .size(backButtonWidth),
-                ) {
-                    Icon(
-                        imageVector        = AppIcons.ArrowBack,
-                        contentDescription = "返回",
-                        tint               = colors.textPrimary,
-                        modifier           = Modifier.size(24.dp),
-                    )
-                }
+                Icon(
+                    imageVector        = AppIcons.ArrowBack,
+                    contentDescription = "返回",
+                    tint               = colors.textPrimary,
+                    modifier           = Modifier.size(18.dp),
+                )
+            }
 
-                // v152：原头像与返回按钮间 xs(4dp) + 头像 32dp + 与角色名间 sm(8dp)
-                // 共 44dp 的横向空间随头像一起收回。角色名紧接返回按钮，只留一个
-                // sm(8dp) 间距——比原来贴头像那侧的 4dp 略宽，视觉上不会显得紧贴
-                // 返回箭头；空出的约 36dp 净宽度通过角色名的 weight(1f) 自动吸收。
-                Spacer(Modifier.width(Spacing.sm))
+            Spacer(Modifier.width(Spacing.xs))
 
-                // 角色名（点击进入详情页，承接原头像的点击入口）—— Fix-ChatHeaderTagsRow：
-                // 这里现在只放名字。关系胶囊行已经搬到这个主 Row 外面单独成行，不再
-                // 挤在名字和右侧模式切换器之间这条窄缝里，避免两个短胶囊因为可用宽度
-                // 不够而被迫上下堆叠、把整个顶栏撑得又高又宽。
+            // 角色名 + 关系信息合并行（点击进入详情页，承接原头像的点击入口）
+            Row(
+                modifier              = Modifier
+                    .weight(1f)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication        = null,
+                    ) { onProfileClick() },
+                verticalAlignment     = Alignment.Bottom,
+                horizontalArrangement = Arrangement.spacedBy(5.dp),
+            ) {
                 Text(
                     text     = name,
-                    style    = type.navTitle,
+                    style    = type.navTitle.copy(fontSize = 15.sp, lineHeight = 18.sp),
                     color    = colors.textPrimary,
-                    // P2 修复：maxLines 1→2，避免女儿角色自定义长昵称被过度截断。
-                    maxLines = 2,
+                    maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier
-                        .weight(1f)
-                        .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication        = null,
-                        ) { onProfileClick() },
                 )
-
-                // 模式切换（工作 / 陪伴）— Phase 30 方案一
-                Row(
-                    modifier = Modifier
-                        .align(Alignment.CenterVertically)
-                        .clip(RoundedCornerShape(18.dp))
-                        .background(colors.borderSubtle)
-                        .padding(horizontal = 3.dp, vertical = 3.dp),
-                    horizontalArrangement = Arrangement.spacedBy(2.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    ModeChip(
-                        label    = "工作",
-                        icon     = AppIcons.Work,
-                        selected = chatMode == ChatMode.WORK,
-                        accent   = accentColor,
-                        onClick  = { onChatModeChange(ChatMode.WORK) },
-                    )
-                    ModeChip(
-                        label    = "陪伴",
-                        icon     = AppIcons.Favorite,
-                        selected = chatMode == ChatMode.COMPANION,
-                        accent   = accentColor,
-                        onClick  = { onChatModeChange(ChatMode.COMPANION) },
-                    )
-                }
-
-                // 更多图标
-                IconButton(
-                    onClick  = onMoreClick,
-                    modifier = Modifier.align(Alignment.CenterVertically),
-                ) {
-                    Icon(
-                        imageVector        = AppIcons.MoreVert,
-                        contentDescription = "更多",
-                        tint               = colors.textSecondary,
-                        modifier           = Modifier.size(24.dp),
+                if (relInfoText != null) {
+                    Text(
+                        text     = relInfoText,
+                        style    = type.label,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
                     )
                 }
             }
 
-            // 待办10：关系状态胶囊行 —— Fix-ChatHeaderTagsRow：独立成完整一行，
-            // 左侧缩进对齐到角色名起始位置（主 Row 的水平内边距 + 返回按钮宽度 +
-            // 返回按钮与角色名之间的 Spacer，v152 去掉头像后三项之和即为新缩进），
-            // 右侧只留主 Row 同样的水平内边距。这一整行拥有顶栏的全部横向空间，
-            // 不再被右侧工作/陪伴切换器挤占，"信任""平静"这类短胶囊可以稳定
-            // 左右并排展示，不会再被迫各占一行、把顶栏撑高。
-            if (hasRelInfo) {
-                FlowRow(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(
-                            start  = Spacing.sm + backButtonWidth + Spacing.sm,
-                            end    = Spacing.sm,
-                            bottom = Spacing.xs,
-                        ),
-                    horizontalArrangement = Arrangement.spacedBy(Spacing.xs),
-                    verticalArrangement = Arrangement.spacedBy(2.dp),
-                ) {
-                    if (relStageLabel != null) {
-                        ChatRelCapsule(text = relStageLabel, color = accentColor)
-                    }
-                    if (moodLabel != null) {
-                        ChatRelCapsule(text = moodLabel, color = colors.textSecondary)
-                    }
-                    if (relSuppressionHint != null) {
-                        ChatRelCapsule(text = relSuppressionHint, color = colors.textDisabled)
-                    }
-                }
+            Spacer(Modifier.width(Spacing.xs))
+
+            // 模式切换（工作 / 陪伴）— 顶栏压缩v1：只留图标，去掉文字标签
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(colors.borderSubtle)
+                    .padding(2.dp),
+                horizontalArrangement = Arrangement.spacedBy(1.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                ModeChip(
+                    icon               = AppIcons.Work,
+                    contentDescription = "工作模式",
+                    selected           = chatMode == ChatMode.WORK,
+                    accent             = accentColor,
+                    onClick            = { onChatModeChange(ChatMode.WORK) },
+                )
+                ModeChip(
+                    icon               = AppIcons.Favorite,
+                    contentDescription = "陪伴模式",
+                    selected           = chatMode == ChatMode.COMPANION,
+                    accent             = accentColor,
+                    onClick            = { onChatModeChange(ChatMode.COMPANION) },
+                )
+            }
+
+            // 更多图标
+            IconButton(
+                onClick  = onMoreClick,
+                modifier = Modifier
+                    .size(compactIconSize)
+                    .minimumInteractiveComponentSize(),
+            ) {
+                Icon(
+                    imageVector        = AppIcons.MoreVert,
+                    contentDescription = "更多",
+                    tint               = colors.textSecondary,
+                    modifier           = Modifier.size(18.dp),
+                )
             }
         }
     }
 }
 
 // ─────────────────────────────────────────────────────────────
-//  ModeChip — 工作 / 陪伴 模式切换按钮（Phase 30 方案一）
-//
-//  选中态：accentColor 填充 + 白色图标/文字
-//  未选中：透明背景 + textSecondary 色
+//  ModeChip — 工作 / 陪伴 模式切换按钮
+//  顶栏压缩v1：改为纯图标（原来带文字标签），靠 contentDescription
+//  保留语义、selected 态的填充色沿用原方案区分选中/未选中。
 // ─────────────────────────────────────────────────────────────
 
 @Composable
 private fun ModeChip(
-    label: String,
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    icon: ImageVector,
+    contentDescription: String,
     selected: Boolean,
     accent: Color,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val colors = ZaijianTheme.colors
-    val type   = ZaijianTheme.typography
 
     val bg      = if (selected) accent else Color.Transparent // Transparent 与主题无关，保留不变
-    val content = if (selected) Palette.White else colors.textSecondary // accent 在明暗主题下均为 Palette.Gold，白色文字对比度均足够
+    val content = if (selected) Palette.White else colors.textSecondary // accent 在明暗主题下均为 Palette.Gold，白色图标对比度均足够
 
-    Row(
-        modifier = modifier
-            .clip(RoundedCornerShape(16.dp))
+    Box(
+        modifier          = modifier
+            .clip(RoundedCornerShape(12.dp))
             .background(bg)
-            // P3-21 的 minimumInteractiveComponentSize() 强制单个 chip 最小 48x48dp，
-            // 两个 chip（工作/陪伴）叠加后整条切换器宽度轻松超过 100dp，占掉顶栏近
-            // 一半横向空间，把角色名+关系胶囊挤到只剩窄窄一条（这正是"熟悉""沉思"
-            // 两个短胶囊都要各占一行的直接原因）。顶栏场景下切换器是次要操作，不需要
-            // 主导航级别的 48dp 热区，改用 32dp 紧凑高度（对齐 M3 小型 Chip 规范），
-            // 横向空间立刻多出一大截给角色名那一侧。
-            .heightIn(min = 32.dp)
             .clickable { onClick() }
-            .padding(horizontal = 6.dp, vertical = 3.dp),
-        verticalAlignment     = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(3.dp),
+            .padding(6.dp),
+        contentAlignment  = Alignment.Center,
     ) {
         Icon(
             imageVector        = icon,
-            contentDescription = label,
+            contentDescription = contentDescription,
             tint               = content,
             modifier           = Modifier.size(14.dp),
-        )
-        Text(
-            text  = label,
-            style = type.label,
-            color = content,
-        )
-    }
-}
-
-// ─────────────────────────────────────────────────────────────
-//  ChatRelCapsule — 顶栏关系状态胶囊（待办10）
-// ─────────────────────────────────────────────────────────────
-
-@Composable
-private fun ChatRelCapsule(text: String, color: Color) {
-    val colors = ZaijianTheme.colors
-    // P3-40 修复：ChatRelCapsule padding 从 5dp/1dp 增加至 8dp/2dp，避免文字贴边过紧
-    //
-    // 批次10 10-1修复：Text 此前未设 maxLines/softWrap，在"熟悉"+"沉思"等多个
-    // 胶囊同行、且右侧被工作/陪伴切换器挤占横向空间时，容器可用宽度不足以容纳
-    // 单行文字，Compose 会按字符自动换行（"沉思"拆成"沉"/"思"上下两行），
-    // 胶囊 Box 高度被撑高变成细长竖条，与右侧切换器纵向叠在一起、还会遮挡
-    // 下方时间戳。胶囊场景下文字必须保持单行，改为 maxLines=1 强制不换行、
-    // 超宽时用省略号截断（理论上不会触发，胶囊文案都很短，仅作兜底）。
-    Box(
-        modifier = Modifier
-            .clip(RoundedCornerShape(10.dp))
-            .background(color.copy(alpha = 0.10f))
-            .padding(horizontal = Spacing.sm, vertical = 2.dp),
-    ) {
-        Text(
-            text     = text,
-            style    = ZaijianTheme.typography.caption,
-            color    = color,
-            maxLines = 1,
-            softWrap = false,
-            overflow = TextOverflow.Ellipsis,
         )
     }
 }

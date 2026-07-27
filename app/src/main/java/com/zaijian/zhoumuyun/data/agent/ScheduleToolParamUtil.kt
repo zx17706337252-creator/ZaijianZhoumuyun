@@ -65,14 +65,42 @@ internal object ScheduleToolParamUtil {
             val keys = obj.keys()
             while (keys.hasNext()) {
                 val key = keys.next()
+                val value = obj.get(key)
+                // #44 修复：JSON 显式 null（如 {"key": null}）此前落进 obj.get(key).toString()——
+                // org.json 用 JSONObject.NULL 这个哨兵对象表示 JSON null，其 toString() 恰好
+                // 就是字符串 "null"，没有特判，导致 LLM 传入的真正空值被当成了字面量字符串
+                // "null" 交给下游工具逻辑，可能被误当作有效值处理。
+                // Map<String, String> 本身无法表达"真正的 null"，这里按"未传该参数"处理——
+                // 直接跳过该 key，与调用方对"key 不存在"的既有处理路径保持一致，
+                // 比塞一个容易被误解的字符串 "null" 更安全。
+                if (value === JSONObject.NULL) continue
                 // 嵌套对象/数组整体转字符串存值，避免二次丢数据；标量值直接取字符串形式。
-                result[key] = obj.get(key).toString()
+                result[key] = value.toString()
             }
             result
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             null
         }
     }
+
+    /**
+     * #41/#43 修复：低风险清单复核确认的 Long 溢出真实风险。
+     *
+     * 根因：parseHoursOrError 此前只挡负数，没有上限。ScheduleCreateTool 的
+     * intervalHours/delayHours、ScheduleListTool 的 hoursAhead 传入极大值
+     * （如 1e20）时，"(value * TimeUnit.HOURS.toMillis(1)).toLong()" 这一步，
+     * Kotlin 对"超出 Long 范围的 Double 转 Long"会钳位到 Long.MAX_VALUE（这一
+     * 步本身不是经典整数溢出）；但紧接着调用方做的
+     * "System.currentTimeMillis() + 那个值" 是普通 Long 加法，Kotlin/JVM 不做
+     * 溢出检查，会真正 wraparound 成一个巨大负数——下游 nextRunAt / beforeMs
+     * 可能变成远早于当前时间的负值，实际后果是定时任务被立即触发或调度行为异常。
+     *
+     * 修复：加统一上限 MAX_HOURS（10 年 = 87600 小时）。这个量级覆盖了任何合理
+     * 的调度场景（重复间隔、延迟、查询窗口都不会真的需要 10 年以上），同时给
+     * "当前时间 + 上限对应的毫秒数"这步 Long 加法留出远超所需的安全余量，
+     * 从源头拒绝会导致溢出的极端输入，而不是依赖下游钳位后再静默出错。
+     */
+    const val MAX_HOURS = 87600.0 // 24 * 365 * 10，约10年
 
     /**
      * 审计报告问题2（P1，静默降级）修复。
@@ -85,6 +113,8 @@ internal object ScheduleToolParamUtil {
      * 修复：只有当原始值为空/未传时才默认 0.0（保留"可选参数不传"的合法场景）；
      * 一旦原始值非空但转换失败，返回 Result.failure 携带明确错误信息，调用方
      * （execute）据此返回 error，而不是静默继续创建/更新任务。
+     *
+     * #41/#43 追加修复：非负但过大的值现也会被拒绝，见 MAX_HOURS 上方说明。
      */
     fun parseHoursOrError(raw: String?, fieldName: String): Result<Double> {
         val trimmed = raw?.trim()
@@ -96,6 +126,13 @@ internal object ScheduleToolParamUtil {
         // 错误提示。现显式拒绝负数，与本函数已有的"非数字"校验风格一致。
         if (value < 0) {
             return Result.failure(IllegalArgumentException("$fieldName 不能为负数，收到: $trimmed"))
+        }
+        if (value > MAX_HOURS) {
+            return Result.failure(
+                IllegalArgumentException(
+                    "$fieldName 超出上限（最大 ${MAX_HOURS.toInt()} 小时，约10年），收到: $trimmed"
+                )
+            )
         }
         return Result.success(value)
     }

@@ -25,7 +25,6 @@ import com.zaijian.zhoumuyun.data.repository.MessageRepository
 import com.zaijian.zhoumuyun.data.repository.PregnancyRepository
 import com.zaijian.zhoumuyun.data.repository.ProjectRepository
 import com.zaijian.zhoumuyun.data.repository.TaskRepository
-import com.zaijian.zhoumuyun.data.repository.UserProfileRepository
 import com.zaijian.zhoumuyun.data.repository.WorkflowRepository
 import com.zaijian.zhoumuyun.data.repository.AgentActivityRepository
 import com.zaijian.zhoumuyun.data.agent.AgentToolRegistry
@@ -45,6 +44,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -72,12 +72,6 @@ class ChatMessageOrchestrator(
     private val projectRepo: ProjectRepository,
     private val workflowRepo: WorkflowRepository,
     private val eventRepo: EventRepository,
-    // 「称呼」功能性缺陷修复：此前本类构造 buildSystemPrompt 时从未传 userName，
-    // 恒为默认值"你"。userName 是 ProfileScreen 可编辑的用户设置，不是常驻不变的
-    // 依赖，因此不像 identityRepo 等 Repository 那样只在构造时持有一次引用——
-    // 改用 lambda 惰性读取，每次发消息都取当前最新值，用户中途改了称呼无需
-    // 重建 ChatViewModel/Orchestrator 即可立即生效。
-    private val getUserName: () -> String,
     private val pregnancyDelegate: PregnancyPromptDelegate,
     private val agentRelationEngine: AgentRelationEngine,
     private val daughterGenerator: DaughterCharacterGenerator,
@@ -98,6 +92,20 @@ class ChatMessageOrchestrator(
         if (text.isBlank() || getCurrentCharacterId() < 0) return
         val provider = ProviderManager.instance.activeProvider ?: run {
             _uiState.update { it.copy(isApiKeyMissing = true) }
+            return
+        }
+
+        // Fix-孤儿文件 ③（配合 ToolCallInterceptor.isToolInFlight 一起看）：
+        // 正常情况下这里几乎不会命中——isTyping 已经在门控发送按钮，走到这行
+        // 说明要么是 isTyping 门控失效的边界情况，要么是未来新增的某条不经过
+        // 按钮的调用路径。以前这里会无条件 getReplyJob()?.cancel()：如果恰好
+        // 有 excel_gen/pptx_gen 这类工具正在写文件（POI 写入阻塞、取消不了），
+        // 文件会正常落盘但这次回复被腰斩、用户体验上像是"话说到一半没了"
+        // （①②已经保证这种情况下文件本身不会真的丢，见 executeWithTimeout 的
+        // Fix-孤儿文件 说明，但被打断这件事本身仍然是不好的体验）。现在改成：
+        // 发现正有工具在执行时，不取消、不发送，只提示用户稍候。
+        if (ToolCallInterceptor.isToolInFlight(AgentActivityRepository.SceneType.CHAT, getCurrentCharacterId())) {
+            _uiState.update { it.copy(error = "上一个操作还在进行中，请稍候再发送") }
             return
         }
 
@@ -244,9 +252,14 @@ class ChatMessageOrchestrator(
                                         motherConfig  = motherChar,
                                         lockedAnswers = lockedAnswers,
                                     )
-                                } catch (e: Exception) {
+                                } catch (e: CancellationException) {
+                                    throw e  // 协程取消必须重新抛出，不能当成业务失败吞掉
+                                } catch (e: Throwable) {
+                                    // 与主回复流程同批修复：catch Throwable 而非 Exception，
+                                    // 这个 launch 独立于外层 try（脱离主流程保护范围），
+                                    // 原先若这里触发 Error 会直接击穿到 viewModelScope 顶层。
                                     ZLog.e("ChatViewModel", "D4 generateForMother 失败", e)
-                                    _uiState.update { it.copy(pendingDaughterGenerationError = "女儿生成失败：${e.message?.take(200) ?: "未知错误"}") }
+                                    _uiState.update { it.copy(pendingDaughterGenerationError = "女儿生成失败，请稍后重试。") }
                                 }
                             }
                         }
@@ -287,7 +300,9 @@ class ChatMessageOrchestrator(
                                 characterState = daughterData.stateLayer.toCharacterStateLayer()
                             }
                         }
-                    } catch (e: Exception) {
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (e: Throwable) {
                         ZLog.w("ChatViewModel", "女儿状态数据查询失败，State Layer 渲染将回退到通用描述", e)
                     }
                 }
@@ -367,7 +382,6 @@ class ChatMessageOrchestrator(
                     identityEntity        = identityEntity,
                     coreMemories          = coreMemories,
                     relevantMemories      = relevantMemories,
-                    userName              = getUserName(),
                     presenceActivity      = presenceSnap?.activity ?: "",
                     presenceFocus         = presenceSnap?.goalTitle ?: "",
                     presenceMood          = presenceSnap?.mood?.name ?: "",
@@ -395,7 +409,7 @@ class ChatMessageOrchestrator(
 
                 val config = LLMConfig(
                     model = "",
-                    maxTokens = 4000,
+                    maxTokens = 50000,
                     temperature = 0.8f,
                     stream = true,
                 )
@@ -495,7 +509,7 @@ class ChatMessageOrchestrator(
                                     )
                                 } catch (e: CancellationException) {
                                     throw e
-                                } catch (e: Exception) {
+                                } catch (e: Throwable) {
                                     ZLog.w("ChatViewModel", "心迹事件落库失败（不影响主流程）", e)
                                 }
                                 if (event.hint != null) {
@@ -523,7 +537,7 @@ class ChatMessageOrchestrator(
                                     )
                                 } catch (e: CancellationException) {
                                     throw e
-                                } catch (e: Exception) {
+                                } catch (e: Throwable) {
                                     ZLog.w("ChatViewModel", "心迹事件落库失败（不影响主流程）", e)
                                 }
                                 // P0-1（Agent附件下发方案 v2.0）：识别文件类工具产物。
@@ -557,7 +571,7 @@ class ChatMessageOrchestrator(
                                     )
                                 } catch (e: CancellationException) {
                                     throw e
-                                } catch (e: Exception) {
+                                } catch (e: Throwable) {
                                     ZLog.w("ChatViewModel", "文件已读标记落库失败（不影响主流程，但下条消息可能重新触发强制读取）", e)
                                 }
                             }
@@ -569,8 +583,19 @@ class ChatMessageOrchestrator(
                     // replyJob?.cancel() 触发取消时协程库通过此异常信号通知协程停止，
                     // 若被吞掉协程会误认为正常结束，viewModelScope 的取消机制失效。
                     throw e
-                } catch (e: Exception) {
-                    _uiState.update { it.copy(error = "回复时遇到问题：${e.message?.take(60)}") }
+                } catch (e: Throwable) {
+                    // 修复（多工具并发时静默卡死、气泡消失无提示）：原先是
+                    // catch (e: Exception)，抓不住 Error 子类。单个工具内部
+                    // （典型如 excel_gen 底层 Apache POI 在 Android 上触发的
+                    // NoClassDefFoundError）一旦抛出 Error，即使
+                    // ExcelGenTool.execute() 和 ToolCallInterceptor.executeWithTimeout()
+                    // 各自也做了兜底，只要链路上任何一环还留有旧的
+                    // catch (e: Exception)，就会被击穿——这里是整条回复生成流程
+                    // 的最后一道防线。改为 catch Throwable 后，任何未预料到的
+                    // 崩溃都会落到下面的 error 提示分支，而不是让 finally 静默
+                    // 清空 streamingContent、用户只看到"…"消失、什么都没发生。
+                    ZLog.e("ChatViewModel", "回复生成失败", e)
+                    _uiState.update { it.copy(error = "回复时遇到问题，请稍后重试。") }
                 }
 
                 // Fix-MoodLeak（zaijian）：①②④ 一并处理——
@@ -686,7 +711,7 @@ class ChatMessageOrchestrator(
                         )
                     } catch (e: CancellationException) {
                         throw e  // L-P0-3 修复：CancellationException 必须 rethrow
-                    } catch (e: Exception) {
+                    } catch (e: Throwable) {
                         ZLog.w("ChatViewModel", "applyDelta 失败（不影响主流程）", e)
                     }
 
@@ -702,7 +727,10 @@ class ChatMessageOrchestrator(
                                 targetId    = getCurrentCharacterId().toString(),
                                 payloadJson = """{"preview":"${text.take(50)}"}""",
                             )
-                        } catch (e: Exception) {
+                        } catch (e: CancellationException) {
+                            throw e  // 协程取消必须重新抛出，不能当成业务失败吞掉
+                        } catch (e: Throwable) {
+                            // 与主回复流程同批修复：catch Throwable 而非 Exception。
                             ZLog.e("ChatViewModel", "私聊 MESSAGE 事件写入失败 characterId=${getCurrentCharacterId()}", e)
                         }
                     }
@@ -815,9 +843,12 @@ class ChatMessageOrchestrator(
                                                 ?: return@launch,
                                             lockedAnswers = lockedAnswers,
                                         )
-                                    } catch (e: Exception) {
+                                    } catch (e: CancellationException) {
+                                        throw e  // 协程取消必须重新抛出，不能当成业务失败吞掉
+                                    } catch (e: Throwable) {
+                                        // 与主回复流程同批修复：catch Throwable 而非 Exception。
                                         ZLog.e("ChatViewModel", "D5→D4 第三代 generateForMother 失败", e)
-                                        _uiState.update { it.copy(pendingDaughterGenerationError = "女儿生成失败：${e.message?.take(200) ?: "未知错误"}") }
+                                        _uiState.update { it.copy(pendingDaughterGenerationError = "女儿生成失败，请稍后重试。") }
                                     }
                                 }
                             },
@@ -838,51 +869,39 @@ class ChatMessageOrchestrator(
                 // 都能重置 isTyping，避免发送按钮永久禁用。
                 // P1-10-1 修复：后置 LLM 分析已移至独立 launch，finally 在流式结束后立即执行。
                 // P1-3 修复：streamingContent 不再写入 _uiState
-                _uiState.update { it.copy(isTyping = false) }
-                _streamingContent.value = null
-                _streamingPsych.value = null
+                //
+                // Fix-isTyping竞态（C）：旧 job 被取消后，它的 finally 块仍然会执行
+                // （Kotlin 协程取消后 finally 正常运行），但如果这段时间里已经有一个
+                // 更新的 sendMessage() 调用 setReplyJob() 换上了新 job（新 job 早已
+                // 把 isTyping 设回 true 并正在真实生成回复），旧 job 的 finally 如果
+                // 无条件把 isTyping 冲回 false，就会在新 job 仍在跑的时候把发送按钮
+                // 短暂重新点亮——用户看不出区别，很可能趁这个窗口再发一条消息，
+                // 而这一发又会把"新 job"当成"旧 job"取消掉，形成连环打断
+                // （这正是 excel_gen 取消竞态里"能连发第三条"的可能成因之一）。
+                // 改为只有自己仍然是 getReplyJob() 记录的那个 job 时才重置——
+                // 说明确实没有更新的 job 顶替过自己，重置是安全的；否则跳过，
+                // 交给顶替自己的那个新 job 的 finally 负责收尾。
+                if (getReplyJob() === currentCoroutineContext()[Job]) {
+                    _uiState.update { it.copy(isTyping = false) }
+                    _streamingContent.value = null
+                    _streamingPsych.value = null
+                }
             }
         })
     }
 }
 
 /**
- * 从工具执行结果里识别"文件已落盘"的元数据 JSON。
- * P0-1（Agent附件下发方案 v2.0）：file_export / excel_gen / pptx_gen / docx_gen /
- * pdf_export / html_gen 的 content 都遵循 "xxx已生成：文件名（大小）\n{JSON}" 这个
- * 约定格式（JSON 里固定带 fileName + absolutePath），用一次正则+JSON校验通吃，
- * 不需要按 toolName 逐个 if 分支——未来新增导出工具（如 zip_export）不需要再改这里。
- *
- * 圆桌接入工具调用（v1.39）时去掉 private：RoundtableBotReplyGenerator 与
- * RoundtableIdleManager 复用同一份识别逻辑，避免三处（私聊 + 圆桌两条路径）
- * 各写一份同样的正则+JSON校验代码。
+ * 从工具执行结果里识别"文件已落盘"的元数据 JSON，以及把多个文件元数据 JSON
+ * 打包成一个 JSON 数组字符串——这两个函数的唯一实现已下沉到
+ * [com.zaijian.zhoumuyun.data.agent.extractExportedFileJson] /
+ * [com.zaijian.zhoumuyun.data.agent.packExportedFilesJson]（P3-2：元数据解析
+ * 三份副本统一）。这里保留同名薄封装，是因为本文件内（:549 私聊 ToolDone）以及
+ * 同包的 RoundtableBotReplyGenerator / RoundtableIdleManager / ChatExportDelegate
+ * 一直以"同包顶层函数"的方式直接调用它们，保留封装可以让这 4 个调用点不用改。
  */
-internal fun extractExportedFileJson(result: ToolResult): String? {
-    if (!result.success) return null
-    val match = Regex("\\{.*\\}", RegexOption.DOT_MATCHES_ALL).find(result.content) ?: return null
-    return try {
-        val obj = org.json.JSONObject(match.value)
-        if (obj.has("fileName") && obj.has("absolutePath")) match.value else null
-    } catch (_: Exception) {
-        null
-    }
-}
+internal fun extractExportedFileJson(result: ToolResult): String? =
+    com.zaijian.zhoumuyun.data.agent.extractExportedFileJson(result)
 
-/**
- * v66（Agent附件下发方案 v2.0 · 1.7 P3）：把本轮收集到的多个文件元数据 JSON
- * 打包成一个 JSON 数组字符串，写入 exportedFilesJson。
- *
- * 与 extractExportedFileJson 配套使用：采集端不再用
- * `var pendingExportedFileJson: String?`（后一次覆盖前一次），而是用
- * `val pendingExportedFiles = mutableListOf<String>()`（每次 add），
- * 落库时旧字段 exportedFileJson 取 `pendingExportedFiles.lastOrNull()`
- * （兼容尚未升级的读取路径），新字段 exportedFilesJson 取本函数的结果。
- *
- * 空列表返回 null（与"该消息没有文件附件"的语义一致，不存空数组字符串）。
- */
-internal fun packExportedFilesJson(fileJsonList: List<String>): String? {
-    if (fileJsonList.isEmpty()) return null
-    val arr = org.json.JSONArray()
-    fileJsonList.forEach { arr.put(org.json.JSONObject(it)) }
-    return arr.toString()
-}
+internal fun packExportedFilesJson(fileJsonList: List<String>): String? =
+    com.zaijian.zhoumuyun.data.agent.packExportedFilesJson(fileJsonList)

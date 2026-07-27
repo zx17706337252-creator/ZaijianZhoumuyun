@@ -60,7 +60,9 @@ class PregnancySettlementWorker(
                 memoryRepo    = MemoryRepository(db.memoryDao(), db.memoryCandidateDao(), db.memoryTagDao()),
                 daughterRepo  = DaughterCharacterRepository(db, db.daughterCharacterDao()),
             )
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             ZLog.w("PregnancySettlementWorker", "doWork failed", e)
             // 不重试：下一个 12h 周期 / 下次进入聊天页会自然再检查一次
         }
@@ -125,7 +127,9 @@ class PregnancySettlementWorker(
                 for (record in records) {
                     try {
                         writeEternalMemoryForBirth(record, memoryRepo, daughterRepo)
-                    } catch (e: Exception) {
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (e: Throwable) {
                         ZLog.w(
                             "PregnancySettlementWorker",
                             "写入生育长期记忆失败 characterId=${record.characterId}",
@@ -155,7 +159,9 @@ class PregnancySettlementWorker(
             val config: CharacterConfig? = try {
                 DefaultCharacters.firstOrNull { it.id == record.characterId }
                     ?: daughterRepo.getCharacterConfig(record.characterId)
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 ZLog.w(
                     "PregnancySettlementWorker",
                     "获取女儿角色配置失败，使用 fallback 名称 characterId=${record.characterId}",
@@ -205,7 +211,9 @@ class PregnancySettlementWorker(
                     val config: CharacterConfig? = try {
                         DefaultCharacters.firstOrNull { it.id == record.characterId }
                             ?: daughterRepo.getCharacterConfig(record.characterId)
-                    } catch (e: Exception) {
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (e: Throwable) {
                         ZLog.w(
                             "PregnancySettlementWorker",
                             "获取女儿角色配置失败，使用 fallback 名称 characterId=${record.characterId}",
@@ -237,7 +245,9 @@ class PregnancySettlementWorker(
                         .build()
 
                     nm.notify(notifId, notification)
-                } catch (e: Exception) {
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
                     ZLog.w(
                         "PregnancySettlementWorker",
                         "发送生育通知失败 characterId=${record.characterId}",

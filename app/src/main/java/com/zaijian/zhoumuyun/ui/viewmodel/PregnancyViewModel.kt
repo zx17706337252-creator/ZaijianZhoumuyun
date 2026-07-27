@@ -122,7 +122,9 @@ class PregnancyViewModel(
                 kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
                     triggerManager.triggerMiscarriage(cid)
                 }
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 _uiState.update { it.copy(errorMessage = e.message ?: "终止妊娠失败，请重试") }
             }
         }

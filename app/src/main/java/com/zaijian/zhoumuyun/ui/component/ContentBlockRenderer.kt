@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -84,6 +85,12 @@ fun ContentBlockRenderer(
     textColor: Color,
     style: TextStyle,
     modifier: Modifier = Modifier,
+    // Fix-BubbleTextSelect：由 MessageBubble 的 BubbleActionMenu"选择文字"选项
+    // 驱动，一路传给内部所有 MarkdownText，让整条消息（台词+动作+心理+列表项）
+    // 统一切换选字模式——不做到只言片语级别（比如只有对话能选、动作描写选不了）
+    // 那种割裂体验。只贯穿到正文相关的 Paragraph/ListBlock，代码块/表格/文件卡
+    // 等结构化展示块不在"长按选字"这个诉求范围内，保持原样。
+    selectable: Boolean = false,
 ) {
     if (blocks.isEmpty()) return
 
@@ -94,8 +101,8 @@ fun ContentBlockRenderer(
         blocks.forEach { block ->
             when (block) {
                 is ContentBlock.Heading -> HeadingBlock(block, textColor)
-                is ContentBlock.Paragraph -> ParagraphBlock(block, textColor, style)
-                is ContentBlock.ListBlock -> ListBlockRenderer(block, textColor, style)
+                is ContentBlock.Paragraph -> ParagraphBlock(block, textColor, style, selectable)
+                is ContentBlock.ListBlock -> ListBlockRenderer(block, textColor, style, selectable)
                 is ContentBlock.Code -> CodeBlockRenderer(block, textColor)
                 is ContentBlock.Table -> TableBlockRenderer(block, textColor, style)
                 is ContentBlock.Quote -> QuoteBlockRenderer(block, textColor, style)
@@ -140,6 +147,7 @@ private fun ParagraphBlock(
     block: ContentBlock.Paragraph,
     textColor: Color,
     style: TextStyle,
+    selectable: Boolean = false,
 ) {
     // 优化：如果所有片段都是 DIALOGUE（最常见场景），合并为单个 MarkdownText
     if (block.segments.all { it.semanticType == TextSegmentType.DIALOGUE }) {
@@ -148,6 +156,7 @@ private fun ParagraphBlock(
             markdown = fullText,
             textColor = textColor,
             style = style,
+            selectable = selectable,
         )
         return
     }
@@ -162,6 +171,7 @@ private fun ParagraphBlock(
                             markdown = segment.text,
                             textColor = textColor,
                             style = style,
+                            selectable = selectable,
                         )
                     }
                 }
@@ -171,6 +181,7 @@ private fun ParagraphBlock(
                         markdown = segment.text,
                         textColor = textColor.copy(alpha = 0.55f),
                         style = style.copy(fontStyle = FontStyle.Italic),
+                        selectable = selectable,
                     )
                 }
                 TextSegmentType.THOUGHT -> {
@@ -185,6 +196,7 @@ private fun ParagraphBlock(
                             markdown = "\u201C${segment.text}\u201D",
                             textColor = textColor.copy(alpha = 0.7f),
                             style = style.copy(fontStyle = FontStyle.Italic),
+                            selectable = selectable,
                         )
                     }
                 }
@@ -200,6 +212,7 @@ private fun ListBlockRenderer(
     block: ContentBlock.ListBlock,
     textColor: Color,
     style: TextStyle,
+    selectable: Boolean = false,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
         block.items.forEachIndexed { index, item ->
@@ -215,6 +228,7 @@ private fun ListBlockRenderer(
                     textColor = textColor,
                     style = style,
                     modifier = Modifier.weight(1f),
+                    selectable = selectable,
                 )
             }
         }
@@ -252,6 +266,7 @@ private fun CodeBlockRenderer(block: ContentBlock.Code, textColor: Color) {
         // 外层 Column 用 horizontalScroll + verticalScroll 实现双向滚动。
         Column(
             modifier = Modifier
+                .heightIn(max = CODE_BLOCK_MAX_HEIGHT)
                 .verticalScroll(scrollState)
                 .horizontalScroll(horizontalScrollState),
         ) {
@@ -351,6 +366,15 @@ private fun TableBlockRenderer(
 /** Markdown 表格单元格宽度区间：短内容不硬撑到 80dp 以上，长内容超过 160dp 就换行而不是把表格拉宽。 */
 private val CELL_MIN_WIDTH = 80.dp
 private val CELL_MAX_WIDTH = 160.dp
+
+/**
+ * 代码块可滚动区域的高度上限（闪退修复）。
+ * 必须给 verticalScroll 一个有限高度上限——它所在的消息气泡本身是画在聊天主列表
+ * （LazyColumn）的某一条 item 里，LazyColumn 测量 item 高度时会传入"无限高"，
+ * 这个无限高一旦不经拦截地传到 verticalScroll 上就会被判定为非法而崩溃。
+ * 300dp 约等于屏幕一半高度，超出的代码在这个框内滚动查看，短代码块仍按内容实际高度显示。
+ */
+private val CODE_BLOCK_MAX_HEIGHT = 300.dp
 
 // ── 引用 ────────────────────────────────────────────────────────
 

@@ -106,8 +106,11 @@ class PlanSaveTool(
                 content  = "✅ 进化方案「$title」已保存，将在下次对话时生效。",
                 userHint = "正在保存进化方案…",
             )
-        } catch (e: Exception) {
-            ToolResult(name, false, "保存进化方案失败：${e.message?.take(80)}", e.message)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            // 收尾修复：e.message 可能含数据库/文件路径细节，改用 toolFailure 统一脱敏
+            toolFailure(name, "保存进化方案失败，请稍后重试。", "plan_save_failed", e)
         }
     }
 }
@@ -155,7 +158,8 @@ class MemoryWriteTool(
         const val MAX_CONTENT_CHARS = 500
     }
 
-    override suspend fun execute(params: Map<String, String>): ToolResult = withContext(Dispatchers.IO) {
+    override suspend fun execute(params: Map<String, String>): ToolResult = try {
+        withContext(Dispatchers.IO) {
         val charId = characterId()
         if (charId < 0) return@withContext ToolResult(name, false, "", "角色未初始化")
 
@@ -229,8 +233,10 @@ class MemoryWriteTool(
                 content  = "✅ 已记录：「${truncatedContent.take(30)}…」（${domain.name}，重要度 $importance）",
                 userHint = "正在写入记忆…",
             )
-        } catch (e: Exception) {
-            ToolResult(name, false, "写入记忆失败：${e.message?.take(80)}", e.message)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            toolFailure(name, "写入记忆失败，请稍后重试。", "memory_write_failed", e)
         }
     }
 
@@ -317,7 +323,9 @@ class MemoryQueryTool(
 
             // 更新访问记录（异步，不阻塞结果返回）
             filtered.forEach { memory ->
-                try { memoryRepo.recordAccess(memory.id) } catch (e: Exception) {
+                try { memoryRepo.recordAccess(memory.id) } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
                     ZLog.w("AgentCoreTools", "更新记忆访问记录失败 id=${memory.id}: ${e.message}")
                 }
             }
@@ -338,8 +346,10 @@ class MemoryQueryTool(
                 content  = resultText,
                 userHint = "正在检索记忆…",
             )
-        } catch (e: Exception) {
-            ToolResult(name, false, "检索记忆失败：${e.message?.take(80)}", e.message)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            toolFailure(name, "检索记忆失败，请稍后重试。", "memory_query_failed", e)
         }
     }
 }
@@ -444,9 +454,11 @@ class GoalUpdateTool(
                 content  = "✅ 目标「${goal.title}」进度 +${(delta * 100).toInt()}%。$statusMsg${if (note != null) "\n备注：$note" else ""}",
                 userHint = "正在更新学习目标…",
             )
-        } catch (e: Exception) {
-            // P2-09 修复：统一错误信息仅放入 error 字段。
-            ToolResult(name, false, "", "更新目标进度失败：${e.message?.take(80)}")
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            // P2-09 修复：统一错误信息仅放入 error 字段；收尾修复：改用 toolFailure 避免 e.message 泄露
+            toolFailure(name, "更新目标进度失败，请稍后重试。", "goal_update_failed", e)
         }
     }
 }
@@ -509,7 +521,8 @@ class RuleDistillTool(
         const val RULE_IMPORTANCE = 3           // 初始 importance（未锁定规则）
     }
 
-    override suspend fun execute(params: Map<String, String>): ToolResult = withContext(Dispatchers.IO) {
+    override suspend fun execute(params: Map<String, String>): ToolResult = try {
+        withContext(Dispatchers.IO) {
         val charId = characterId()
         if (charId < 0) return@withContext ToolResult(name, false, "", "角色未初始化")
 
@@ -520,7 +533,13 @@ class RuleDistillTool(
             ?: return@withContext ToolResult(name, false, "", "需要 rules 参数")
 
         // ── 1. 验证目标是否存在且激活 ────────────────────────
-        val goal = goalRepo.getById(goalId)
+        // P1 修复：getById 移入 try，避免数据库异常导致未捕获崩溃
+        val goal = try { goalRepo.getById(goalId) }
+            catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                return@withContext toolFailure(name, "读取学习目标失败，请稍后重试。", "goal_read_failed", e)
+            }
         if (goal == null || !goal.isActive) {
             return@withContext ToolResult(
                 name, false, "",
@@ -537,10 +556,20 @@ class RuleDistillTool(
         }
 
         // ── 2. 检查现有规则数量上限 ───────────────────────────
-        val existingCount = memoryRepo.countLockedRules(charId, goalId) +
-            // 也统计未锁定规则，防止 Phase 26 前的候选规则过多
-            // 性能 M2 修复：getRulesByGoal 在数据库层按 goalId 过滤，替代全量加载
-            memoryRepo.getRulesByGoal(charId, goalId).count { !it.isLocked }
+        // 修复：原实现只把 goalRepo.getById() 包了 try-catch，这两条查询仍在
+        // try 外——虽然外层 ToolCallInterceptor/WorkflowEngine 有 catch-all
+        // 兜底不会真崩，但异常会以未处理形式穿透 execute()，报错信息不友好。
+        // 补齐同样的 try-catch 覆盖，与上面 goalRepo.getById() 保持一致。
+        val existingCount = try {
+            memoryRepo.countLockedRules(charId, goalId) +
+                // 也统计未锁定规则，防止 Phase 26 前的候选规则过多
+                // 性能 M2 修复：getRulesByGoal 在数据库层按 goalId 过滤，替代全量加载
+                memoryRepo.getRulesByGoal(charId, goalId).count { !it.isLocked }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            return@withContext toolFailure(name, "读取现有规则数量失败，请稍后重试。", "rule_count_failed", e)
+        }
         if (existingCount >= MAX_RULES_PER_GOAL) {
             return@withContext ToolResult(
                 name, false, "",
@@ -580,7 +609,9 @@ class RuleDistillTool(
                 .filter { it.isNotEmpty() }
                 .take(MAX_RULES_PER_CALL)
                 .map { if (it.length > MAX_RULE_CHARS) it.take(MAX_RULE_CHARS) else it }
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             // LLM 精简失败时直接使用原始输入（审查项 2.19：补充日志，便于排查精简失败原因）
             ZLog.w("AgentCoreTools", "规则精简调用LLM失败，降级使用原始输入: ${e.message}")
             inputRules
@@ -614,7 +645,9 @@ class RuleDistillTool(
                     )
                 )
                 written.add(ruleContent)
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 // 单条写入失败不影响其他条目（审查项 2.19：补充日志，便于排查具体哪条规则写入失败）
                 ZLog.w("AgentCoreTools", "规则写入失败，跳过该条: ${e.message}")
             }
@@ -631,6 +664,16 @@ class RuleDistillTool(
         }
 
         ToolResult(name, true, resultText.trim())
+        }
+        }
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (e: Throwable) {
+        // P1-1 修复：补齐顶层 catch——此前 rule_distill 的 execute 仅对个别 DB/LLM
+        // 调用包了 try-catch，参数解析、规则文本构建等路径若抛异常（含 Error 子类）
+        // 会直接穿透 execute()，违反 AgentTool 契约。顶层 try-catch 兜底确保任何
+        // 未预见异常都走 toolFailure，不向上抛出。
+        toolFailure(name, "规则提炼失败，请稍后重试。", "rule_distill_failed", e)
     }
 }
 

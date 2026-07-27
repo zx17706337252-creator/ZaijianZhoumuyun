@@ -11,7 +11,9 @@ private const val MAX_USER_CHARS = 1000
 private fun truncateAtSentenceBoundary(text: String, maxChars: Int): String {
     if (text.length <= maxChars) return text
     val cut = text.take(maxChars)
-    val lastBoundary = cut.lastIndexOfAny(charArrayOf('。', '！', '？', '\n'))
+    // #51 修复：原先只认中文全角标点和换行，纯英文内容超长时找不到边界，
+    // 会退化成硬截断。补上英文句末标点（. ! ?），两套标点都能识别。
+    val lastBoundary = cut.lastIndexOfAny(charArrayOf('。', '！', '？', '\n', '.', '!', '?'))
     return if (lastBoundary > maxChars / 2) cut.take(lastBoundary + 1) else cut
 }
 
@@ -24,7 +26,9 @@ class SoulUpdateTool(
     override val usageNotes = "content 最长 1000 字，超长按句子边界截断并提示"
     override val paramKeys = listOf("content")
     override suspend fun execute(params: Map<String, String>): ToolResult = withContext(Dispatchers.IO) {
-        val charId = characterId()
+        // P2 修复：优先读取工作流注入的 __character_id（参照 WorkbenchTaskTools.kt:75），
+        // 工作流场景下任务本就绑定角色；前台聊天场景回退到闭包 characterId()。
+        val charId = params["__character_id"]?.toIntOrNull() ?: characterId()
         if (charId < 0) return@withContext ToolResult(name, false, "", "角色未初始化")
         val content = params["content"]?.trim() ?: return@withContext ToolResult(name, false, "", "需要 content 参数")
         val truncated = truncateAtSentenceBoundary(content, MAX_SOUL_CHARS)
@@ -38,8 +42,10 @@ class SoulUpdateTool(
             // P0-2 修复：改用事务化单列 upsert，消除并发 REPLACE 整行覆盖竞态
             identityDao.upsertSoulNote(charId, truncated)
             ToolResult(name, true, "✅ 已更新人设备忘录$truncateNotice", userHint = "正在更新自我认知…")
-        } catch (e: Exception) {
-            ToolResult(name, false, "更新失败：${e.message?.take(80)}", e.message)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            toolFailure(name, "更新人设备忘录失败，请稍后重试。", "soul_update_failed", e)
         }
     }
 }
@@ -52,13 +58,17 @@ class SoulClearTool(
     override val description = "清空角色的人设备忘录"
     override val paramKeys = emptyList<String>()
     override suspend fun execute(params: Map<String, String>): ToolResult = withContext(Dispatchers.IO) {
-        val charId = characterId()
+        // P2 修复：优先读取工作流注入的 __character_id（参照 WorkbenchTaskTools.kt:75），
+        // 工作流场景下任务本就绑定角色；前台聊天场景回退到闭包 characterId()。
+        val charId = params["__character_id"]?.toIntOrNull() ?: characterId()
         if (charId < 0) return@withContext ToolResult(name, false, "", "角色未初始化")
         try {
             identityDao.updateSoulNote(charId, "")
             ToolResult(name, true, "✅ 已清空人设备忘录")
-        } catch (e: Exception) {
-            ToolResult(name, false, "清空失败：${e.message?.take(80)}", e.message)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            toolFailure(name, "清空人设备忘录失败，请稍后重试。", "soul_clear_failed", e)
         }
     }
 }
@@ -72,7 +82,9 @@ class NarrativeMemoryUpdateTool(
     override val usageNotes = "大多数值得记住但不需要单独摘出的内容应改写进这里，而不是调用 memory_write 新增条目。用时间标签标注阶段（如\"7月上旬起，持续讨论了XX\"），当前阶段延续时修订/扩写最新一条，出现新话题时追加新条目而不是删除旧的，旧阶段随篇幅需要自行压缩成一两句话。content 最长 1500 字，超长按句子边界截断并提示"
     override val paramKeys = listOf("content")
     override suspend fun execute(params: Map<String, String>): ToolResult = withContext(Dispatchers.IO) {
-        val charId = characterId()
+        // P2 修复：优先读取工作流注入的 __character_id（参照 WorkbenchTaskTools.kt:75），
+        // 工作流场景下任务本就绑定角色；前台聊天场景回退到闭包 characterId()。
+        val charId = params["__character_id"]?.toIntOrNull() ?: characterId()
         if (charId < 0) return@withContext ToolResult(name, false, "", "角色未初始化")
         val content = params["content"]?.trim() ?: return@withContext ToolResult(name, false, "", "需要 content 参数")
         val truncated = truncateAtSentenceBoundary(content, MAX_MEMORY_CHARS)
@@ -84,8 +96,10 @@ class NarrativeMemoryUpdateTool(
             // P0-2 修复：改用事务化单列 upsert，消除并发 REPLACE 整行覆盖竞态
             identityDao.upsertNarrativeMemory(charId, truncated)
             ToolResult(name, true, "✅ 已更新关系记忆摘要$truncateNotice", userHint = "正在更新长期记忆…")
-        } catch (e: Exception) {
-            ToolResult(name, false, "更新失败：${e.message?.take(80)}", e.message)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            toolFailure(name, "更新关系记忆摘要失败，请稍后重试。", "narrative_memory_update_failed", e)
         }
     }
 }
@@ -98,13 +112,17 @@ class NarrativeMemoryClearTool(
     override val description = "清空角色与用户之间的关系记忆摘要"
     override val paramKeys = emptyList<String>()
     override suspend fun execute(params: Map<String, String>): ToolResult = withContext(Dispatchers.IO) {
-        val charId = characterId()
+        // P2 修复：优先读取工作流注入的 __character_id（参照 WorkbenchTaskTools.kt:75），
+        // 工作流场景下任务本就绑定角色；前台聊天场景回退到闭包 characterId()。
+        val charId = params["__character_id"]?.toIntOrNull() ?: characterId()
         if (charId < 0) return@withContext ToolResult(name, false, "", "角色未初始化")
         try {
             identityDao.updateNarrativeMemory(charId, "")
             ToolResult(name, true, "✅ 已清空关系记忆摘要")
-        } catch (e: Exception) {
-            ToolResult(name, false, "清空失败：${e.message?.take(80)}", e.message)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            toolFailure(name, "清空关系记忆摘要失败，请稍后重试。", "narrative_memory_clear_failed", e)
         }
     }
 }
@@ -118,7 +136,9 @@ class UserImpressionUpdateTool(
     override val usageNotes = "content 最长 1000 字，超长按句子边界截断并提示"
     override val paramKeys = listOf("content")
     override suspend fun execute(params: Map<String, String>): ToolResult = withContext(Dispatchers.IO) {
-        val charId = characterId()
+        // P2 修复：优先读取工作流注入的 __character_id（参照 WorkbenchTaskTools.kt:75），
+        // 工作流场景下任务本就绑定角色；前台聊天场景回退到闭包 characterId()。
+        val charId = params["__character_id"]?.toIntOrNull() ?: characterId()
         if (charId < 0) return@withContext ToolResult(name, false, "", "角色未初始化")
         val content = params["content"]?.trim() ?: return@withContext ToolResult(name, false, "", "需要 content 参数")
         val truncated = truncateAtSentenceBoundary(content, MAX_USER_CHARS)
@@ -129,9 +149,11 @@ class UserImpressionUpdateTool(
         try {
             // P0-2 修复：改用事务化单列 upsert，消除并发 REPLACE 整行覆盖竞态
             identityDao.upsertUserImpression(charId, truncated)
-            ToolResult(name, true, "✅ 已更新对用户的印象$truncateNotice", userHint = "正在更新对你的理解…")
-        } catch (e: Exception) {
-            ToolResult(name, false, "更新失败：${e.message?.take(80)}", e.message)
+            ToolResult(name, true, "✅ 已更新对他的印象$truncateNotice", userHint = "正在更新对你的理解…")
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            toolFailure(name, "更新印象失败，请稍后重试。", "user_impression_update_failed", e)
         }
     }
 }
@@ -144,13 +166,17 @@ class UserImpressionClearTool(
     override val description = "清空角色对用户的印象描述"
     override val paramKeys = emptyList<String>()
     override suspend fun execute(params: Map<String, String>): ToolResult = withContext(Dispatchers.IO) {
-        val charId = characterId()
+        // P2 修复：优先读取工作流注入的 __character_id（参照 WorkbenchTaskTools.kt:75），
+        // 工作流场景下任务本就绑定角色；前台聊天场景回退到闭包 characterId()。
+        val charId = params["__character_id"]?.toIntOrNull() ?: characterId()
         if (charId < 0) return@withContext ToolResult(name, false, "", "角色未初始化")
         try {
             identityDao.updateUserImpression(charId, "")
-            ToolResult(name, true, "✅ 已清空对用户的印象")
-        } catch (e: Exception) {
-            ToolResult(name, false, "清空失败：${e.message?.take(80)}", e.message)
+            ToolResult(name, true, "✅ 已清空对他的印象")
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            toolFailure(name, "清空印象失败，请稍后重试。", "user_impression_clear_failed", e)
         }
     }
 }

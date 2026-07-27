@@ -54,6 +54,14 @@ class FilePreviewViewModel(
     /** 最近一次进入 Loaded 状态时的内容，供 [clearStatus] 从 Saved/Error 恢复时使用。 */
     private var lastLoadedContent: PreviewContent? = null
 
+    /**
+     * xlsx 多 sheet 支持：文件模式下当前预览文件的引用，切换 sheet 标签时用它
+     * 重新调用 [FilePreviewParser.parseXlsxSheet]（只解析目标 sheet，不会一次性
+     * 把所有 sheet 都读进内存）。暂存模式（[loadFromMemory]/[loadFromTable]）
+     * 没有源文件，保持 null，UI 侧 sheetNames 本就是空列表不会展示切换标签。
+     */
+    private var currentFile: File? = null
+
     /** 统一设置 Loaded 状态，同时记录 [lastLoadedContent] 供后续恢复使用。 */
     private fun setLoaded(content: PreviewContent) {
         lastLoadedContent = content
@@ -91,6 +99,7 @@ class FilePreviewViewModel(
                     }
                     is VaultPathResolution.Allowed -> resolution.file
                 }
+                currentFile = file  // xlsx 多 sheet 切换用
                 runCatching {
                     FilePreviewParser.parse(file)
                 }.getOrElse {
@@ -107,6 +116,7 @@ class FilePreviewViewModel(
 
     /** 从内存文本加载（暂存模式，对话框气泡点击全屏查看）。 */
     fun loadFromMemory(text: String, isMarkdown: Boolean) {
+        currentFile = null  // 暂存模式无源文件，避免残留上一次文件模式的引用
         setLoaded(
             PreviewContent.Textual(
                 text = text,
@@ -118,6 +128,7 @@ class FilePreviewViewModel(
 
     /** 从表格数据加载（暂存模式，对话框表格点击全屏查看）。 */
     fun loadFromTable(columns: List<String>, rows: List<List<String>>) {
+        currentFile = null  // 暂存模式无源文件，避免残留上一次文件模式的引用
         setLoaded(
             PreviewContent.Tabular(
                 columns = columns,
@@ -126,6 +137,35 @@ class FilePreviewViewModel(
                 sourceFilePath = null,
             )
         )
+    }
+
+    // ── xlsx 多 sheet 切换 ───────────────────────────────────────
+
+    /**
+     * 切换 xlsx 展示的 sheet（多 sheet 支持）。
+     *
+     * 只有文件模式（[currentFile] 非 null）且目标内容确实是 xlsx（sheetNames 非空）
+     * 才有意义；暂存模式/csv/docx 等场景 UI 侧不会展示 sheet 切换标签，理论上不会
+     * 调到这里，这里的空校验是双重保险。
+     */
+    fun switchXlsxSheet(sheetIndex: Int) {
+        val current = (_uiState.value as? UiState.Loaded)?.content as? PreviewContent.Tabular ?: return
+        if (sheetIndex == current.activeSheetIndex) return
+        val file = currentFile ?: return
+        if (sheetIndex !in current.sheetNames.indices) return
+        viewModelScope.launch {
+            val content = withContext(Dispatchers.IO) {
+                runCatching { FilePreviewParser.parseXlsxSheet(file, sheetIndex) }.getOrElse {
+                    com.zaijian.zhoumuyun.util.ZLog.e("FilePreview", "切换 sheet 失败: ${file.name}", it)
+                    null
+                }
+            }
+            if (content != null) {
+                setLoaded(content)
+            } else {
+                _uiState.value = UiState.Error("切换工作表失败，请重试")
+            }
+        }
     }
 
     // ── 保存 ─────────────────────────────────────────────────
@@ -161,7 +201,9 @@ class FilePreviewViewModel(
                         writeVaultText(context, humanName, newText, mimeType)
                         "已另存为 $humanName"
                     }
-                } catch (e: Exception) {
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
                     com.zaijian.zhoumuyun.util.ZLog.e("FilePreview", "保存文本失败", e)
                     null
                 }
@@ -215,7 +257,9 @@ class FilePreviewViewModel(
                         writeVaultText(context, humanName, csvText, "text/csv")
                         "已另存为 $humanName"
                     }
-                } catch (e: Exception) {
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
                     com.zaijian.zhoumuyun.util.ZLog.e("FilePreview", "保存表格失败", e)
                     null
                 }
@@ -261,7 +305,9 @@ class FilePreviewViewModel(
                         writeVaultText(context, humanName, source, "text/html")
                         "已另存为 $humanName"
                     }
-                } catch (e: Exception) {
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
                     com.zaijian.zhoumuyun.util.ZLog.e("FilePreview", "保存 HTML 失败", e)
                     null
                 }

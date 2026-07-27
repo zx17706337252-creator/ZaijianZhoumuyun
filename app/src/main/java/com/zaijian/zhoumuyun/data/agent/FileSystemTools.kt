@@ -58,6 +58,11 @@ internal fun hasPathTraversal(path: String): Boolean {
     // P2-19 修复：原 path.contains("../") 对含 "..." 的合法路径误报
     // （如 "a/.../b" 子串匹配命中 "../"）。
     // 改为按路径分隔符拆段后逐段比较，只对真正的 ".." 段报 true。
+    //
+    // #37 修复：同时检查正斜杠和反斜杠的路径穿越。
+    // 原 path.contains("../") 仅检查 Unix 风格 "../"，Windows 风格 "..\"
+    // （反斜杠分隔）可绕过校验。现 split("/", "\\") 同时按 "/" 和 "\"
+    // 拆段，"../" 和 "..\" 均会被拆出 ".." 段并拦截。
     val segments = path.split("/", "\\")
     return segments.any { it == ".." }
 }
@@ -77,14 +82,22 @@ internal fun hasPathTraversal(path: String): Boolean {
 internal fun resolveFileSystemPath(context: Context, path: String): File? {
     if (hasPathTraversal(path)) return null
 
-    if (path.startsWith("/")) {
+    // #37 修复：前缀校验在 Windows 路径分隔符下可能被绕过。
+    // 将反斜杠统一规范化为正斜杠后再做前缀匹配，确保 allowed 目录前缀
+    // 校验不受分隔符差异影响（hasPathTraversal 已拦截 ".." 穿越，此处为
+    // 前缀校验的防御纵深，避免依赖单一检查）。
+    val normalizedPath = path.replace('\\', '/')
+
+    if (normalizedPath.startsWith("/")) {
         val file = File(path)
         val allowed = listOf(
             context.filesDir.absolutePath,
             context.cacheDir.absolutePath,
             context.getExternalFilesDir(null)?.absolutePath ?: "",
         )
-        if (allowed.none { path.startsWith(it) }) return null
+        // 过滤空串（externalFilesDir 为 null 时回退为 ""，path.startsWith("")
+        // 恒为 true 会令前缀校验失效），并按规范化路径做前缀匹配。
+        if (allowed.none { it.isNotEmpty() && normalizedPath.startsWith(it) }) return null
         return file
     }
 
@@ -303,8 +316,10 @@ class FolderCreateTool(
                 content  = "[文件夹已创建]\n路径：$path",
                 userHint = "正在创建文件夹…",
             )
-        } catch (e: Exception) {
-            ToolResult(name, false, "创建文件夹时遇到问题：${e.message?.take(80)}", e.message)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            toolFailure(name, "创建文件夹时遇到问题。", "folder_create_failed", e)
         }
     }
 }
@@ -383,8 +398,10 @@ class FolderDeleteTool(
                     if (recursive && !children.isNullOrEmpty()) "（含其中 ${children.size} 项内容）" else "",
                 userHint = "正在删除文件夹…",
             )
-        } catch (e: Exception) {
-            ToolResult(name, false, "删除文件夹时遇到问题：${e.message?.take(80)}", e.message)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            toolFailure(name, "删除文件夹时遇到问题。", "folder_delete_failed", e)
         }
     }
 }
@@ -459,8 +476,10 @@ class FileRenameTool(
                 content  = "[重命名完成]\n原路径：$from\n新路径：$to",
                 userHint = "正在重命名…",
             )
-        } catch (e: Exception) {
-            ToolResult(name, false, "重命名时遇到问题：${e.message?.take(80)}", e.message)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            toolFailure(name, "重命名时遇到问题。", "file_rename_failed", e)
         }
     }
 }
@@ -546,11 +565,17 @@ class FileEditTool(
                     if (!file.isFile) {
                         return@withContext ToolResult(name, false, "「$path」是一个目录，无法编辑。")
                     }
-                    file.appendText(content, Charsets.UTF_8)
+                    // P2 修复：原硬编码 UTF-8 追加，若原文件是 GBK 会产生混合编码乱码。
+                    // 与 replace 分支一致，先检测原文件编码再按同编码追加。
+                    val appendCharset = com.zaijian.zhoumuyun.data.agent.detectFileCharset(file)
+                    file.appendText(content, appendCharset)
+                    val encodingHint = if (appendCharset != Charsets.UTF_8)
+                        "\n[提示：原文件编码为 $appendCharset，已按同编码追加]"
+                    else ""
                     ToolResult(
                         toolName = name,
                         success  = true,
-                        content  = "[内容已追加]\n路径：$path\n追加长度：${content.length} 字符",
+                        content  = "[内容已追加]\n路径：$path\n追加长度：${content.length} 字符$encodingHint",
                         userHint = "正在编辑文件…",
                     )
                 }
@@ -584,8 +609,10 @@ class FileEditTool(
                     )
                 }
             }
-        } catch (e: Exception) {
-            ToolResult(name, false, "编辑文件时遇到问题：${e.message?.take(80)}", e.message)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            toolFailure(name, "编辑文件时遇到问题。", "file_edit_failed", e)
         }
     }
 }
@@ -631,8 +658,10 @@ class FileDeleteTool(
             if (!ok) return@withContext ToolResult(name, false, "删除文件「$path」失败。")
 
             ToolResult(name, true, "[文件已删除]\n路径：$path", "正在删除文件…")
-        } catch (e: Exception) {
-            ToolResult(name, false, "删除文件时遇到问题：${e.message?.take(80)}", e.message)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            toolFailure(name, "删除文件时遇到问题。", "file_delete_failed", e)
         }
     }
 }
@@ -688,17 +717,45 @@ class ZipExtractTool(
 
             targetDir.mkdirs()
             var count = 0
+            // P0-2 修复：zip 炸弹防护。原 zis.copyTo(fos) 是无上限流复制，1MB 高压缩比
+            // zip 可解压出数 GB 数据撑爆磁盘/OOM。加三重限制：解压总量 500MB、单文件
+            // 100MB、条目数 10000，用手动缓冲区循环替代 copyTo，超限即抛异常（被外层
+            // catch (e: Throwable) 兜底，含 SecurityException / IllegalStateException / OOM）。
+            val MAX_TOTAL = 500L * 1024 * 1024      // 500MB
+            val MAX_PER_ENTRY = 100L * 1024 * 1024  // 100MB
+            val MAX_ENTRIES = 10_000
+            var totalBytes = 0L
+            var entryCount = 0
             ZipInputStream(FileInputStream(zipFile)).use { zis ->
                 var entry: ZipEntry? = zis.nextEntry
                 while (entry != null) {
+                    if (entryCount++ > MAX_ENTRIES) {
+                        throw IllegalStateException("zip 条目数过多（超过 $MAX_ENTRIES，疑似 zip bomb）")
+                    }
                     if (!entry.isDirectory) {
-                        val outFile = File(targetDir, entry.name)
+                        // 编译修复：entry 是 var，在下面 FileOutputStream(...).use { fos -> ... }
+                        // 闭包内部再引用 entry 会导致"智能转换不可能"（Kotlin 认为被闭包捕获的
+                        // var 理论上可能在闭包执行期间发生变化，即使这里 use{} 是同步执行的）。
+                        // 提前把这一轮固定不变的文件名存成不可变局部变量，闭包内改用它。
+                        val entryName = entry.name
+                        val outFile = File(targetDir, entryName)
                         // P2 修复：Zip Slip 路径穿越校验，防止 entry.name 含 "../" 等把文件写到目标目录之外
                         if (!outFile.canonicalPath.startsWith(targetDir.canonicalPath + File.separator)) {
-                            throw SecurityException("Zip Slip 检测：非法路径 ${entry.name}")
+                            throw SecurityException("Zip Slip 检测：非法路径 $entryName")
                         }
                         outFile.parentFile?.mkdirs()
-                        FileOutputStream(outFile).use { fos -> zis.copyTo(fos) }
+                        FileOutputStream(outFile).use { fos ->
+                            val buf = ByteArray(8 * 1024)
+                            var entryBytes = 0L
+                            var read: Int
+                            while (zis.read(buf).also { read = it } > 0) {
+                                entryBytes += read
+                                totalBytes += read
+                                if (entryBytes > MAX_PER_ENTRY) throw IllegalStateException("单文件超过 ${MAX_PER_ENTRY / 1024 / 1024}MB 限制：$entryName")
+                                if (totalBytes > MAX_TOTAL) throw IllegalStateException("解压总量超过 ${MAX_TOTAL / 1024 / 1024}MB 限制")
+                                fos.write(buf, 0, read)
+                            }
+                        }
                         count++
                     }
                     entry = zis.nextEntry
@@ -706,8 +763,10 @@ class ZipExtractTool(
             }
 
             ToolResult(name, true, "[ZIP 已解压]\n源文件：$zipPath\n目标目录：$toPath\n提取文件数：$count")
-        } catch (e: Exception) {
-            ToolResult(name, false, "解压 ZIP 时遇到问题：${e.message?.take(80)}", e.message)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            toolFailure(name, "解压 ZIP 时遇到问题。", "zip_extract_failed", e)
         }
     }
 }
@@ -759,10 +818,14 @@ class ZipCreateTool(
 
             zipFile.parentFile?.mkdirs()
             var count = 0
+            // P0-3 修复：防递归自嵌入。当输出 zip 位于源目录内时，walkTopDown 会遍历到
+            // 正在写入的 zip 自身，zip 格式允许追加 entry，copyTo 不断读取新写入的数据
+            // 形成无限循环/OOM。遍历时按 canonicalPath 跳过输出 zip 自身。
+            val zipFileCanonical = zipFile.canonicalPath
             ZipOutputStream(FileOutputStream(zipFile)).use { zos ->
                 if (source.isDirectory) {
                     source.walkTopDown().forEach { f ->
-                        if (f.isFile) {
+                        if (f.isFile && f.canonicalPath != zipFileCanonical) {
                             val relativePath = f.relativeTo(source).path
                             zos.putNextEntry(ZipEntry(relativePath))
                             FileInputStream(f).use { fis -> fis.copyTo(zos) }
@@ -779,8 +842,10 @@ class ZipCreateTool(
             }
 
             ToolResult(name, true, "[ZIP 已创建]\n输出：$zipPath\n包含文件数：$count\n来源：$sourcePath")
-        } catch (e: Exception) {
-            ToolResult(name, false, "创建 ZIP 时遇到问题：${e.message?.take(80)}", e.message)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            toolFailure(name, "创建 ZIP 时遇到问题。", "zip_create_failed", e)
         }
     }
 }
@@ -865,8 +930,10 @@ class FileOrganizeTool(
             }
 
             ToolResult(name, true, "[文件已整理]\n目录：$dirPath\n排序：$orderBy ${direction}\n重命名：$renamed 项")
-        } catch (e: Exception) {
-            ToolResult(name, false, "整理文件时遇到问题：${e.message?.take(80)}", e.message)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            toolFailure(name, "整理文件时遇到问题。", "file_organize_failed", e)
         }
     }
 }

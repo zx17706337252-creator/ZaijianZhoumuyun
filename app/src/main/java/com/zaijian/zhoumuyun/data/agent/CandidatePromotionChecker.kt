@@ -11,7 +11,6 @@ import androidx.room.withTransaction
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.util.UUID
-import java.util.concurrent.ConcurrentHashMap
 
 /**
  * CandidatePromotionChecker — P6 专长进化系统候选特征转正流程（方案第5.3节）
@@ -34,9 +33,21 @@ import java.util.concurrent.ConcurrentHashMap
  */
 object CandidatePromotionChecker {
 
-    private val promotionMutexes = ConcurrentHashMap<String, Mutex>()
-    private fun getPromotionMutex(profileId: String): Mutex =
-        promotionMutexes.computeIfAbsent(profileId) { Mutex() }
+    // #53 修复：原先用 ConcurrentHashMap + computeIfAbsent，只增不删，每个出现过的
+    // profileId 都永久占一条 Mutex 记录（真实但很慢的内存泄漏）。改为带上限的
+    // access-order LinkedHashMap：超过 MAX_TRACKED_MUTEXES 时淘汰最久未用的一条，
+    // 但淘汰前会检查该 Mutex 是否正被持有（isLocked），正被持有就跳过本次淘汰
+    // （宁可暂时超出上限，也不能把正在使用中的锁移出去，否则并发调用会拿到两把
+    // 不同的 Mutex，锁的互斥语义就破了）。所有读写都放在 synchronized 块里保证
+    // "查询已有 / 新建 / 淘汰" 这三步是原子的。
+    private const val MAX_TRACKED_MUTEXES = 256
+    private val promotionMutexes = object : LinkedHashMap<String, Mutex>(16, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Mutex>): Boolean =
+            size > MAX_TRACKED_MUTEXES && !eldest.value.isLocked
+    }
+    private fun getPromotionMutex(profileId: String): Mutex = synchronized(promotionMutexes) {
+        promotionMutexes.getOrPut(profileId) { Mutex() }
+    }
 
     suspend fun checkPromotion(
         db: AppDatabase,
@@ -46,9 +57,16 @@ object CandidatePromotionChecker {
         trait: String,
         occurrenceCount: Int,
     ) {
-        if (occurrenceCount < SpecialtyEvolutionConfig.CANDIDATE_PROMOTION_THRESHOLD) return
-        getPromotionMutex(profileId).withLock {
-            checkPromotionInternal(db, repo, engine, profileId, trait, occurrenceCount)
+        // P1 修复：顶层 try-catch，防止异常中断 DailyPracticeWorker
+        try {
+            if (occurrenceCount < SpecialtyEvolutionConfig.CANDIDATE_PROMOTION_THRESHOLD) return
+            getPromotionMutex(profileId).withLock {
+                checkPromotionInternal(db, repo, engine, profileId, trait, occurrenceCount)
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            ZLog.e("CandidatePromotionChecker", "checkPromotion 异常 profileId=$profileId trait=${trait.take(60)}", e)
         }
     }
 
@@ -187,29 +205,32 @@ object CandidatePromotionChecker {
             return
         }
 
-        repo.overwriteStyleNotes(profile.id, mergeResult.updatedStyleNotes)
-        repo.removeCandidateObservation(profile.id, trait)
+        // P1 修复：多步 DB 写入用 withTransaction 包裹，保证原子性
+        db.withTransaction {
+            repo.overwriteStyleNotes(profile.id, mergeResult.updatedStyleNotes)
+            repo.removeCandidateObservation(profile.id, trait)
 
-        if (mergeResult.hasUnresolvedConflict) {
-            repo.setConflictState(profile.id, true, mergeResult.conflictDescription)
+            if (mergeResult.hasUnresolvedConflict) {
+                repo.setConflictState(profile.id, true, mergeResult.conflictDescription)
 
-            val roundtableId = db.roundtableMessageDao()
-                .findMostRecentRoundtableIdForSpeaker(profile.characterId.toString())
-            if (roundtableId != null) {
-                val config = com.zaijian.zhoumuyun.data.model.DefaultCharacters.firstOrNull { it.id == profile.characterId }
-                val speakerName = config?.name ?: "角色${profile.characterId}"
-                db.roundtableMessageDao().insert(
-                    RoundtableMessageEntity(
-                        id = UUID.randomUUID().toString(),
-                        roundtableId = roundtableId,
-                        speakerId = profile.characterId.toString(),
-                        speakerName = speakerName,
-                        content = "我注意到自己最近的处理方式和之前确立的风格有点不一样：" +
-                            "${mergeResult.conflictDescription}。要保留哪个方向，还是两者都留着，" +
-                            "看场景用不同的笔法？",
-                        createdAt = System.currentTimeMillis(),
+                val roundtableId = db.roundtableMessageDao()
+                    .findMostRecentRoundtableIdForSpeaker(profile.characterId.toString())
+                if (roundtableId != null) {
+                    val config = com.zaijian.zhoumuyun.data.model.DefaultCharacters.firstOrNull { it.id == profile.characterId }
+                    val speakerName = config?.name ?: "角色${profile.characterId}"
+                    db.roundtableMessageDao().insert(
+                        RoundtableMessageEntity(
+                            id = UUID.randomUUID().toString(),
+                            roundtableId = roundtableId,
+                            speakerId = profile.characterId.toString(),
+                            speakerName = speakerName,
+                            content = "我注意到自己最近的处理方式和之前确立的风格有点不一样：" +
+                                "${mergeResult.conflictDescription}。要保留哪个方向，还是两者都留着，" +
+                                "看场景用不同的笔法？",
+                            createdAt = System.currentTimeMillis(),
+                        )
                     )
-                )
+                }
             }
         }
     }

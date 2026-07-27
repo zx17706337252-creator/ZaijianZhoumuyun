@@ -9,6 +9,8 @@ import androidx.core.app.NotificationCompat
 import androidx.room.withTransaction
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import com.zaijian.zhoumuyun.MainActivity
 import com.zaijian.zhoumuyun.data.db.AppDatabase
 import com.zaijian.zhoumuyun.data.db.entity.JobResultEntity
@@ -96,7 +98,9 @@ class ScheduledJobWorker(
         val baseParams: Map<String, String> = try {
             val json = JSONObject(job.toolParamsJson)
             json.keys().asSequence().associateWith { json.getString(it) }
-        } catch (_: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (_: Throwable) {
             emptyMap()
         }
         // P-8 修复：注入 __character_id，工具执行时优先从 params 读取角色 ID，
@@ -118,9 +122,48 @@ class ScheduledJobWorker(
                 val tool = AgentToolRegistry.get(job.toolName)
                 tool?.execute(params)
             }
-        } catch (e: Exception) {
-            // P1-33：执行异常时主动释放锁，不必等 TTL 到期才能被下次重试/补跑认领
-            scheduledJobDao.releaseLock(jobId)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            // 协程取消：仅释放锁并 rethrow，不写 JobResultEntity（取消不是失败）
+            withContext(NonCancellable) {
+                scheduledJobDao.releaseLock(jobId)
+            }
+            throw e
+        } catch (e: Throwable) {
+            // P0 修复：catch Throwable 而非 Exception——Error 子类（如 POI 的
+            // NoClassDefFoundError）击穿时原先的 catch(Exception) 抓不住，releaseLock
+            // 不触发导致锁泄漏（任务卡死直至 3 分钟 TTL）。改用 Throwable 确保任何
+            // 异常都走补救路径。
+            com.zaijian.zhoumuyun.util.AgentLog.error(
+                "ScheduledJobWorker", "工具执行异常 job=${job.id}", e,
+            )
+            // 异常路径也写一条 JobResultEntity(status="failed")，让用户在任务中心可见
+            val failNow = System.currentTimeMillis()
+            withContext(NonCancellable) {
+                try {
+                    db.withTransaction {
+                        jobResultDao.insert(
+                            JobResultEntity(
+                                id           = UUID.randomUUID().toString(),
+                                jobId        = job.id,
+                                characterId  = job.characterId,
+                                toolName     = job.toolName,
+                                status       = "failed",
+                                output       = null,
+                                errorMessage = "工具执行异常",
+                                executedBy   = "workmanager",
+                                startedAt    = startedAt,
+                                completedAt  = failNow,
+                                isRead       = false,
+                                createdAt    = failNow,
+                            )
+                        )
+                    }
+                } catch (_: Throwable) {
+                    // 补救性写入也失败（磁盘满/WAL 损坏），不再阻塞，继续释放锁
+                }
+                // P1-33：执行异常时主动释放锁，不必等 TTL 到期才能被下次重试/补跑认领
+                scheduledJobDao.releaseLock(jobId)
+            }
             throw e
         }
         val now        = System.currentTimeMillis()

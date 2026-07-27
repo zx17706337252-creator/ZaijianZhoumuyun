@@ -230,7 +230,9 @@ class CompetitionRoundManager(
             } else {
                 ZLog.d(TAG, "[ensureJudgeProfile] 已有裁判档案 char=$characterId domain=$domain id=${result.id}")
             }
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             ZLog.w(TAG, "[ensureJudgeProfile] 懒创建失败 char=$characterId domain=$domain", e)
         }
     }
@@ -318,7 +320,9 @@ class CompetitionRoundManager(
                     successfulIds += characterId
                     ZLog.d(TAG, "[runCollecting] 角色${characterId}作品已写入 entry.id=${entry.id} 字符数=${content.length}")
                 }
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 ZLog.w(TAG, "[runCollecting] 角色${characterId}作品生成/写入失败", e)
                 // 单个角色失败不影响其他角色继续
             }
@@ -397,7 +401,7 @@ class CompetitionRoundManager(
         val systemPrompt = """
             你是「${characterName}」，正在参加一场「${domain}」方向的命题竞赛，题目是：${topic}
 
-            裁判和用户都会评判这次产出，但你不需要去猜裁判喜欢什么、不需要模仿任何人——
+            裁判和他都会评判这次产出，但你不需要去猜裁判喜欢什么、不需要模仿任何人——
             按你已经确立的风格和正在练习的方向，做到你能做到的最好。
 
             $planBlock
@@ -422,7 +426,9 @@ class CompetitionRoundManager(
             response.trim().also { result ->
                 ZLog.d(TAG, "[generateEntry] char=$characterId domain=$domain topic=$topic 字符数=${result.length}")
             }
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             ZLog.w(TAG, "[generateEntry] 生成失败 char=$characterId domain=$domain", e)
             ""
         }
@@ -540,7 +546,9 @@ class CompetitionRoundManager(
                     )
                     ZLog.d(TAG, "[runJudging] 自评完成 char=${entry.characterId} selfScore=${selfResult.selfScore}")
                 }
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 ZLog.w(TAG, "[runJudging] entry写回失败，跳过该条目继续 char=${entry.characterId} entryId=${entry.id}", e)
             }
         }
@@ -767,7 +775,7 @@ class CompetitionRoundManager(
             }
         } catch (e: CancellationException) {
             throw e
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             ZLog.w(TAG, "[judgeSentimentScore] LLM 调用失败，降级到 fallback: ${e.message}")
             sentimentToScoreFallback(comment)
         }
@@ -1089,7 +1097,9 @@ class CompetitionRoundManager(
                     } else {
                         ZLog.d(TAG, "[奖惩反哺] 赢家 judgeReasoning 为空，跳过反哺")
                     }
-                } catch (e: Exception) {
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
                     ZLog.w(TAG, "[奖惩反哺] 赢家反哺写入失败 char=${winner.characterId}", e)
                 }
             } else {
@@ -1121,7 +1131,9 @@ class CompetitionRoundManager(
                     )
                 )
                 ZLog.d(TAG, "[奖惩反哺] 输家 char=${loser.characterId} 已写 COMPETITION_FEEDBACK Suggestion")
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 ZLog.w(TAG, "[奖惩反哺] 写 SystemSuggestionEntity 失败 char=${loser.characterId}", e)
             }
         }
@@ -1195,7 +1207,9 @@ class CompetitionRoundManager(
                 val judgeName = resolveCharacterName(round.judgeCharacterId)
                 postJudgeLowAccuracyAlert(round.judgeCharacterId, judgeName)
             }
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             ZLog.w(TAG, "[accuracy] 计算裁判准确度失败", e)
         }
     }
@@ -1254,7 +1268,9 @@ class CompetitionRoundManager(
                 )
             )
             ZLog.i(TAG, "[播报] 裁判评审结果已发送圆桌 roundtableId=$roundtableId")
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             ZLog.w(TAG, "[播报] 圆桌播报失败", e)
         }
     }
@@ -1329,7 +1345,9 @@ class CompetitionRoundManager(
                 )
             )
             ZLog.i(TAG, "[accuracy-alert] 低吻合度提醒已发送 judge=$judgeName roundtableId=$roundtableId")
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             ZLog.w(TAG, "[accuracy-alert] 告警播报失败", e)
         }
     }
@@ -1350,7 +1368,9 @@ class CompetitionRoundManager(
         DefaultCharacters.firstOrNull { it.id == characterId }?.let { return it.name }
         return try {
             daughterRepo.getCharacterConfig(characterId)?.name ?: "角色${characterId}"
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             ZLog.w(TAG, "[resolveCharacterName] 查询失败 char=$characterId", e)
             "角色${characterId}"
         }
@@ -1366,7 +1386,9 @@ class CompetitionRoundManager(
                 .getByCharacterAndDomain(characterId, domain)
                 ?.styleNotes
                 ?: ""
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             ZLog.w(TAG, "[resolveStyleNotes] 查询失败 char=$characterId domain=$domain", e)
             ""
         }
@@ -1419,7 +1441,9 @@ class CompetitionRoundManager(
                 lastAccessedAt = now,
             )
             memoryRepo.save(memory)
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             ZLog.w(TAG, "[recordCompetitionMemory] 写入失败 char=$characterId", e)
         }
     }
@@ -1466,7 +1490,7 @@ class CompetitionRoundManager(
         return try {
             val arr = JSONArray(json)
             (0 until arr.length()).map { arr.getInt(it) }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             ZLog.w(TAG, "[parseParticipantIds] JSON 解析失败: $json", e)
             emptyList()
         }
@@ -1579,7 +1603,9 @@ class CompetitionRoundManager(
                     db.judgeProfileDao().updateCandidateCorrections(judgeProfileId, updatedJson)
                 }
             }
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             ZLog.w(TAG, "[feedJudgeCorrection] 候选修正池写入失败 judgeId=$judgeCharacterId domain=$domain", e)
         }
     }
@@ -1616,7 +1642,7 @@ class CompetitionRoundManager(
                     lastSeenAt      = obj.getLong("lastSeenAt"),
                 )
             }.toMutableList()
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             throw CorrectionPoolCorruptedException(corruptedJson = json, cause = e)
         }
     }

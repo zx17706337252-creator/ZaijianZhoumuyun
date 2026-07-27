@@ -55,7 +55,9 @@ class CharacterPreviewViewModel(application: Application) : AndroidViewModel(app
                         .map { it.content }
                 }
                 _recentMemories.value = memories
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 // P2-32 修复：仅在当前 characterId 仍与发起查询时一致时重置，
                 // 避免快速切换角色时旧查询的异常覆盖新角色的缓存状态。
                 if (loadedForCharacterId == characterId) {

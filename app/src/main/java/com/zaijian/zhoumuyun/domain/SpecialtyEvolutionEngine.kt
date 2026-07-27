@@ -128,7 +128,7 @@ class SpecialtyEvolutionEngine(
             )
         } catch (e: CancellationException) {
             throw e
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
             // 解析失败时按 REINFORCING 兜底——这是最安全的默认值：
             // 不会误触发候选池写入，也不会误判冲突，只是"这次先不当新信息处理"
             ComparisonResult("REINFORCING", "（风格比对解析失败，按默认处理）", "")
@@ -181,7 +181,9 @@ class SpecialtyEvolutionEngine(
                 val obj = JSONObject(extractJson(response))
                 val idx = obj.optInt("matchedIndex", -1)
                 if (idx in existingTraits.indices) existingTraits[idx] else null
-            } catch (_: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (_: Throwable) {
                 // JSON 解析失败时的二次兜底（同款思路见 FertileWindowConsentJudge.parseResult）：
                 // 模型偶尔会跳过 JSON 包裹直接输出裸数字或一句话夹带数字，
                 // 尝试从原始回复里提取第一个出现的数字当作 matchedIndex 再试一次。
@@ -192,7 +194,7 @@ class SpecialtyEvolutionEngine(
             }
         } catch (e: CancellationException) {
             throw e
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
             // 匹配失败时按"全新特征"处理——宁可候选池多一条独立观察，
             // 也不要错误合并两个语义不同的特征到同一条计数下
             null
@@ -274,7 +276,7 @@ class SpecialtyEvolutionEngine(
             )
         } catch (e: CancellationException) {
             throw e
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
             // 蒸馏失败时返回空摘要，调用方（DistillationTrigger）应跳过本次合并，
             // 保留原始记录不降级，下次容量阈值再次达到时重试——
             // 不能把失败也当成"已蒸馏"写进数据库，否则会丢信息
@@ -345,7 +347,7 @@ class SpecialtyEvolutionEngine(
             )
         } catch (e: CancellationException) {
             throw e
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
             // 合并失败时原样保留旧 styleNotes，不丢失已有内容，调用方应跳过本次合并
             MergeResult(currentStyleNotes, false, "")
         }
@@ -410,7 +412,7 @@ class SpecialtyEvolutionEngine(
             StabilityCheckResult(list.filter { it.isNotBlank() })
         } catch (e: CancellationException) {
             throw e
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
             StabilityCheckResult(emptyList())
         }
     }
@@ -462,7 +464,7 @@ class SpecialtyEvolutionEngine(
             stripSoulNoteNoise(raw)
         } catch (e: CancellationException) {
             throw e
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
             // 整合失败时退而求其次：简单拼接，至少不丢失信息，
             // 用户后续可在角色编辑页手动润色（P5 Step3 已交付的编辑通路）
             // 方案 2-12：增加长度上限，防止多轮晋升后 soulNote 持续膨胀。
@@ -538,7 +540,7 @@ class SpecialtyEvolutionEngine(
             if (tag.isBlank()) domain.take(4) else tag.take(4)
         } catch (e: CancellationException) {
             throw e
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
             // 提炼失败时用专长方向名兜底，不阻断晋升主流程，
             // 标签墙至少有内容可显示
             domain.take(4)
@@ -596,7 +598,7 @@ class SpecialtyEvolutionEngine(
             )
         } catch (e: CancellationException) {
             throw e
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
             SuggestionResult(false, "", "")
         }
     }

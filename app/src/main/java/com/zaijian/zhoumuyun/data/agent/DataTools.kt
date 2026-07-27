@@ -92,16 +92,11 @@ class CalculatorTool : AgentTool {
                 success  = true,
                 content  = "[计算结果]\n$expr = $formatted",
             )
-        } catch (e: Exception) {
-            // 修复（第3窗口审查报告问题6）：失败路径统一为 content="" + error="描述"，
-            // 与项目其他工具（UnitConvertTool/CountdownTool/WebSearchTool 等）保持一致，
-            // 避免 ToolCallInterceptor 回注 LLM 时出现冗余/混乱的双重错误文本。
-            ToolResult(
-                toolName = name,
-                success  = false,
-                content  = "",
-                error    = "表达式「$expr」无法计算：${e.message}",
-            )
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            // 收尾修复：改用 toolFailure 统一脱敏，e.message 可能含内部异常细节
+            toolFailure(name, "表达式「$expr」无法计算，请检查后重试。", "calculator_failed", e)
         }
     }
 
@@ -205,6 +200,9 @@ internal object ExpressionEvaluator {
 
     private class Parser(private val input: String) {
         private var pos = 0
+        // P2 修复：括号深度计数，防止超深嵌套（如 (((((...))))) ）触发 StackOverflowError
+        private var parenDepth = 0
+        private val MAX_PAREN_DEPTH = 100  // 合理上限，正常表达式不会超过 20 层
 
         fun isEnd() = pos >= input.length
         fun peek() = if (isEnd()) '\u0000' else input[pos]
@@ -272,11 +270,17 @@ internal object ExpressionEvaluator {
             skipWs()
             return when {
                 peek() == '(' -> {
+                    // P2 修复：嵌套深度校验，超过上限直接抛异常而非递归到底
+                    if (parenDepth >= MAX_PAREN_DEPTH) {
+                        throw IllegalArgumentException("括号嵌套过深（超过 $MAX_PAREN_DEPTH 层）")
+                    }
+                    parenDepth++
                     consume()
                     val v = parseExpr()
                     skipWs()
                     if (peek() != ')') throw IllegalArgumentException("缺少右括号")
                     consume()
+                    parenDepth--
                     v
                 }
                 peek().isLetter() -> parseIdentifier()
@@ -389,7 +393,17 @@ class UnitConvertTool : AgentTool {
         } catch (e: IllegalArgumentException) {
             // P1-12 修复：原 3 参数调用（NoteSaveTool/ReminderTool 的 catch 分支早已是
             // 4 参数写法），error 字段落空，LLM 端读到的是兜底文案"未知错误"。
+            // 这是 convert() 对不支持单位的意料内业务校验错误，不是系统故障，
+            // 保留清晰的具体原因文案，不套 toolFailure（避免把正常输入错误
+            // 当成异常记进 AgentLog，造成日志噪音）。
             ToolResult(name, false, "", e.message ?: "不支持的单位换算。")
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            // P2 补齐：金标准兜底——convert() 内部理论上只会抛
+            // IllegalArgumentException，但补一层 Throwable 兜底防止未预料的
+            // 崩溃（如数值溢出）被上层 catch(Exception) 击穿吞掉。
+            toolFailure(name, "单位换算出错，请稍后重试。", "unit_convert_failed", e)
         }
     }
 
@@ -568,9 +582,11 @@ class CountdownTool : AgentTool {
                 content  = "从 ${fromStr ?: "今天"} 到 $toStr：$description",
                 userHint = "正在计算日期差…",
             )
-        } catch (e: Exception) {
-            // P1-12 修复：补上 error 参数，与其余工具的 catch 分支写法统一
-            ToolResult(name, false, "", "日期计算出错：${e.message?.take(60)}")
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            // 收尾修复：改用 toolFailure 统一脱敏，e.message 可能含内部异常细节
+            toolFailure(name, "日期计算出错，请稍后重试。", "countdown_failed", e)
         }
     }
 }

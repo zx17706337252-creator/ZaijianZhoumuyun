@@ -188,7 +188,7 @@ class SpecialtyEvolutionViewModel(
         anchorIntent: String,
     ): String {
         val systemPrompt = """
-            用户希望角色在「$domain」方向上养成专长，原话是："$anchorIntent"。
+            他希望角色在「$domain」方向上养成专长，原话是："$anchorIntent"。
             请你（角色本人）为自己规划一份分阶段的自我进化方案，叙述体，不要写成
             条目清单。方案应该体现你打算怎么从摸索到逐渐稳定，不需要写得很长，
             重点是有阶段感、有具体打算尝试的方向。
@@ -204,7 +204,7 @@ class SpecialtyEvolutionViewModel(
             ).trim().ifBlank { "先从基础的尝试开始，逐步摸索适合自己的方向。" }
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             "先从基础的尝试开始，逐步摸索适合自己的方向。"
         }
     }
@@ -274,8 +274,15 @@ class SpecialtyEvolutionViewModel(
                 return@launch
             }
             val engine = SpecialtyEvolutionEngine(provider)
-            IdentityPromotionEvaluator.executePromotion(db, engine, profileId, suggestion.id, trait)
-            _snackbarMessage.value = "已写入她的人设核心，这个特点现在是她本来的样子了"
+            // #29 修复：executePromotion 现在返回 Boolean，profile 不存在或执行异常时
+            // 为 false——此前无论成不成功都固定显示同一条"已写入"成功提示，用户会
+            // 看到提示却发现人设其实没变化。据实际结果分流提示语。
+            val ok = IdentityPromotionEvaluator.executePromotion(db, engine, profileId, suggestion.id, trait)
+            _snackbarMessage.value = if (ok) {
+                "已写入她的人设核心，这个特点现在是她本来的样子了"
+            } else {
+                "晋升未能完成，这条建议对应的专长档案可能已被删除，或处理时出现了问题"
+            }
         }
     }
 

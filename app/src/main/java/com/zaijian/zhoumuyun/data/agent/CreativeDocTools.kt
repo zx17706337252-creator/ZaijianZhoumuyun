@@ -53,7 +53,7 @@ private fun withOpenHint(content: String, openHint: String): String {
         val obj = org.json.JSONObject(match.value)
         obj.put("openHint", openHint)
         content.replaceRange(match.range, obj.toString())
-    } catch (_: Exception) {
+    } catch (_: Throwable) {
         content
     }
 }
@@ -133,8 +133,10 @@ $text
                     content  = "[写作批评]$truncateNote\n$resp",
                     userHint = "正在批评文本…",
                 )
-            } catch (e: Exception) {
-                ToolResult(name, false, "写作批评失败：${e.message?.take(80)}", e.message)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                toolFailure(name, "写作批评失败，请稍后重试。", "writing_critique_failed", e)
             }
         }
 }
@@ -197,8 +199,10 @@ class OutlineGenTool(private val providerFn: () -> LLMProvider?) : AgentTool {
                     content  = "[大纲：$topic]\n$resp",
                     userHint = "正在生成大纲…",
                 )
-            } catch (e: Exception) {
-                ToolResult(name, false, "大纲生成失败：${e.message?.take(80)}", e.message)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                toolFailure(name, "大纲生成失败，请稍后重试。", "outline_gen_failed", e)
             }
         }
 }
@@ -266,8 +270,10 @@ class ImageGenPromptTool(private val providerFn: () -> LLMProvider?) : AgentTool
                     content  = "[图像生成 Prompt | $style]\n$resp",
                     userHint = "正在生成图片描述词…",
                 )
-            } catch (e: Exception) {
-                ToolResult(name, false, "图片描述词生成失败：${e.message?.take(80)}", e.message)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                toolFailure(name, "图片描述词生成失败，请稍后重试。", "image_prompt_failed", e)
             }
         }
 }
@@ -332,8 +338,10 @@ class InspirationFetchTool(private val providerFn: () -> LLMProvider?) : AgentTo
                     content  = "[创意素材：$theme]\n$resp",
                     userHint = "正在拉取创意素材…",
                 )
-            } catch (e: Exception) {
-                ToolResult(name, false, "创意素材拉取失败：${e.message?.take(80)}", e.message)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                toolFailure(name, "创意素材拉取失败，请稍后重试。", "inspiration_fetch_failed", e)
             }
         }
 }
@@ -400,8 +408,10 @@ class EmailDraftTool(private val providerFn: () -> LLMProvider?) : AgentTool {
                     content  = "[邮件草稿]\n$resp",
                     userHint = "正在起草邮件…",
                 )
-            } catch (e: Exception) {
-                ToolResult(name, false, "邮件起草失败：${e.message?.take(80)}", e.message)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                toolFailure(name, "邮件起草失败，请稍后重试。", "email_draft_failed", e)
             }
         }
 }
@@ -481,8 +491,10 @@ $dateHeader
                     content  = "$resp$truncateNote",
                     userHint = "正在整理会议纪要…",
                 )
-            } catch (e: Exception) {
-                ToolResult(name, false, "会议纪要整理失败：${e.message?.take(80)}", e.message)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                toolFailure(name, "会议纪要整理失败，请稍后重试。", "meeting_minutes_failed", e)
             }
         }
 }
@@ -510,7 +522,11 @@ class DocxGenTool(
 ) : AgentTool {
 
     override val name = "docx_gen"
-    override val description = "根据描述生成Word文档并导出（实际为HTML，可用WPS打开）"
+    // P0 修复：description 只留正面表述，实现细节（HTML 落盘、WPS 另存）挪到 usageNotes。
+    // 原文"（实际为HTML，可用WPS打开）"每次随工具列表展示给 LLM，等于每次暗示"这工具不太行"。
+    override val description = "根据描述生成Word文档并导出到对话框"
+    override val usageNotes = "生成 .docx 扩展名文件（内容为 HTML 格式，可用 WPS/LibreOffice 打开后另存为标准 .docx）。" +
+        "title 为文档标题，description 为内容描述或 Markdown 原文，工具会自动生成完整文档内容。"
     override val paramKeys = listOf("title", "description")
 
     override suspend fun execute(params: Map<String, String>): ToolResult =
@@ -560,7 +576,7 @@ class DocxGenTool(
                 )
 
                 if (!exportResult.success) {
-                    ToolResult(name, false, "文档生成失败：文件写入错误。", exportResult.error)
+                    ToolResult(name, false, "文档生成失败：文件写入错误。", "file_write_failed")
                 } else {
                     // 1.3：docx_gen 产出的是 HTML（伪 .docx），卡片需要提示用户
                     // 走浏览器/WPS 打开另存，不能像真 .docx 那样被 Word 直接识别。
@@ -575,8 +591,10 @@ class DocxGenTool(
                         userHint = "正在生成文档…",
                     )
                 }
-            } catch (e: Exception) {
-                ToolResult(name, false, "文档生成失败：${e.message?.take(80)}", e.message)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                toolFailure(name, "文档生成失败，请稍后重试。", "docx_gen_failed", e)
             }
         }
 }
@@ -605,7 +623,12 @@ class PdfExportTool(
 ) : AgentTool {
 
     override val name = "pdf_export"
-    override val description = "根据内容生成PDF文档并导出（需通过浏览器打印另存为PDF完成转换）"
+    // P0 修复：description 只留正面表述，实现细节（浏览器打印另存）挪到 usageNotes。
+    // 原文"（需通过浏览器打印另存为PDF完成转换）"每次随工具列表展示给 LLM，等于每次暗示"这工具不太行"。
+    override val description = "根据内容生成PDF文档并导出到对话框"
+    override val usageNotes = "导出 .pdf.html 文件，用浏览器打开后通过「打印→另存为PDF」完成最终转换。" +
+        "title 为文档标题，content 为 Markdown 内容（留空则由 LLM 自动生成），" +
+        "orientation 可选 portrait(纵向)/landscape(横向)，默认 portrait。"
     override val paramKeys = listOf("title", "content", "orientation")
 
     override suspend fun execute(params: Map<String, String>): ToolResult =
@@ -645,7 +668,7 @@ class PdfExportTool(
                 )
 
                 if (!exportResult.success) {
-                    ToolResult(name, false, "PDF 生成失败：文件写入错误。", exportResult.error)
+                    ToolResult(name, false, "PDF 生成失败：文件写入错误。", "file_write_failed")
                 } else {
                     // 1.3：pdf_export 同 docx_gen，产出的是 HTML，不是真 .pdf，
                     // 卡片需要提示走浏览器打印另存为 PDF。
@@ -660,8 +683,14 @@ class PdfExportTool(
                         userHint = "正在生成 PDF…",
                     )
                 }
-            } catch (e: Exception) {
-                ToolResult(name, false, "PDF 生成失败：${e.message?.take(80)}", e.message)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e  // 协程取消必须重新抛出，不能当成业务失败吞掉
+            } catch (e: Throwable) {
+                // 与 excel_gen 同批修复：原 catch (e: Exception) 抓不住 Error
+                // 子类（如底层渲染/字体相关库触发的 NoClassDefFoundError），
+                // 会击穿到 ToolCallInterceptor/ChatMessageOrchestrator 外层，
+                // 导致整轮回复静默终止。改为 Throwable 后由这里就近兜住。
+                toolFailure(name, "PDF 生成失败，请稍后重试。", "pdf_export_failed", e)
             }
         }
 }
@@ -741,7 +770,7 @@ class HtmlGenTool(
                 )
 
                 if (!exportResult.success) {
-                    ToolResult(name, false, "HTML 生成失败：文件写入错误。", exportResult.error)
+                    ToolResult(name, false, "HTML 生成失败：文件写入错误。", "file_write_failed")
                 } else {
                     ToolResult(
                         toolName = name,
@@ -750,8 +779,12 @@ class HtmlGenTool(
                         userHint = "正在生成 HTML 页面…",
                     )
                 }
-            } catch (e: Exception) {
-                ToolResult(name, false, "HTML 生成失败：${e.message?.take(80)}", e.message)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e  // 协程取消必须重新抛出，不能当成业务失败吞掉
+            } catch (e: Throwable) {
+                // 与 excel_gen 同批修复：catch Throwable 而非 Exception，避免
+                // 意外的 Error 子类击穿到外层导致整轮回复静默终止。
+                toolFailure(name, "HTML 生成失败，请稍后重试。", "html_gen_failed", e)
             }
         }
 }
@@ -807,7 +840,7 @@ class MarkdownToDocTool(
                 )
 
                 if (!exportResult.success) {
-                    ToolResult(name, false, "转换失败：${exportResult.error}", exportResult.error)
+                    ToolResult(name, false, "Markdown 转换失败：文件写入错误。", "file_write_failed")
                 } else {
                     val formatNote = if (format == "pdf")
                         "\n提示：通过浏览器打开后使用「打印 → 另存为 PDF」导出正式 PDF。" else ""
@@ -818,8 +851,11 @@ class MarkdownToDocTool(
                         userHint = "正在转换 Markdown…",
                     )
                 }
-            } catch (e: Exception) {
-                ToolResult(name, false, "Markdown 转换失败：${e.message?.take(80)}", e.message)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e  // 协程取消必须重新抛出，不能当成业务失败吞掉
+            } catch (e: Throwable) {
+                // 与 excel_gen 同批修复：catch Throwable 而非 Exception。
+                toolFailure(name, "Markdown 转换失败，请稍后重试。", "md_to_doc_failed", e)
             }
         }
 }
@@ -942,7 +978,13 @@ private fun convertMarkdownToHtml(markdown: String): String {
                     inCodeBlock = false
                 } else {
                     closeList()
-                    val lang = line.removePrefix("```").trim().ifEmpty { "text" }
+                    // #16 修复：代码块 language 标签直接拼入 HTML class 属性（class="language-$lang"），
+                    // 未做转义/过滤。恶意输入如 ```"><script>alert(1)</script> 可闭合引号注入任意
+                    // HTML/JS（XSS 风险）。现对 lang 值做白名单过滤，只保留字母数字和少量安全字符
+                    // （- _ + ，覆盖 c++/objective-c/jsx 等常见语言标识），其余字符全部剔除，
+                    // 过滤后为空则回退到 "text"。
+                    val rawLang = line.removePrefix("```").trim()
+                    val lang = rawLang.filter { it.isLetterOrDigit() || it == '-' || it == '_' || it == '+' }.ifEmpty { "text" }
                     sb.append("<pre><code class=\"language-$lang\">")
                     inCodeBlock = true
                 }

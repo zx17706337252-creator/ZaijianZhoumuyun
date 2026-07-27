@@ -48,7 +48,9 @@ import com.zaijian.zhoumuyun.ui.design.AppIcons
  *
  * 原 `EditProfileDialog`（编辑昵称+签名，双字段）结构与上述两者不同，
  * 当时不纳入收敛范围。窗口1方案B执行后，签名字段已删除、组件改为单字段的
- * `EditNicknameDialog`（位于 ProfileUserCard.kt），仍不纳入本次收敛范围。
+ * `EditNicknameDialog`（位于 ProfileUserCard.kt）。窗口7后置修复确认
+ * 全局「称呼」从未真正影响 AI 对用户的称呼方式后，该功能与
+ * `EditNicknameDialog`/`ProfileUserCard.kt` 已随之整体删除，不再存在。
  */
 
 /**

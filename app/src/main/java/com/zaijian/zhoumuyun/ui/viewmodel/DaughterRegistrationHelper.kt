@@ -11,6 +11,7 @@ import com.zaijian.zhoumuyun.data.provider.ProviderManager
 import com.zaijian.zhoumuyun.data.repository.DaughterCharacterRepository
 import com.zaijian.zhoumuyun.data.repository.IdentityRepository
 import com.zaijian.zhoumuyun.data.repository.MenstrualCycleRepository
+import com.zaijian.zhoumuyun.domain.ChatTagParser
 import com.zaijian.zhoumuyun.util.ZLog
 
 /**
@@ -30,7 +31,7 @@ class DaughterRegistrationHelper(
             val provider = ProviderManager.instance.activeProvider
                 ?: error("D4 生成器：无可用 LLM Provider")
             val cfg = LLMConfig(
-                model = "", maxTokens = 4000, temperature = 0.9f, stream = false,
+                model = "", maxTokens = 50000, temperature = 0.9f, stream = false,
             )
             val resp = StringBuilder()
             provider.chat(
@@ -38,7 +39,18 @@ class DaughterRegistrationHelper(
                 sys,
                 cfg,
             ).collect { resp.append(it) }
-            resp.toString()
+            // Fix-ReasoningLeak（D4 补丁）：provider.chat() 会把推理模型（DeepSeek-R1/
+            // Qwen-QwQ）的 reasoning_content 包成 [thinking:...] 混进同一个流（见
+            // OpenAICompatProvider.wrapAsThinkingTag），此前这里把 resp 原样交给
+            // DaughterCharacterGenerator.parseAndValidate() → extractJsonSubstring()——
+            // 该函数是"从第一个 { 到最后一个 }"的朴素子串提取，如果推理内容本身含
+            // 大括号（推理模型讨论 JSON 结构/示例代码时很常见），会把开头 { 定位到
+            // 推理段落里的杂散大括号而不是真正 JSON 的开头，parseAndValidate 要么
+            // JSON 解析失败、要么解出一份被推理文本污染的畸形数据。
+            // 这里用 ChatTagParser 剥离 [thinking:...] 后再交给下游，只留 JSON 正文。
+            // 对非推理模型（没有 thinking 标签可剥）是安全的 no-op——stripThinkingTag
+            // 找不到标签时原样返回 reply。
+            ChatTagParser.stripThinkingTag(resp.toString()).first
         },
         onIdentityRegister = { daughterData ->
             // A-6 修复：女儿注册时同步插入 agent_relation 初始行。
@@ -88,7 +100,7 @@ class DaughterRegistrationHelper(
                 if (step >= 2) runCatching { db.agentRelationDao().deleteByDaughterId(allocatedId) }
                 if (step >= 1) runCatching { db.characterIdentityDao().deleteForRollback(allocatedId) }
                 throw e
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 if (step >= 3) {
                     daughterRepo.clearDaughterCharacterIdForRollback(daughterData.motherCharacterId, allocatedId)
                 }

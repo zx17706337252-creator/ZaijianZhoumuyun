@@ -229,7 +229,7 @@ class WorldSimulation(
             delay(startupDelayMs)
             ZLog.d(TAG, "Tier 1 loop started")
             while (true) {
-                try { runTier1() } catch (e: Exception) { ZLog.w(TAG, "Tier1 error", e) }
+                try { runTier1() } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Throwable) { ZLog.w(TAG, "Tier1 error", e) }
                 delay(TIER1_INTERVAL_MS)
             }
         }
@@ -238,7 +238,7 @@ class WorldSimulation(
             delay(startupDelayMs + 2_000L)
             ZLog.d(TAG, "Tier 2 loop started")
             while (true) {
-                try { runTier2() } catch (e: Exception) { ZLog.w(TAG, "Tier2 error", e) }
+                try { runTier2() } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Throwable) { ZLog.w(TAG, "Tier2 error", e) }
                 saveTimestamp(KEY_LAST_TIER2)
                 delay(TIER2_INTERVAL_MS)
             }
@@ -248,7 +248,7 @@ class WorldSimulation(
             delay(startupDelayMs + 5_000L)
             ZLog.d(TAG, "Tier 3 loop started")
             while (true) {
-                try { runTier3() } catch (e: Exception) { ZLog.w(TAG, "Tier3 error", e) }
+                try { runTier3() } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Throwable) { ZLog.w(TAG, "Tier3 error", e) }
                 saveTimestamp(KEY_LAST_TIER3)
                 delay(TIER3_INTERVAL_MS)
             }
@@ -289,7 +289,7 @@ class WorldSimulation(
             if (tier2Rounds > 0) {
                 ZLog.d(TAG, "Offline compensation: Tier2 × $tier2Rounds rounds")
                 repeat(tier2Rounds) {
-                    try { runTier2() } catch (e: Exception) { ZLog.w(TAG, "Tier2 compensate error", e) }
+                    try { runTier2() } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Throwable) { ZLog.w(TAG, "Tier2 compensate error", e) }
                 }
                 // 方案 3-9：不再保存时间戳，由 tier2Job 常规循环负责（delay=12s，补偿完成后 2s 内首次执行）
             }
@@ -315,7 +315,7 @@ class WorldSimulation(
                     // runTier3() 内部第594-627行已完整处理 trust 累积衰减，且还含 curiosity
                     // 衰减、suppression 松动等逻辑，保留它即可覆盖 MAX_OFFLINE_ROUNDS 以内的补偿需求。
                     repeat(tier3Rounds) {
-                        try { runTier3() } catch (e: Exception) { ZLog.w(TAG, "Tier3 compensate error", e) }
+                        try { runTier3() } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Throwable) { ZLog.w(TAG, "Tier3 compensate error", e) }
                     }
                 }
                 // P1-29 修复（验收后重修）：rawTier3Rounds 可能远超 MAX_OFFLINE_ROUNDS，上面
@@ -345,7 +345,9 @@ class WorldSimulation(
                                 trustDecayAccumulator.compute(char.id) { _, v ->
                                     (v ?: 0.0) + supplementalDecay
                                 }
-                            } catch (e: Exception) {
+                            } catch (e: kotlinx.coroutines.CancellationException) {
+                                throw e
+                            } catch (e: Throwable) {
                                 ZLog.w(TAG, "Trust overflow compensate failed for char=${char.id}", e)
                             }
                         }
@@ -354,7 +356,9 @@ class WorldSimulation(
                 }
                 // 方案 3-9：不再保存时间戳，由 tier3Job 常规循环负责
             }
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             ZLog.w(TAG, "Offline compensation failed", e)
         }
     }
@@ -363,7 +367,9 @@ class WorldSimulation(
         val ctx = context ?: return
         try {
             ctx.worldSimDataStore.safeEdit { prefs -> prefs[key] = System.currentTimeMillis() }
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             ZLog.w(TAG, "Timestamp save failed for key $key", e)
         }
     }
@@ -380,7 +386,9 @@ class WorldSimulation(
             ctx.worldSimDataStore.safeEdit { prefs ->
                 prefs[KEY_TRUST_ACCUMULATOR] = json.toString()
             }
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             ZLog.w(TAG, "Trust accumulator save failed", e)
         }
     }
@@ -394,7 +402,9 @@ class WorldSimulation(
             json.keys().forEach { key ->
                 trustDecayAccumulator[key.toInt()] = json.getDouble(key)
             }
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             ZLog.w(TAG, "Trust accumulator restore failed", e)
         }
     }
@@ -449,7 +459,9 @@ class WorldSimulation(
                     )
                 }
                 // 若 messageDao 未注入（降级），refreshPresence 内部的原有目标触发逻辑保持不变
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 ZLog.w(TAG, "Presence refresh failed for char $charId", e)
             }
         }
@@ -474,7 +486,9 @@ class WorldSimulation(
                 decayBefore    = decayBefore,
                 now            = now,
             )
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             ZLog.w(TAG, "Relationship decay failed", e)
         }
 
@@ -486,7 +500,9 @@ class WorldSimulation(
                 decayBefore = decayBefore,
                 now         = now,
             )
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             ZLog.w(TAG, "InterCharacter decay failed", e)
         }
 
@@ -502,7 +518,9 @@ class WorldSimulation(
                         ZLog.d(TAG, "Goal completed: ${topGoal.title} for char $charId")
                     }
                 }
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 ZLog.w(TAG, "Goal progress update failed for char $charId", e)
             }
         }
@@ -571,11 +589,15 @@ class WorldSimulation(
                     }
 
                     ZLog.d(TAG, "Project-driven event for project=${project.title}, char=$charId")
-                } catch (e: Exception) {
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
                     ZLog.w(TAG, "Project-driven behavior failed for project=${project.id}", e)
                 }
             }
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             ZLog.w(TAG, "runProjectDrivenBehavior failed", e)
         }
     }
@@ -592,13 +614,17 @@ class WorldSimulation(
             try {
                 val remaining = repo.applyDecayAll()
                 ZLog.d(TAG, "Tier3: memory decay done, remaining=$remaining")
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 ZLog.w(TAG, "Tier3: memory decay failed", e)
             }
             try {
                 val characterIds = allCharacterIds()
                 repo.cleanupProcessedCandidates(characterIds)
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 ZLog.w(TAG, "Tier3: candidate cleanup failed", e)
             }
         }
@@ -612,7 +638,9 @@ class WorldSimulation(
                 decayBefore    = decayBefore,
                 now            = now,
             )
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             ZLog.w(TAG, "Tier3: curiosity decay failed", e)
         }
 
@@ -644,7 +672,9 @@ class WorldSimulation(
                         ((v ?: acc) - intDecay).coerceAtLeast(0.0)
                     }
                 }
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 ZLog.w(TAG, "Trust decay accumulation failed for char=$charId", e)
             }
         }
@@ -708,7 +738,7 @@ class WorldSimulation(
                 ZLog.d(TAG, "MoodContagion: char=$targetId mood ${targetSnap.mood}→$degraded (source=$sourceId)")
                 contagionCount++
             }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             ZLog.w(TAG, "MoodContagion failed", e)
         }
     }
@@ -746,7 +776,7 @@ class WorldSimulation(
             ZLog.w(TAG, "runSuppressionRelaxation 超时，已跳过本轮")
         } catch (e: CancellationException) {
             throw e
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             ZLog.w(TAG, "runSuppressionRelaxation 异常", e)
         }
     }
@@ -782,7 +812,9 @@ class WorldSimulation(
             if (userRelationships.isNotEmpty()) {
                 ZLog.d(TAG, "Tier3: suppression relaxation applied to ${userRelationships.size} relationships")
             }
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             ZLog.w(TAG, "Tier3: suppression relaxation failed", e)
         }
     }

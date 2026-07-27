@@ -50,11 +50,22 @@ object IdentityPromotionEvaluator {
      * 略微延后，可以接受。如果未来需要更精确的版本，需要给 styleNotes
      * 拆分成可独立追踪的"特征单元"结构，这是更大的改动，v1 不做。
      */
-    private val stableTraitMutexes = ConcurrentHashMap<String, Mutex>()
-    private val stableTraitTracker = mutableMapOf<String, MutableMap<String, Int>>()
+    // #54 修复：与 CandidatePromotionChecker#53 同类问题——原先 ConcurrentHashMap +
+    // computeIfAbsent 只增不删，每个出现过的 profileId 永久占一条 Mutex 记录。
+    // 改为带上限的 access-order LinkedHashMap：超过上限时淘汰最久未用的一条，
+    // 但正被持有（isLocked）的条目跳过淘汰，避免破坏互斥语义。读写都在
+    // synchronized 块里保证"查询已有 / 新建 / 淘汰"三步原子。
+    private const val MAX_TRACKED_MUTEXES = 256
+    private val stableTraitMutexes = object : LinkedHashMap<String, Mutex>(16, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Mutex>): Boolean =
+            size > MAX_TRACKED_MUTEXES && !eldest.value.isLocked
+    }
+    // P1 修复：改用 ConcurrentHashMap 保证线程安全（原 mutableMapOf 在多协程并发访问下不安全）
+    private val stableTraitTracker = ConcurrentHashMap<String, MutableMap<String, Int>>()
 
-    private fun getStableTraitMutex(profileId: String): Mutex =
-        stableTraitMutexes.computeIfAbsent(profileId) { Mutex() }
+    private fun getStableTraitMutex(profileId: String): Mutex = synchronized(stableTraitMutexes) {
+        stableTraitMutexes.getOrPut(profileId) { Mutex() }
+    }
 
     /**
      * 在每次第2→3层合并完成后调用，检查是否有特征满足晋升条件。
@@ -66,6 +77,8 @@ object IdentityPromotionEvaluator {
         profileId: String,
         previousStyleNotes: String,
     ) {
+        // P1 修复：顶层 try-catch，防止异常中断 DailyPracticeWorker
+        try {
         val profile = db.specialtyProfileDao().getById(profileId) ?: return
 
         // 条件1：稳定期
@@ -100,6 +113,11 @@ object IdentityPromotionEvaluator {
         val (trait, _) = readyToPromote.entries.first()
         requestPromotionConfirmation(db, profile, trait)
         tracker.remove(trait)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            ZLog.e("IdentityPromotionEvaluator", "evaluate 异常 profileId=$profileId", e)
+        }
     }
 
     // ─────────────────────────────────────────────────────────
@@ -165,6 +183,12 @@ object IdentityPromotionEvaluator {
      *      styleNotes 中已晋升的内容被移除（避免重复注入）
      *
      * @param traitSummary 已晋升的特征描述（用于从 styleNotes 中尝试移除对应内容）
+     * @return 是否真正执行了晋升。#29 修复：原函数返回 Unit，profile 为 null（如
+     *   suggestion 对应的专长档案已被删除）时静默 return，调用方
+     *   （SpecialtyEvolutionViewModel）无法区分"晋升成功"和"什么也没做"，
+     *   两种情况都显示同一条"已写入她的人设核心"成功提示，造成用户困惑——
+     *   用户明明什么变化都没看到，却被告知晋升成功了。改为返回 Boolean，
+     *   调用方据此展示不同提示。
      */
     suspend fun executePromotion(
         db: AppDatabase,
@@ -172,11 +196,17 @@ object IdentityPromotionEvaluator {
         profileId: String,
         suggestionId: String,
         traitSummary: String,
-    ) {
+    ): Boolean {
+        // P1 修复：顶层 try-catch，防止异常中断调用流程
+        try {
         // 遗留裸调用修复：函数接收的是裸 AppDatabase 参数，这里就近包一层
         // IdentityRepository（薄包装、无自有事务，withTransaction 内使用安全）。
         val identityRepo = IdentityRepository(db.characterIdentityDao())
-        val profile = db.specialtyProfileDao().getById(profileId) ?: return
+        val profile = db.specialtyProfileDao().getById(profileId) ?: run {
+            ZLog.w("IdentityPromotionEvaluator",
+                "executePromotion: 专长档案不存在，profileId=$profileId，跳过晋升")
+            return false
+        }
         val identity = identityRepo.getById(profile.characterId)
         val currentSoulNote = identity?.soulNote ?: ""
 
@@ -229,6 +259,13 @@ object IdentityPromotionEvaluator {
             )
 
             db.systemSuggestionDao().updateStatus(suggestionId, "ADOPTED")
+        }
+        return true
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            ZLog.e("IdentityPromotionEvaluator", "executePromotion 异常 profileId=$profileId suggestionId=$suggestionId", e)
+            return false
         }
     }
 

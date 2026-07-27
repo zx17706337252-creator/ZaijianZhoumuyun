@@ -258,7 +258,7 @@ class IdentityViewModel(application: Application) : AndroidViewModel(application
                 _uiState.update { it.copy(isSaved = true) }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 ZLog.e("IdentityViewModel", "撤销笔记编辑失败（field=$field, characterId=$currentCharacterId）", e)
                 _uiState.update { it.copy(avatarError = "撤销失败：${e.message ?: "未知错误"}") }
             }
@@ -376,7 +376,7 @@ class IdentityViewModel(application: Application) : AndroidViewModel(application
                 _uiState.update { it.copy(isSaved = true) }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 ZLog.e("IdentityViewModel", "身份信息保存失败（characterId=$currentCharacterId）", e)
                 _uiState.update { it.copy(avatarError = "保存失败：${e.message ?: "未知错误"}") }
             }
@@ -435,7 +435,7 @@ class IdentityViewModel(application: Application) : AndroidViewModel(application
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 ZLog.e("IdentityViewModel", "圆形头像保存失败（characterId=$currentCharacterId）", e)
                 _uiState.update { it.copy(avatarError = "头像保存失败：${e.message ?: "未知错误"}") }
             }
@@ -474,7 +474,7 @@ class IdentityViewModel(application: Application) : AndroidViewModel(application
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 ZLog.e("IdentityViewModel", "公馆头像保存失败（characterId=$currentCharacterId）", e)
                 _uiState.update { it.copy(avatarError = "头像保存失败：${e.message ?: "未知错误"}") }
             }
@@ -513,7 +513,7 @@ class IdentityViewModel(application: Application) : AndroidViewModel(application
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 ZLog.e("IdentityViewModel", "书架头像保存失败（characterId=$currentCharacterId）", e)
                 _uiState.update { it.copy(avatarError = "头像保存失败：${e.message ?: "未知错误"}") }
             }
@@ -575,7 +575,7 @@ class IdentityViewModel(application: Application) : AndroidViewModel(application
             try {
                 tmpFile.copyTo(destFile, overwrite = true)
                 tmpFile.delete()
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 tmpFile.delete()  // 清理临时文件
                 throw Exception("头像保存失败：无法写入目标文件")
             }
@@ -596,7 +596,7 @@ class IdentityViewModel(application: Application) : AndroidViewModel(application
     private fun parseJsonArray(json: String): List<String> = try {
         val arr = JSONArray(json)
         (0 until arr.length()).map { arr.getString(it) }
-    } catch (_: Exception) {
+    } catch (_: Throwable) {
         emptyList()
     }
 

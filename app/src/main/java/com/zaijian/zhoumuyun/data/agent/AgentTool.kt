@@ -70,6 +70,60 @@ data class ToolResult(
 )
 
 // ─────────────────────────────────────────────────────────────
+//  P2 安全错误处理辅助
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * P2 修复：工具异常时返回稳定错误码，详细异常写 AgentLog，
+ * content 用固定友好文案（不拼接 e.message，避免把绝对路径 / SQL / 堆栈泄露给 LLM 或用户）。
+ *
+ * 原先各工具的 catch 块普遍写成
+ * `ToolResult(name, false, "X失败：${e.message?.take(80)}", e.message)`，
+ * `error` 字段裸传 `e.message`——文件 I/O 异常会泄露 `/data/user/0/.../vault/...` 绝对路径，
+ * DB 异常会泄露 `SQLITE_CONSTRAINT: UNIQUE constraint failed: ...` SQL 片段。
+ * 这些内容会被 ToolCallInterceptor 回注 LLM，并可能透传到用户气泡。
+ *
+ * 用本函数替换后：
+ * - `content`：调用方提供的固定友好文案（不含 e.message）
+ * - `error`：稳定错误码（如 "file_read_failed"），不含路径/SQL
+ * - 完整异常堆栈只写进 AgentLog（filesDir/logs/agent_log.txt），供排查用
+ *
+ * 用法（金标准异常处理模式）：
+ * ```
+ * } catch (e: kotlinx.coroutines.CancellationException) {
+ *     throw e
+ * } catch (e: Throwable) {
+ *     toolFailure(name, "读取文件时遇到问题。", "file_read_failed", e)
+ * }
+ * ```
+ *
+ * ⚠️ 所有 AgentTool 的 execute() 实现必须遵循此模式：
+ * - 先 catch CancellationException 并 rethrow，保证协程取消信号不被吞掉
+ * - 再 catch Throwable（而非 Exception），防止 Error 子类（如 OutOfMemoryError）击穿
+ */
+suspend fun toolFailure(
+    toolName: String,
+    userMsg: String,
+    errorCode: String,
+    e: Throwable,
+    tag: String = toolName,
+): ToolResult {
+    // 排查性修复：日志消息里带上 e::class 全限定名（如
+    // "java.lang.NoClassDefFoundError"），不再只有 userMsg + errorCode。
+    // 此前只有堆栈本身能看出异常类型，需要展开完整 stackTraceString 才能
+    // 判断"这次到底是 Exception 还是 Error"；现在一行摘要就能看出来，
+    // 尤其是排查"某几层 catch 只认 Exception、Error 被击穿"这类问题时，
+    // 不用每次都翻到堆栈第一行。errorCode 仍是给外部/LLM 看的稳定错误码，
+    // 这里追加的类名只写本地 AgentLog 文件，不影响对外文案。
+    com.zaijian.zhoumuyun.util.AgentLog.error(
+        tag,
+        "$userMsg (code=$errorCode, exceptionType=${e::class.qualifiedName ?: e.javaClass.name})",
+        e,
+    )
+    return ToolResult(toolName, false, userMsg, errorCode)
+}
+
+// ─────────────────────────────────────────────────────────────
 //  工具接口
 // ─────────────────────────────────────────────────────────────
 
@@ -241,8 +295,11 @@ object AgentToolRegistry {
             appendLine("【文件优先规则】判断内容本身是否适合导出为文件，主动选用对应工具生成，")
             appendLine("不需要等用户先明确说「发个文件」「导出」——只要内容形态符合就该主动这样做：")
             appendLine("表格/统计数据 → table_export（真实数据）或 excel_gen（按描述生成）；")
-            appendLine("长文档/报告/纪要 → docx_gen；代码/配置/纯文本内容 → file_export；")
+            appendLine("长文档/报告/纪要 → docx_gen；演示文稿 → pptx_gen；PDF → pdf_export；")
+            appendLine("代码/配置/纯文本内容 → file_export；")
             appendLine("多个文件需要一起发 → zip_export；诊断日志 → diag_export_log。")
+            appendLine("禁止用 file_export 生成 docx/xlsx/pptx/pdf 格式文件——这些有专用工具，")
+            appendLine("file_export 仅支持 md/txt/html，用它生成 .docx 等扩展名会被静默回退为 txt。")
             appendLine("这是流程规则，不受角色性格、语气、当下情绪影响——角色可以在说话方式上")
             appendLine("保留个性（比如嘴上不情不愿），但该调用的工具必须真实调用并等待结果，")
             appendLine("不能只在对话里说「已经发了」却没有实际执行。")
@@ -252,6 +309,33 @@ object AgentToolRegistry {
                 val paramDesc = tool.paramKeys.joinToString(" ") { key -> "$key=\"...\"" }
                 val desc = tool.description.ifBlank { "（无描述）" }
                 appendLine("- ${tool.name}（$desc）: $paramDesc")
+                // P0-1 修复：注入 usageNotes（参数约束/常见坑），与 buildDegradeDecisionToolBlock
+                // （288-290 行）同款逻辑。原先主描述块不拼 usageNotes，LLM 看不到 FileExportTool
+                // 的"format 仅支持 md/txt"这类关键约束，也不知道 docx_gen/pdf_export 等工具的
+                // 调用方式，导致漏调或误传 format 值（如 format="pdf"）被静默回退成 md——是
+                // "除 MD 外其他格式发不出来"的 Prompt 层根因。现成范本就在同一文件里，直接照抄。
+                tool.usageNotes?.takeIf { it.isNotBlank() }?.let { notes ->
+                    appendLine("  用法备注: ${notes.take(300)}")
+                }
+            }
+            appendLine()
+            // P2 修复：关键文档生成工具补标签示例，降低 LLM 猜错参数格式的概率。
+            // 仅列出已注册的工具，避免展示不存在的工具示例。
+            appendLine("【常用工具调用示例】")
+            val exampleMap = linkedMapOf(
+                "docx_gen" to "<tool:docx_gen title=\"项目周报\" description=\"本周完成的三项主要工作及下周计划\"/>",
+                "excel_gen" to "<tool:excel_gen title=\"预算表\" description=\"各部门季度预算对比\" sheets_json=\"[{\\\"name\\\":\\\"Q1\\\",\\\"description\\\":\\\"各部门预算\\\"}]\"/>",
+                "pptx_gen" to "<tool:pptx_gen title=\"产品介绍\" outline=\"1.背景 2.核心功能 3.路线图\" theme=\"简约\"/>",
+                "pdf_export" to "<tool:pdf_export title=\"合同草案\" content=\"# 甲方...\\n## 第一条...\" orientation=\"portrait\"/>",
+                "file_export" to "<tool:file_export name=\"config.yml\" content=\"server:\\n  port: 8080\" format=\"txt\"/>",
+            )
+            exampleMap.forEach { (toolName, example) ->
+                // 显式用 containsKey，避免 Kotlin 在 ConcurrentHashMap 上解析 `in`/`contains`
+                // 时可能匹配到遗留的 contains(Object value)（语义等价于 containsValue）
+                // 而不是期望的按 key 判断存在。
+                if (tools.containsKey(toolName)) {
+                    appendLine(example)
+                }
             }
             appendLine()
             append("工具执行后，结果会自动回注到对话中，你无需解释工具的存在。")

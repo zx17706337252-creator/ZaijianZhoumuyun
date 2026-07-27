@@ -565,7 +565,7 @@ private fun parseCandidatesForDisplay(json: String): List<Pair<String, Int>> {
             val obj = arr.getJSONObject(i)
             obj.getString("trait") to obj.getInt("occurrenceCount")
         }
-    } catch (e: Exception) {
+    } catch (e: Throwable) {
         ZLog.w("SpecialtyEvolutionScreen", "解析 candidateObservationsJson 失败，原始内容：$json", e)
         emptyList()
     }
