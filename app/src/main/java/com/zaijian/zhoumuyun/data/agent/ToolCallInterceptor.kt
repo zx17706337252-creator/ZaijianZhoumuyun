@@ -537,6 +537,29 @@ object ToolCallInterceptor {
                     continue
                 }
 
+                // 兜底（嘴替检测）：本轮没有截断、也没有工具调用，但文字里却声称
+                // 文件/导出已完成——判定为"空头承诺"，打回重发而不是放任这句话
+                // 原样展示给用户（用户会看到"已生成"却没有任何文件卡片）。
+                // 与上面的截断续写分支互斥（wasTruncated 已在前面处理并 continue），
+                // 走到这里说明 wasTruncated 为 false，纯粹是模型主动选择不调用工具。
+                if (round < maxRounds - 1 && claimsFileCompletionWithoutToolCall(roundText.toString(), pendingCalls)) {
+                    com.zaijian.zhoumuyun.util.AgentLog.warn(
+                        "ToolCall",
+                        "⚠ 检测到疑似空头承诺（声称已生成/已发送但本轮无工具调用），打回重发（第 ${round + 1} 轮）",
+                    )
+                    if (roundText.isNotEmpty()) {
+                        currentMessages.add(LLMMessage("assistant", roundText.toString()))
+                    }
+                    currentMessages.add(LLMMessage("user",
+                        "你刚才的回复里说文件已经生成/发送了，但你这一轮并没有实际调用任何工具标签，" +
+                        "文件并没有真正生成。请立即调用对应的工具标签（如 excel_gen/pptx_gen/pdf_export 等）" +
+                        "真正执行这个操作；如果暂时无法完成，请明确告诉我还没做成，不要再说「已经完成」。"
+                    ))
+                    roundText.clear()
+                    round++
+                    continue
+                }
+
                 break
             }
 
@@ -966,6 +989,36 @@ object ToolCallInterceptor {
         """<degrade:giveup\s+reason="((?:[^"\\]|\\.)*)"\s*/>""",
         RegexOption.DOT_MATCHES_ALL,
     )
+
+    /**
+     * 检测本轮回复是否"嘴替"了文件生成/发送结果——即文字里声称已完成导出/生成/发送，
+     * 但本轮实际没有任何工具调用（[roundText] 有此类措辞但 pendingCalls 为空）。
+     *
+     * 背景：System Prompt 里已经写明"不能只在对话里说「已经发了」却没有实际执行"
+     * （见 [AgentToolRegistry.buildToolDescriptionBlock]），但这只是软性约束，模型
+     * 不总是遵守——尤其是被要求生成 Excel/PPT/PDF 这类专用工具、模型偶发选择直接
+     * 用文字回应"已经生成好了"而不吐 `<tool:...>` 标签时，用户会看到一句空头承诺，
+     * 却没有任何文件卡片、也没有任何 ToolCall 日志（因为 ToolParser 根本没检测到
+     * 标签，Phase 2/3 都不会被触发）。
+     *
+     * 与截断续写（[wasTruncated] 分支）是两回事：截断是模型正在吐标签但被打断，
+     * 这里是模型压根没打算吐标签、直接用自然语言"冒领"了结果，因此需要独立检测。
+     *
+     * 判定策略保持保守：只匹配"已经完成"式的过去时态措辞（已生成/已导出/已发送/
+     * 生成好了 等），不匹配"我来生成"这类将要执行的表述，避免把正常的"我现在开始
+     * 生成"话术误判为虚假声明而无谓打断对话。
+     */
+    private val FALSE_COMPLETION_CLAIM_REGEX = Regex(
+        "已经?(生成|导出|发送|发给你|做好|弄好)|" +
+            "(生成|导出|发送|做|弄)(好|完|完成)了|" +
+            "文件已(生成|发|准备好)",
+    )
+
+    private fun claimsFileCompletionWithoutToolCall(roundText: String, pendingCalls: List<ToolCall>): Boolean {
+        if (pendingCalls.isNotEmpty()) return false
+        if (roundText.isBlank()) return false
+        return FALSE_COMPLETION_CLAIM_REGEX.containsMatchIn(roundText)
+    }
 
     /**
      * §2.1.2 降级策略状态机对外入口：在 [executeWithDegradationCore] 之上包一层

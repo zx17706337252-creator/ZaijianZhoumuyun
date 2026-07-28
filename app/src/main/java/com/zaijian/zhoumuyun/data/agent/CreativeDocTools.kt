@@ -43,16 +43,27 @@ private suspend fun callLlm(
  *
  * 不改 FileExportTool 本身（它是 file_export 工具，被 LLM 直接调用，改签名/输出
  * 格式影响面更大），只在这两个工具拿到 exportResult 之后原地改写 JSON 段——
- * ChatMessageOrchestrator.extractExportedFileJson 用的是 \{.*\} 正则抓取，
- * 不关心 JSON 前后文字，重新拼装后依然能被同一条链路正确识别。
+ * ExportedFileMeta.extractExportedFileJson 用的是"从末尾往前配平花括号"定位
+ * metaJson（见该文件 KDoc），这里同步改用同一套定位逻辑，不再用 \{.*\} 正则。
+ *
+ * 文件卡片消失根因修复（与 ExportedFileMeta.kt 同批）：原来的 `\{.*\}` 贪婪正则
+ * 会被 content 前缀里的杂散花括号（如 title 写成"我的{产品}介绍"生成的文件名）
+ * 带偏——要么整段匹配失败，openHint 静默不写入（返回原内容，尚属无害）；要么
+ * 更糟：匹配到"从杂散 { 一路到真正 JSON 收尾 }"这段错误范围，
+ * `content.replaceRange(match.range, obj.toString())` 会用重新构造的 JSON
+ * 替换掉这段错误范围，把本该保留的人类可读前缀文字也一起吞掉、损坏 content 结构，
+ * 导致下游 ExportedFileMeta.extractExportedFileJson 即使改好了也解析不出正确结果
+ * （因为 content 本身已经被写坏）。改为从末尾定位真正的 JSON 起点后，不会再被
+ * 前缀文字里的杂散花括号误导。
  * 解析失败时原样返回，不让 openHint 注入失败影响主流程。
  */
 private fun withOpenHint(content: String, openHint: String): String {
-    val match = Regex("\\{.*\\}", RegexOption.DOT_MATCHES_ALL).find(content) ?: return content
+    val start = findTrailingJsonObjectStart(content) ?: return content
+    val jsonPart = content.substring(start)
     return try {
-        val obj = org.json.JSONObject(match.value)
+        val obj = org.json.JSONObject(jsonPart)
         obj.put("openHint", openHint)
-        content.replaceRange(match.range, obj.toString())
+        content.substring(0, start) + obj.toString()
     } catch (_: Throwable) {
         content
     }
