@@ -1348,7 +1348,7 @@ class FileExportTool(private val context: Context) : AgentTool {
             ToolResult(
                 toolName = name,
                 success  = true,
-                content  = "$formatNotice文件已生成：$fileName（${formatSize(sizeBytes)}）\n$metaJson",
+                content  = "${formatNotice}文件已生成：$fileName（${formatSize(sizeBytes)}）\n$metaJson",
                 userHint = "正在生成文件…",
             )
         } catch (e: kotlinx.coroutines.CancellationException) {
