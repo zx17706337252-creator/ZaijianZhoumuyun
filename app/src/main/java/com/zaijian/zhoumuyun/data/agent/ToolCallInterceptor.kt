@@ -560,6 +560,38 @@ object ToolCallInterceptor {
                     continue
                 }
 
+                // 修复：空头承诺重试耗尽兜底。
+                // 根因：上面的分支只处理 round < maxRounds - 1 的情况——若模型在
+                // 最后一轮（round == maxRounds - 1）依然只字面声称"已生成/已发送"
+                // 却从未真正吐出工具标签，原实现会直接 break，把这句假话原样
+                // 透传给用户（第 140 行 KDoc 也写明"超过此轮数后直接返回最后一次
+                // LLM 的原始输出，不再拦截"）。用户看到的是角色信誓旦旦"发给你了"，
+                // 但工具从未被调用过一次——磁盘上没有文件，diag_export_log 里
+                // 也不会有任何 pdf_export/pptx_gen/docx_gen/html_gen 相关记录，
+                // 因为 ToolCall 的 ▶/✔/⚠ 日志只在真正 dispatch 到工具执行时才会写入。
+                // 这正是"PDF/PPT/HTML 角色说发了，用户这边看不到、没落盘、
+                // 导出日志也查不到（多次重试）"这个反馈的直接根因。
+                //
+                // 处理方式：
+                //   1. 用 AgentLog.error 写一条明确的终态失败记录，之后用户导出
+                //      诊断日志时至少能看到"确实尝试过、且最终判定失败"，而不是
+                //      像现在这样连一条痕迹都没有。
+                //   2. 追加一句诚实的更正文本推送给用户（此前几轮的假话已经在
+                //      流式阶段实时吐给用户了，没法撤回，只能在后面补一句更正，
+                //      不能让假话就这样成为最终定论）。
+                //   3. 把更正文本一并并入 roundText，保证持久化到数据库的消息
+                //      内容和用户在界面上实际看到的一致。
+                if (claimsFileCompletionWithoutToolCall(roundText.toString(), pendingCalls)) {
+                    com.zaijian.zhoumuyun.util.AgentLog.error(
+                        "ToolCall",
+                        "⛔ 空头承诺重试耗尽（已达 ${maxRounds} 轮上限仍未调用任何工具），" +
+                            "已拦截虚假完成话术，原文前 200 字：${roundText.toString().take(200)}",
+                    )
+                    val correction = "\n\n（……其实我这边没有真的生成成功，工具没调用上，容我重新试一次，或者你再跟我说一声。）"
+                    send(StreamEvent.TextDelta(correction))
+                    roundText.append(correction)
+                }
+
                 break
             }
 

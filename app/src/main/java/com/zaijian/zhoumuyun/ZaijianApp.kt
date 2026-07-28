@@ -983,7 +983,19 @@ class ZaijianApp : Application() {
             db              = db,
             context         = context,  // 批次1 1-5修复：补 context（registerAgentTools 形参），让 runLocalCompensation 的 finally 块重新入队逻辑生效
         )
-        runCatching { AgentToolRegistry.registerCreativeDocTools(context) }.onFailure { ZLog.e("ZaijianApp", "registerCreativeDocTools 注册失败", it) }
+        runCatching { AgentToolRegistry.registerCreativeDocTools(context) }.onFailure {
+            // 诊断补丁（同批，补齐 2026-07-27 registerDataVisTools 那次遗漏的一处）：
+            // registerCreativeDocTools 一次性注册 docx_gen/pdf_export/html_gen/
+            // markdown_to_doc 等 10 个工具，任意一个构造失败会导致整批未注册——
+            // LLM 的工具列表里根本不会出现这几个工具，既不会报"未注册"错误，
+            // 也不会在 diag_export_log 里留下任何痕迹（此前只写 ZLog.e，仅 logcat
+            // 可见），表现就是角色嘴上说"文档/PDF/网页已经生成/发给你了"，实际
+            // 从未真正调用过工具——磁盘没文件，诊断日志也一片空白，用户完全无从
+            // 排查。这里补一条 AgentLog.error，把真实异常类型 + 完整堆栈落进
+            // 用户可导出的 agent_log.txt，只加日志，不改变任何现有行为/控制流。
+            ZLog.e("ZaijianApp", "registerCreativeDocTools 注册失败", it)
+            AgentLog.error("ZaijianApp", "registerCreativeDocTools 注册失败（docx_gen/pdf_export/html_gen/markdown_to_doc 等工具集体受影响）", it)
+        }
         runCatching {
             AgentToolRegistry.registerDataVisTools(
                 context            = context,
