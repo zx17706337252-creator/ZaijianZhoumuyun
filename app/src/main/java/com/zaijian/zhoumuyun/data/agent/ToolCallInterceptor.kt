@@ -151,6 +151,37 @@ object ToolCallInterceptor {
      */
     const val TOOL_TIMEOUT_MS = 30_000L
 
+    /**
+     * LLM 调用型工具的超时时间（毫秒）。
+     *
+     * 根因修复（PDF/PPT/HTML "说发了但看不到"核心根因）：
+     * pdf_export/html_gen/pptx_gen/docx_gen 等工具内部通过 callLlm 发起二次
+     * LLM 请求（生成文档内容/HTML/大纲JSON），单次 LLM 往返可能耗时 10-25s
+     * （取决于提供商负载、maxTokens、网络延迟），加上文件写入和格式转换，
+     * 30s 经常不够——工具被 withTimeout 强制取消后返回 timeout 失败结果，
+     * LLM 收到失败信息后仍可能声称"已发送"，用户看到空头承诺但无文件。
+     *
+     * MD/TXT 不受影响：file_export 不调用 LLM，纯文本写入 <100ms。
+     * Excel 不受影响：excel_gen 的 headers+rows 直传路径跳过 LLM。
+     *
+     * 对 LLM 调用型工具放宽到 90s，覆盖 p95 延迟；非 LLM 工具保持 30s。
+     */
+    const val LLM_TOOL_TIMEOUT_MS = 90_000L
+
+    /**
+     * 内部会发起 LLM 二次调用的工具集合。
+     * 这些工具的超时使用 [LLM_TOOL_TIMEOUT_MS] 而非 [TOOL_TIMEOUT_MS]。
+     * 判定依据：工具 execute() 内部是否调用 callLlm/chatSync。
+     */
+    val LLM_DEPENDENT_TOOLS = setOf(
+        "pdf_export",    // callLlm 生成 Markdown 内容（content 为空时）
+        "html_gen",      // callLlm 生成完整 HTML+CSS
+        "pptx_gen",      // callLlm 生成大纲 JSON（最多重试2次）
+        "docx_gen",      // callLlm 生成文档内容
+        "writing_critique", "outline_gen", "email_draft",
+        "meeting_minutes", "inspiration_fetch", "image_gen_prompt",
+    )
+
     // ─────────────────────────────────────────────────────────
     //  Fix-孤儿文件 ③：工具执行中标记（供调用方在 cancel 前查询）
     // ─────────────────────────────────────────────────────────
@@ -277,6 +308,11 @@ object ToolCallInterceptor {
                 }
             }
         }
+
+        // Fix-3：跨轮失败追踪。
+        // 记录之前轮次中失败过的工具名。下一轮如果 LLM 声称文件已发送，
+        // 但没有重试之前失败的工具，说明它在撒谎——需要拦截。
+        val previousFailedTools = mutableSetOf<String>()
 
         while (round < maxRounds) {
             val parser = ToolParser()
@@ -537,6 +573,36 @@ object ToolCallInterceptor {
                     continue
                 }
 
+                // Fix-3：增强虚假完成声明检测——工具失败后 LLM 仍声称成功。
+                // 场景：上一轮 pdf_export 超时失败 → anyFailed → Phase 3 告知 LLM 失败，
+                // 本轮 LLM 说"PDF已发送"但没有重试 pdf_export（可能调了别的工具如 zip_export，
+                // pendingCalls 非空导致原嘴替检测的 pendingCalls.isNotEmpty() → false 被跳过）。
+                // 判定：文本匹配完成声明正则 + 本轮 pendingCalls 不包含任何之前失败的工具 → 拦截。
+                // 如果 LLM 正在重试之前失败的工具（pendingCalls 包含 previousFailedTools 中的工具），
+                // 则放行——它在尝试修复，应该给机会（配合 Fix-5 的更长超时，重试更可能成功）。
+                if (previousFailedTools.isNotEmpty() && round < maxRounds - 1) {
+                    val claimsCompletion = FALSE_COMPLETION_CLAIM_REGEX.containsMatchIn(roundText.toString())
+                    val retryingFailedTool = pendingCalls.any { it.toolName in previousFailedTools }
+                    if (claimsCompletion && !retryingFailedTool) {
+                        com.zaijian.zhoumuyun.util.AgentLog.warn(
+                            "ToolCall",
+                            "⚠ 检测到工具失败后的虚假完成声明（上轮失败: $previousFailedTools，本轮未重试），打回重发（第 ${round + 1} 轮）",
+                        )
+                        if (roundText.isNotEmpty()) {
+                            currentMessages.add(LLMMessage("assistant", roundText.toString()))
+                        }
+                        currentMessages.add(LLMMessage("user",
+                            "你刚才说文件已经生成/发送了，但上一轮的工具执行实际上失败了" +
+                            "（失败的工具：${previousFailedTools.joinToString()}）。" +
+                            "请重新调用对应的工具标签真正执行这个操作；" +
+                            "如果暂时无法完成，请明确告诉我还没做成，不要再说「已经完成」。"
+                        ))
+                        roundText.clear()
+                        round++
+                        continue
+                    }
+                }
+
                 // 兜底（嘴替检测）：本轮没有截断、也没有工具调用，但文字里却声称
                 // 文件/导出已完成——判定为"空头承诺"，打回重发而不是放任这句话
                 // 原样展示给用户（用户会看到"已生成"却没有任何文件卡片）。
@@ -590,6 +656,24 @@ object ToolCallInterceptor {
                     val correction = "\n\n（……其实我这边没有真的生成成功，工具没调用上，容我重新试一次，或者你再跟我说一声。）"
                     send(StreamEvent.TextDelta(correction))
                     roundText.append(correction)
+                }
+
+                // Fix-3 最终兜底：工具失败后 LLM 仍声称成功（最后一轮，重试已耗尽）。
+                // 与上面的纯嘴替兜底互补：上面的只管 pendingCalls 为空的情况，
+                // 这里管 pendingCalls 非空但不含失败工具重试的情况。
+                if (previousFailedTools.isNotEmpty()) {
+                    val claimsCompletion = FALSE_COMPLETION_CLAIM_REGEX.containsMatchIn(roundText.toString())
+                    val retryingFailedTool = pendingCalls.any { it.toolName in previousFailedTools }
+                    if (claimsCompletion && !retryingFailedTool) {
+                        com.zaijian.zhoumuyun.util.AgentLog.error(
+                            "ToolCall",
+                            "⛔ 工具失败后虚假完成声明重试耗尽（${maxRounds} 轮上限），" +
+                                "失败工具: $previousFailedTools，原文前 200 字：${roundText.toString().take(200)}",
+                        )
+                        val correction = "\n\n（……其实我这边没有真的生成成功，之前尝试时出了点问题，容我重新试一次，或者你再跟我说一声。）"
+                        send(StreamEvent.TextDelta(correction))
+                        roundText.append(correction)
+                    }
                 }
 
                 break
@@ -663,7 +747,11 @@ object ToolCallInterceptor {
                 // 通知 UI 工具完成
                 send(StreamEvent.ToolDone(toolResult))
 
-                if (!toolResult.success) anyFailed = true
+                if (!toolResult.success) {
+                    anyFailed = true
+                    // Fix-3：记录失败的工具名，供下一轮虚假完成声明检测使用
+                    previousFailedTools.add(call.toolName)
+                }
                 toolResultParts.add(
                     if (toolResult.success) toolResult.content
                     else "[${toolResult.toolName} 执行失败: ${toolResult.error ?: "未知错误"}]"
@@ -826,11 +914,15 @@ object ToolCallInterceptor {
         // 不再能反映外层协程真实的取消状态。
         val callerJob = currentCoroutineContext()[Job]
 
+        // Fix-5：LLM 调用型工具使用更长超时，避免内部 LLM 往返导致 30s 超时误杀。
+        val effectiveTimeout = if (call.toolName in LLM_DEPENDENT_TOOLS) LLM_TOOL_TIMEOUT_MS else TOOL_TIMEOUT_MS
+
         val result = withContext(Dispatchers.IO + NonCancellable) {
             val startTime = System.currentTimeMillis()
-            com.zaijian.zhoumuyun.util.AgentLog.info("ToolCall", "▶ ${call.toolName} 开始\n  params: ${sanitizeParams(call.params)}")
+            val timeoutLabel = if (call.toolName in LLM_DEPENDENT_TOOLS) "LLM" else "标准"
+            com.zaijian.zhoumuyun.util.AgentLog.info("ToolCall", "▶ ${call.toolName} 开始（${timeoutLabel}超时 ${effectiveTimeout / 1000}s）\n  params: ${sanitizeParams(call.params)}")
             try {
-                kotlinx.coroutines.withTimeout(TOOL_TIMEOUT_MS) {
+                kotlinx.coroutines.withTimeout(effectiveTimeout) {
                     tool.execute(call.params)
                 }.also { r ->
                     val elapsed = System.currentTimeMillis() - startTime
@@ -857,12 +949,12 @@ object ToolCallInterceptor {
                 val elapsed = System.currentTimeMillis() - startTime
                 com.zaijian.zhoumuyun.util.AgentLog.error(
                     "ToolCall",
-                    "⏱ ${call.toolName} 超时（${TOOL_TIMEOUT_MS / 1000}s，实际 ${elapsed}ms）",
+                    "⏱ ${call.toolName} 超时（${effectiveTimeout / 1000}s，实际 ${elapsed}ms）",
                 )
                 ToolResult(
                     toolName = call.toolName,
                     success  = false,
-                    content  = "[${call.toolName} 执行超时（${TOOL_TIMEOUT_MS / 1000}s）]",
+                    content  = "[${call.toolName} 执行超时（${effectiveTimeout / 1000}s）]",
                     error    = "timeout",
                 )
             } catch (e: CancellationException) {
@@ -1039,11 +1131,31 @@ object ToolCallInterceptor {
      * 判定策略保持保守：只匹配"已经完成"式的过去时态措辞（已生成/已导出/已发送/
      * 生成好了 等），不匹配"我来生成"这类将要执行的表述，避免把正常的"我现在开始
      * 生成"话术误判为虚假声明而无谓打断对话。
+     *
+     * 根因修复（正则覆盖面不足）：原正则要求"已/已经"紧贴动词（如"已生成"），
+     * 且"(生成|导出|发送)(好|完|完成)了"要求"好/完/完成"才能接"了"。但 LLM 实际
+     * 输出的常见表述如"已经为您生成了PDF并发送给您了""已将文件打包发送给你了"
+     * 都不匹配——"已经"和"生成"之间有"为您"，"生成了"的"了"前面没有"好/完/完成"。
+     * 这导致大量 PDF/PPT/HTML/ZIP 的虚假完成声明逃逸检测，是"说发送了但看不到"
+     * 反复出现的核心原因之一。
+     * 修复：允许"已/已经"与动词之间有最多15字间隔；动词后接裸"了"也算完成态；
+     * 新增"请查收"和"已...打包/发送"模式。
      */
     private val FALSE_COMPLETION_CLAIM_REGEX = Regex(
-        "已经?(生成|导出|发送|发给你|做好|弄好)|" +
-            "(生成|导出|发送|做|弄)(好|完|完成)了|" +
-            "文件已(生成|发|准备好)",
+        // 模式1：已/已经 +（最多15字间隔）+ 完成动词
+        // 覆盖"已经为您生成了""已将文件发送给你了"等间隔表述
+        "已经?.{0,15}?(生成|导出|发送|发给你|做好|弄好|打包好|压缩好)|" +
+        // 模式2：动词 + 完成后缀（好/完/完成/了）
+        // 原正则遗漏了"生成了""发送了"等裸"了"完成态
+        "(生成|导出|发送|做|弄|打包|压缩)(好|完|完成|了)|" +
+        // 模式3：文件已 + 动词
+        "文件已(生成|发|准备好|导出|发送)|" +
+        // 模式4：已 +（最多15字间隔）+ 发送/打包完成
+        // 覆盖"已将...打包发送给你了"等远程宾语表述
+        "已.{0,15}?(发送|发给你|发过去|打包完成)|" +
+        // 模式5：请查收——文件发送的标志性完成短语
+        // 几乎不会在未实际发送时使用，误报率极低
+        "请查收",
     )
 
     private fun claimsFileCompletionWithoutToolCall(roundText: String, pendingCalls: List<ToolCall>): Boolean {

@@ -1334,14 +1334,21 @@ class FileExportTool(private val context: Context) : AgentTool {
             val metaJson = writeVaultFile(context, fileName, content, mimeType)
             val sizeBytes = content.toByteArray(Charsets.UTF_8).size.toLong()
 
+            // 根因修复（formatNotice 破坏 JSON 解析）：
+            // 原 content 格式为 "前缀文字\n$metaJson$formatNotice"——当 format 不受
+            // 支持时 formatNotice 追加在 metaJson 之后，末尾字符变成 ']' 而非 '}'，
+            // 导致 ExportedFileMeta.findTrailingJsonObjectStart 因末尾不是 '}' 直接
+            // 返回 null，文件卡片不渲染。文件已落盘但用户看不到下载入口。
+            // 修复：formatNotice 移到 metaJson 之前（前缀区），保证 metaJson 永远在
+            // content 最末尾，与 extractExportedFileJson "从末尾定位 JSON" 的设计契约一致。
             val formatNotice = if (formatWasUnsupported) {
-                "\n[提示：format=\"$format\" 不受支持，仅支持 md/txt，已按 md 生成]"
+                "[提示：format=\"$format\" 不受支持，仅支持 md/txt，已按 md 生成]\n"
             } else ""
 
             ToolResult(
                 toolName = name,
                 success  = true,
-                content  = "文件已生成：$fileName（${formatSize(sizeBytes)}）\n$metaJson$formatNotice",
+                content  = "$formatNotice文件已生成：$fileName（${formatSize(sizeBytes)}）\n$metaJson",
                 userHint = "正在生成文件…",
             )
         } catch (e: kotlinx.coroutines.CancellationException) {
@@ -1403,11 +1410,32 @@ class ArchiveExportTool(private val context: Context) : AgentTool {
         // （私聊=角色私库，圆桌=圆桌共享）；projectVaultDir 是所有角色可见的项目共享。
         // 两者合并去重，保证用户能打包自己有权访问的全部文件。
         val searchDirs = linkedSetOf(resolveVaultTargetDir(context), projectVaultDir(context))
-        val matched = searchDirs
+        val allVaultFiles = searchDirs
             .filter { it.exists() }
-            .flatMap { dir -> dir.listFiles { f -> f.isFile && names.any { f.name.endsWith(it) } }?.toList().orEmpty() }
+            .flatMap { dir -> dir.listFiles { f -> f.isFile }?.toList().orEmpty() }
+
+        // Fix-6：精确追踪哪些请求文件找到了、哪些没找到。
+        // 原实现用 endsWith 模糊匹配且不报告缺失项，导致 LLM 不知道哪个文件不存在，
+        // 可能声称"压缩包已发送"但实际打包内容不完整或直接失败。
+        val matched = mutableListOf<java.io.File>()
+        val missing = mutableListOf<String>()
+        for (name in names) {
+            val found = allVaultFiles.filter { f -> f.name.endsWith(name) }
+            if (found.isEmpty()) {
+                missing.add(name)
+            } else {
+                matched.addAll(found)
+            }
+        }
+
         if (matched.isEmpty()) {
-            return@withContext ToolResult(name, false, "", "未找到匹配的已导出文件")
+            // Fix-6：友好提示——告诉 LLM 哪些文件没找到 + 建议先生成。
+            // 这让 LLM 能如实告知用户"文件还没生成，需要先调用对应工具"，
+            // 而不是说"压缩包已发送"（实际什么都没打包）。
+            val hint = "未找到匹配的已导出文件：${names.joinToString()}。" +
+                "这些文件可能尚未生成。请先使用对应的工具（如 pdf_export/pptx_gen/excel_gen/" +
+                "html_gen/file_export 等）生成文件，再调用 zip_export 打包。"
+            return@withContext ToolResult(name, false, hint, "未找到源文件：${names.joinToString()}")
         }
 
         try {
@@ -1425,10 +1453,14 @@ class ArchiveExportTool(private val context: Context) : AgentTool {
             }
             // metaJson 里带了 sizeBytes，但为打 success 消息要个 Long，直接解析一下。
             val sizeBytes = JSONObject(metaJson).optLong("sizeBytes", 0L)
+            // Fix-6：如果部分文件缺失，在成功消息中注明，让 LLM 知道打包不完整。
+            val missingNote = if (missing.isNotEmpty()) {
+                "⚠ 注意：以下请求的文件未找到，未包含在压缩包中：${missing.joinToString()}。\n"
+            } else ""
             ToolResult(
                 toolName = name,
                 success  = true,
-                content  = "压缩包已生成：$humanName（${formatZipSize(sizeBytes)}）\n$metaJson",
+                content  = "${missingNote}压缩包已生成：$humanName（${formatZipSize(sizeBytes)}，含 ${matched.size} 个文件）\n$metaJson",
                 userHint = "正在打包…",
             )
         } catch (e: kotlinx.coroutines.CancellationException) {

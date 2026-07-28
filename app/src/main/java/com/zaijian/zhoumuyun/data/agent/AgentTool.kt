@@ -296,10 +296,10 @@ object AgentToolRegistry {
             appendLine("不需要等用户先明确说「发个文件」「导出」——只要内容形态符合就该主动这样做：")
             appendLine("表格/统计数据 → table_export（真实数据）或 excel_gen（按描述生成）；")
             appendLine("长文档/报告/纪要 → docx_gen；演示文稿 → pptx_gen；PDF → pdf_export；")
-            appendLine("代码/配置/纯文本内容 → file_export；")
+            appendLine("网页/排版页面 → html_gen；代码/配置/纯文本内容 → file_export；")
             appendLine("多个文件需要一起发 → zip_export；诊断日志 → diag_export_log。")
-            appendLine("禁止用 file_export 生成 docx/xlsx/pptx/pdf 格式文件——这些有专用工具，")
-            appendLine("file_export 仅支持 md/txt/html，用它生成 .docx 等扩展名会被静默回退为 txt。")
+            appendLine("禁止用 file_export 生成 docx/xlsx/pptx/pdf/html 格式文件——这些有专用工具，")
+            appendLine("file_export 仅支持 md/txt，用它生成 .docx 等扩展名会被静默回退为 txt。")
             appendLine("这是流程规则，不受角色性格、语气、当下情绪影响——角色可以在说话方式上")
             appendLine("保留个性（比如嘴上不情不愿），但该调用的工具必须真实调用并等待结果，")
             appendLine("不能只在对话里说「已经发了」却没有实际执行。")
@@ -321,13 +321,22 @@ object AgentToolRegistry {
             appendLine()
             // P2 修复：关键文档生成工具补标签示例，降低 LLM 猜错参数格式的概率。
             // 仅列出已注册的工具，避免展示不存在的工具示例。
+            //
+            // 根因修复（html_gen/zip_export 无示例 + pptx_gen theme 值错误）：
+            // 原 exampleMap 缺少 html_gen 和 zip_export 示例，LLM 不确定如何调用
+            // 就倾向于直接用文字"冒领"结果而不调工具——是"说发送了但看不到"
+            // 在 HTML/ZIP 场景反复出现的 prompt 层根因。
+            // 同时修正 pptx_gen 示例的 theme="简约"为"blue"——实际只支持
+            // blue/dark/minimal 三个英文值，中文值会触发 themeUnsupported 警告。
             appendLine("【常用工具调用示例】")
             val exampleMap = linkedMapOf(
                 "docx_gen" to "<tool:docx_gen title=\"项目周报\" description=\"本周完成的三项主要工作及下周计划\"/>",
                 "excel_gen" to "<tool:excel_gen title=\"预算表\" description=\"各部门季度预算对比\" sheets_json=\"[{\\\"name\\\":\\\"Q1\\\",\\\"description\\\":\\\"各部门预算\\\"}]\"/>",
-                "pptx_gen" to "<tool:pptx_gen title=\"产品介绍\" outline=\"1.背景 2.核心功能 3.路线图\" theme=\"简约\"/>",
+                "pptx_gen" to "<tool:pptx_gen title=\"产品介绍\" outline=\"1.背景 2.核心功能 3.路线图\" theme=\"blue\"/>",
                 "pdf_export" to "<tool:pdf_export title=\"合同草案\" content=\"# 甲方...\\n## 第一条...\" orientation=\"portrait\"/>",
+                "html_gen" to "<tool:html_gen title=\"产品介绍页\" content=\"展示核心功能、技术优势和应用场景\" theme=\"light\"/>",
                 "file_export" to "<tool:file_export name=\"config.yml\" content=\"server:\\n  port: 8080\" format=\"txt\"/>",
+                "zip_export" to "<tool:zip_export names=\"项目周报.docx,预算表.xlsx\"/>",
             )
             exampleMap.forEach { (toolName, example) ->
                 // 显式用 containsKey，避免 Kotlin 在 ConcurrentHashMap 上解析 `in`/`contains`
