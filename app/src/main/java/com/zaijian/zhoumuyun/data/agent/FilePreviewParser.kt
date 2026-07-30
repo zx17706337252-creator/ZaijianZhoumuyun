@@ -167,6 +167,16 @@ object FilePreviewParser {
 
                 ext == "docx" -> parseDocxOrFallback(file, charset)
 
+                // Fix-PptxPreview：pptx 走应用内文字版预览（逐页提取文本），
+                // 不再直接落入 Unsupported 被逼跳外部 WPS。
+                ext == "pptx" -> parsePptx(file)
+
+                // Fix-RealPdf 配套：真 PDF 走应用内 PdfRenderer 位图预览。
+                ext == "pdf" -> PreviewContent.Pdf(
+                    filePath = file.absolutePath,
+                    fileName = file.name,
+                )
+
                 ext in HTML_EXTS -> {
                     val source = file.readText(charset)
                     PreviewContent.Html(
@@ -559,6 +569,70 @@ object FilePreviewParser {
         }
     }
 
+    // ── PPTX 解析（Fix-PptxPreview）─────────────────────────────────────
+
+    /** pptx 单页允许提取的最大文本行数（防畸形文件撑爆列表）。 */
+    private const val MAX_SLIDE_LINES = 200
+
+    /** pptx 允许预览的最大页数。 */
+    private const val MAX_SLIDE_COUNT = 100
+
+    /**
+     * 解析 pptx 为逐页文本（[PreviewContent.Slides]）。
+     *
+     * pptx 本质是 zip：`ppt/slides/slide1.xml`、`slide2.xml`… 每页一个。
+     * 与 [parseDocxText] 同款 zip+正则轻量路线：提取 `<a:t>` 文本节点，
+     * 以 `<a:p>` 段落边界分行。不追求排版还原，只保证"内容可读"。
+     * 解析失败（非合法 zip / 无 slides 目录）回退 [PreviewContent.Unsupported]。
+     */
+    private suspend fun parsePptx(file: File): PreviewContent {
+        val slides = try {
+            ZipFile(file).use { zip ->
+                // 收集 ppt/slides/slideN.xml 并按 N 数值排序（字典序会把 slide10 排到 slide2 前）
+                val slideEntries = zip.entries().asSequence()
+                    .filter { it.name.matches(Regex("ppt/slides/slide\\d+\\.xml")) }
+                    .sortedBy { Regex("slide(\\d+)\\.xml").find(it.name)!!.groupValues[1].toInt() }
+                    .take(MAX_SLIDE_COUNT)
+                    .toList()
+                slideEntries.mapNotNull { entry ->
+                    if (entry.size > MAX_XML_ENTRY_BYTES) return@mapNotNull null
+                    val xml = zip.getInputStream(entry).use { it.readBytes().toString(Charsets.UTF_8) }
+                    // 按 <a:p> 段落切分，再抽 <a:t> 文本拼行
+                    val lines = Regex("<a:p[ >]", RegexOption.DOT_MATCHES_ALL)
+                        .split(xml)
+                        .mapNotNull { chunk ->
+                            val text = Regex("<a:t>([^<]*)</a:t>")
+                                .findAll(chunk)
+                                .joinToString("") { decodeXmlEntities(it.groupValues[1]) }
+                                .trim()
+                            text.ifEmpty { null }
+                        }
+                        .take(MAX_SLIDE_LINES)
+                    lines.ifEmpty { null }
+                }
+            }
+        } catch (e: Throwable) {
+            com.zaijian.zhoumuyun.util.AgentLog.error("FilePreviewParser", "pptx 解析失败：${file.name}", e)
+            null
+        }
+
+        return if (!slides.isNullOrEmpty()) {
+            PreviewContent.Slides(
+                slides = slides,
+                // 只读（SlidesPreviewEditor 无保存入口），但保留真实路径供
+                // 预览页菜单"导出到下载/用其他应用打开"使用。
+                sourceFilePath = file.absolutePath,
+            )
+        } else {
+            PreviewContent.Unsupported(
+                filePath = file.absolutePath,
+                fileName = file.name,
+                mimeType = guessMimeType("pptx"),
+                reason = "无法解析该 PPT 文件的内容",
+            )
+        }
+    }
+
     // ── MIME 类型猜测 ─────────────────────────────────────────────────────
 
     /** 根据扩展名猜测 MIME 类型（与 FileVaultViewModel.guessMimeType 一致）。 */
@@ -581,5 +655,8 @@ object FilePreviewParser {
     /** 判断扩展名是否支持应用内预览。 */
     fun isPreviewable(ext: String): Boolean =
         ext.lowercase() in TEXTUAL_EXTS || ext.lowercase() in MARKDOWN_EXTS ||
-        ext.lowercase() in HTML_EXTS || ext.lowercase() in setOf("csv", "xlsx", "docx")
+        ext.lowercase() in HTML_EXTS ||
+        // Fix-PptxPreview / Fix-RealPdf：pptx（文字版预览）与 pdf（PdfRenderer 位图预览）
+        // 也走应用内通道，不再被逼跳外部应用。
+        ext.lowercase() in setOf("csv", "xlsx", "docx", "pptx", "pdf")
 }

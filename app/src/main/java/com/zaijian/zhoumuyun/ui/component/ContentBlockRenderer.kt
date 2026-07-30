@@ -85,12 +85,9 @@ fun ContentBlockRenderer(
     textColor: Color,
     style: TextStyle,
     modifier: Modifier = Modifier,
-    // Fix-BubbleTextSelect：由 MessageBubble 的 BubbleActionMenu"选择文字"选项
-    // 驱动，一路传给内部所有 MarkdownText，让整条消息（台词+动作+心理+列表项）
-    // 统一切换选字模式——不做到只言片语级别（比如只有对话能选、动作描写选不了）
-    // 那种割裂体验。只贯穿到正文相关的 Paragraph/ListBlock，代码块/表格/文件卡
-    // 等结构化展示块不在"长按选字"这个诉求范围内，保持原样。
-    selectable: Boolean = false,
+    // Fix-BubbleTextSelect v3：选字功能已迁移到 ChatMessageBubble 的
+    // isTextSelectMode（气泡正文原地切换成 SelectionContainer + 纯文本 Text），
+    // 不再经过本渲染器和 MarkdownText。此前的 selectable 参数已删除。
 ) {
     if (blocks.isEmpty()) return
 
@@ -101,8 +98,8 @@ fun ContentBlockRenderer(
         blocks.forEach { block ->
             when (block) {
                 is ContentBlock.Heading -> HeadingBlock(block, textColor)
-                is ContentBlock.Paragraph -> ParagraphBlock(block, textColor, style, selectable)
-                is ContentBlock.ListBlock -> ListBlockRenderer(block, textColor, style, selectable)
+                is ContentBlock.Paragraph -> ParagraphBlock(block, textColor, style)
+                is ContentBlock.ListBlock -> ListBlockRenderer(block, textColor, style)
                 is ContentBlock.Code -> CodeBlockRenderer(block, textColor)
                 is ContentBlock.Table -> TableBlockRenderer(block, textColor, style)
                 is ContentBlock.Quote -> QuoteBlockRenderer(block, textColor, style)
@@ -147,7 +144,6 @@ private fun ParagraphBlock(
     block: ContentBlock.Paragraph,
     textColor: Color,
     style: TextStyle,
-    selectable: Boolean = false,
 ) {
     // 优化：如果所有片段都是 DIALOGUE（最常见场景），合并为单个 MarkdownText
     if (block.segments.all { it.semanticType == TextSegmentType.DIALOGUE }) {
@@ -156,7 +152,6 @@ private fun ParagraphBlock(
             markdown = fullText,
             textColor = textColor,
             style = style,
-            selectable = selectable,
         )
         return
     }
@@ -171,7 +166,6 @@ private fun ParagraphBlock(
                             markdown = segment.text,
                             textColor = textColor,
                             style = style,
-                            selectable = selectable,
                         )
                     }
                 }
@@ -181,7 +175,6 @@ private fun ParagraphBlock(
                         markdown = segment.text,
                         textColor = textColor.copy(alpha = 0.55f),
                         style = style.copy(fontStyle = FontStyle.Italic),
-                        selectable = selectable,
                     )
                 }
                 TextSegmentType.THOUGHT -> {
@@ -196,7 +189,6 @@ private fun ParagraphBlock(
                             markdown = "\u201C${segment.text}\u201D",
                             textColor = textColor.copy(alpha = 0.7f),
                             style = style.copy(fontStyle = FontStyle.Italic),
-                            selectable = selectable,
                         )
                     }
                 }
@@ -212,7 +204,6 @@ private fun ListBlockRenderer(
     block: ContentBlock.ListBlock,
     textColor: Color,
     style: TextStyle,
-    selectable: Boolean = false,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
         block.items.forEachIndexed { index, item ->
@@ -228,7 +219,6 @@ private fun ListBlockRenderer(
                     textColor = textColor,
                     style = style,
                     modifier = Modifier.weight(1f),
-                    selectable = selectable,
                 )
             }
         }

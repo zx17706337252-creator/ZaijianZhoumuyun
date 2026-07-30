@@ -58,7 +58,35 @@ sealed class PreviewContent {
     ) : PreviewContent()
 
     /**
-     * 不支持应用内预览的类型（pptx/zip/二进制等），或文件过大放弃应用内解析。
+     * PPTX 幻灯片（只读，Fix-PptxPreview 新增）。
+     *
+     * 应用内预览不追求还原排版（那是 WPS/Office 的事），按页提取文字内容
+     * 以"幻灯片卡片列表"呈现，让用户不离开 App 就能确认 PPT 内容对不对。
+     *
+     * @param slides 每页幻灯片的文本行（第一行通常是标题）
+     * @param sourceFilePath 来源文件路径（null 表示暂存模式）
+     */
+    data class Slides(
+        val slides: List<List<String>>,
+        val sourceFilePath: String?,
+    ) : PreviewContent()
+
+    /**
+     * PDF 文档（只读，Fix-RealPdf 配套预览）。
+     *
+     * 应用内用 android.graphics.pdf.PdfRenderer 把每页渲染成位图展示，
+     * 不需要第三方库；页面在 UI 层按需渲染，此处只携带文件信息。
+     *
+     * @param filePath 文件绝对路径
+     * @param fileName 文件名
+     */
+    data class Pdf(
+        val filePath: String,
+        val fileName: String,
+    ) : PreviewContent()
+
+    /**
+     * 不支持应用内预览的类型（zip/二进制等），或文件过大放弃应用内解析。
      *
      * @param filePath 文件路径（供导出/用其他应用打开）
      * @param fileName 文件名

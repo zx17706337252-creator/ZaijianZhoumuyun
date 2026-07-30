@@ -304,6 +304,15 @@ object AgentToolRegistry {
             appendLine("保留个性（比如嘴上不情不愿），但该调用的工具必须真实调用并等待结果，")
             appendLine("不能只在对话里说「已经发了」却没有实际执行。")
             appendLine()
+            // 方案 B（3.1 节）：约束"决定调用工具的那一轮"只吐标签，不吐结论性文字。
+            // 用"决定"而非"判断"，避免与"文件优先规则"里"判断内容是否适合导出"的"判断"混淆。
+            // 天然覆盖所有调用方（私聊、圆桌、后台工单），无需按场景区分措辞。
+            appendLine("【首轮简洁规则】决定本轮要调用工具时，只输出必要的极短引导语")
+            appendLine("（如角色口吻的一句话，不超过一句），紧接着输出工具标签，不要在标签前后")
+            appendLine("描述你打算做什么、预期结果是什么、或结果已经如何——这些内容工具执行完毕、")
+            appendLine("结果回传给你之后，你会有专门的一轮说话机会去描述，此时不需要提前交代。")
+            appendLine("本轮唯一的任务是「决定调用」，不是「预告+调用」。")
+            appendLine()
             appendLine("可用工具：")
             visibleTools.sortedBy { it.name }.forEach { tool ->
                 val paramDesc = tool.paramKeys.joinToString(" ") { key -> "$key=\"...\"" }

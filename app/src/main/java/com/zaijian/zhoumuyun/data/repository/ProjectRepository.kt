@@ -307,26 +307,10 @@ class ProjectRepository(
      * 提取文本，无需 OCR。此处提供双路径实现。
      */
     private fun parsePdf(context: Context, inputStream: InputStream): String {
-        // 优先尝试 Apache PDFBox（如果依赖存在）
-        return try {
-            val pdfBoxClass = Class.forName("com.tom_roush.pdfbox.pdmodel.PDDocument")
-            val loadMethod  = pdfBoxClass.getMethod("load", InputStream::class.java)
-            val doc         = loadMethod.invoke(null, inputStream)
-            val stripperClass = Class.forName("com.tom_roush.pdfbox.text.PDFTextStripper")
-            val stripper    = stripperClass.getDeclaredConstructor().newInstance()
-            val getText     = stripperClass.getMethod("getText", pdfBoxClass)
-            val text        = getText.invoke(stripper, doc) as? String
-                ?: throw UnsupportedOperationException("PDFBox getText 返回了非预期类型")
-            val close       = pdfBoxClass.getMethod("close")
-            close.invoke(doc)
-            text
-        } catch (_: ClassNotFoundException) {
-            // P1-13-4 修复：原先返回占位字符串，调用方无法区分"正常文本"和"PDF提取失败"，
-            // 导致 LLM 读到的是"[PDF 文件已导入，内容需要 PDFBox...]"这类内部提示而非真实内容。
-            // 改为抛出异常，让 importFile 调用链感知失败，可在 UI 层给用户明确提示。
-            throw UnsupportedOperationException("PDF 文本提取需要 PDFBox 依赖（com.tom_roush:pdfbox-android），当前构建未包含该依赖。")
-        }
+        return com.zaijian.zhoumuyun.util.PdfExtractor.extractText(context, inputStream)
     }
+
+    // 旧反射实现已移除，由 PdfExtractor.extractText 替代
 
     fun observeKnowledge(projectId: String): Flow<List<ProjectKnowledgeEntity>> =
         knowledgeDao.observeByProject(projectId)

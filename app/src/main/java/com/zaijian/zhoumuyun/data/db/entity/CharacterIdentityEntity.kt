@@ -123,4 +123,15 @@ data class CharacterIdentityEntity(
     val userRoleLabelPrivate: String = "",
     val userRoleLabelPublic: String = "",
     val publicPrivacyReason: String = "",
+
+    // ── v75→v76 新增：角色忠诚锁定·owner 身份特征（方案 v1.5 第 1.2 节）─────
+    // 机制一 IdentityGuard 的判定依据。存 JSON 数组字符串（与 boundariesJson/
+    // corebeliefsJson 同风格），运行时由调用方解析为 List<String> 后构造
+    // OwnerIdentityProfile（见 domain/IdentityGuard.kt）。
+    //   ownerAliasesJson：owner 的合法自称，如 ["范佩西","小范"]。
+    //     Migration 默认填当前 owner 昵称（单元素数组）。
+    //   characterCallsOwnerJson：角色对 owner 的固定称呼，如 ["主人","老板"]。
+    //     Migration 默认从角色卡已有的 userRoleLabelPrivate 回填（若有）。
+    val ownerAliasesJson: String = "[]",
+    val characterCallsOwnerJson: String = "[]",
 )

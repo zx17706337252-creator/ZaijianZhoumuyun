@@ -3,8 +3,14 @@ package com.zaijian.zhoumuyun.ui.viewmodel
 import android.app.Application
 import com.zaijian.zhoumuyun.data.agent.AgentToolRegistry
 import com.zaijian.zhoumuyun.data.agent.AgentMessageTool
+import com.zaijian.zhoumuyun.data.agent.registerAgentStoreTools
+import com.zaijian.zhoumuyun.data.agent.ChainCreateTool
 import com.zaijian.zhoumuyun.data.agent.CiCdStartTool
 import com.zaijian.zhoumuyun.data.agent.FileExportTool
+import com.zaijian.zhoumuyun.data.agent.FileSearchTool
+import com.zaijian.zhoumuyun.data.agent.ImageEditTool
+import com.zaijian.zhoumuyun.data.agent.MediaInfoTool
+import com.zaijian.zhoumuyun.data.agent.PdfReadTool
 import com.zaijian.zhoumuyun.data.agent.GoalUpdateTool
 import com.zaijian.zhoumuyun.data.agent.ProgressReportTool
 import com.zaijian.zhoumuyun.data.agent.RoundtableTriggerTool
@@ -59,7 +65,9 @@ import com.zaijian.zhoumuyun.data.repository.SkillRepository
 import com.zaijian.zhoumuyun.data.repository.MessageRepository
 import com.zaijian.zhoumuyun.data.repository.TaskRepository
 import com.zaijian.zhoumuyun.data.repository.WorkflowRepository
+import com.zaijian.zhoumuyun.data.repository.ChainRunRepository
 import com.zaijian.zhoumuyun.data.repository.ProjectRepository
+import com.zaijian.zhoumuyun.data.repository.AgentStoreRepository
 
 /**
  * 封装 Agent 工具注册逻辑，从 ChatViewModel 中提取。
@@ -76,6 +84,9 @@ class ChatToolRegistrar(
     private val memoryDao: MemoryDao,
     private val learningGoalRepo: LearningGoalRepository,
     private val workflowRepo: WorkflowRepository,
+    // 灵活自动化编排（验收缺口修复）：ChainCreateTool 覆盖注册用，与 workflowRepo
+    // 同款来源——ChatViewModel 传入 AppContainer.instance.chainRunRepository。
+    private val chainRunRepository: ChainRunRepository,
     private val taskRepo: TaskRepository,
     private val memoryEngine: MemoryEngine,
     private val scheduleRepo: ScheduleRepository,
@@ -86,6 +97,9 @@ class ChatToolRegistrar(
     // 同文件-01/02 修复：ScheduleCreateTool/ScheduleListTool 覆盖注册时需要
     // 真实 ProjectRepository，否则回落 null 导致 project_id 参数/项目标题关联失效。
     private val projectRepo: ProjectRepository,
+    // Agent 结构化存储（方案_Agent结构化存储_最终版）：与上方各 repo 同款由
+    // ChatViewModel 显式传入，供本类 registerCharacterTools() 第②处覆盖注册使用。
+    private val agentStoreRepo: AgentStoreRepository,
 ) {
     private var toolsRegisteredForCharacterId: Int? = null
 
@@ -115,6 +129,13 @@ class ChatToolRegistrar(
                 goalDao    = db.characterGoalDao(),
                 taskDao    = db.taskDao(),
             )
+        )
+        // 文件处理·纯功能方案 v5：四个不依赖角色态的静态工具
+        AgentToolRegistry.registerAll(
+            PdfReadTool(context = getApplication()),
+            MediaInfoTool(context = getApplication()),
+            ImageEditTool(context = getApplication()),
+            FileSearchTool(context = getApplication()),
         )
     }
 
@@ -168,6 +189,16 @@ class ChatToolRegistrar(
             WorkflowStartTool(
                 context = getApplication(),
                 workflowRepository = workflowRepo,
+                characterId = { currentCharacterId },
+            ),
+            // 灵活自动化编排（验收缺口修复）：ChainCreateTool 在 ZaijianApp 里以
+            // characterIdProvider={-1} 静态占位注册（同 WorkflowStartTool 模式），
+            // 但此前从未在这里被覆盖——execute() 第一行 charId<0 即拒绝，导致
+            // chain_create 在任何真实聊天场景下都会 100% 返回"角色未初始化"，
+            // 功能表面存在实则不可用。此处补上覆盖注册，与 WorkflowStartTool
+            // 同一覆盖范式、同一 currentCharacterId 来源。
+            ChainCreateTool(
+                chainRunRepository = chainRunRepository,
                 characterId = { currentCharacterId },
             ),
             // ── 2.3 工作台任务跟踪修复：补上"开始/更新/完成/取消"任务的入口 ──
@@ -331,6 +362,14 @@ class ChatToolRegistrar(
         AgentToolRegistry.registerSoulMemoryUserTools(
             identityDao = identityRepo,
             characterId = { currentCharacterId },
+        )
+        // Agent 结构化存储（方案_Agent结构化存储_最终版 8.10 第②处）：覆盖 ZaijianApp 里
+        // characterIdProvider={-1} 的静态占位注册——5 个 store_* 工具若停留在 -1 占位版本，
+        // 会把数据全部写到 ownerCharacterId=-1 这个不存在的角色下，工具执行"成功"但查不到。
+        // 此处用 currentCharacterId 覆盖，与 SkillCreateTool/MemoryWriteTool 同款两阶段注册。
+        AgentToolRegistry.registerAgentStoreTools(
+            repo = agentStoreRepo,
+            characterIdProvider = { currentCharacterId },
         )
         // S8-窗口11 P1-8-7 修复：改为 providerFn 闭包模式后，无需在注册时刻
         // 判断 providerFn() 是否为 null 才决定是否注册——工具本身可以无条件

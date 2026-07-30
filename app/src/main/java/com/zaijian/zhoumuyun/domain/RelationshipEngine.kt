@@ -12,6 +12,7 @@ import com.zaijian.zhoumuyun.data.db.entity.RelationshipStage
 import com.zaijian.zhoumuyun.data.db.entity.WorldEventEntity
 import com.zaijian.zhoumuyun.data.repository.EventRepository
 import com.zaijian.zhoumuyun.util.ZLog
+import com.zaijian.zhoumuyun.domain.SpeakerContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.util.UUID
@@ -106,8 +107,23 @@ class RelationshipEngine(
         }
     }
 
-    suspend fun applyDelta(fromId: String, toId: String, delta: RelationshipDelta, sourceEventId: String? = null) =
-        deltaMutex.withLock {
+    suspend fun applyDelta(
+        fromId: String,
+        toId: String,
+        delta: RelationshipDelta,
+        sourceEventId: String? = null,
+        // 机制四·状态隔离（方案 v1.5 第 4.2 节）：NON_OWNER 来源的正向关系 delta
+        // 只允许写入"与该第三方角色的关系值"（角色间关系桶），禁止写入/换算到
+        // owner 归属相关数值。默认 OWNER_DIRECT，向后兼容（未传参的调用方行为不变）。
+        speakerContext: SpeakerContext = SpeakerContext.OWNER_DIRECT,
+    ) = deltaMutex.withLock {
+        // ── 机制四：NON_OWNER 隔离分支 ──────────────────────────
+        // 非owner互动产生的关系增量物理隔离到角色间关系桶，绝不碰 owner 归属数值。
+        if (speakerContext.isNonOwner) {
+            applyInterCharacterDelta(fromId, toId, delta, sourceEventId)
+            return@withLock
+        }
+
         val current = getOrCreate(fromId, toId)
         val currentStage = RelationshipStage.valueOf(current.stage)
 
@@ -169,6 +185,64 @@ class RelationshipEngine(
 
         maybeRecordMilestoneFromDelta(fromId, toId, delta, sourceEventId, now)
         } // end db.withTransaction
+    }
+
+    /**
+     * 机制四·NON_OWNER 关系增量隔离写入（方案 v1.5 第 4.2 节）。
+     *
+     * 非owner（第三方角色 / owner 扮演的第三方）互动产生的关系增量，写入
+     * "与该第三方角色的关系值"（角色间关系桶，isInterCharacter=true），与
+     * owner 归属数值物理隔离。沿用与 owner 关系同样的摩擦系数/棘轮/地板逻辑，
+     * 但：
+     *   - 不记录 owner 归属的关系转折点里程碑（maybeRecordMilestoneFromDelta）
+     *   - 事件 actorId/targetId 仍为两个角色，domain 标记 INTERCHAR 防与 owner 事件混淆
+     *   - 绝不调用 getOrCreate("user", ...)，owner 归属数值零接触
+     */
+    private suspend fun applyInterCharacterDelta(
+        fromId: String,
+        toId: String,
+        delta: RelationshipDelta,
+        sourceEventId: String?,
+    ) {
+        val current = getOrCreateInterCharacter(fromId, toId)
+        val currentStage = RelationshipStage.valueOf(current.stage)
+        val pos = posMultiplier(currentStage)
+        val neg = negMultiplier(currentStage)
+        fun scale(v: Int) = if (v >= 0) (v * pos).toInt() else (v * neg).toInt()
+
+        val newTrust      = (current.trust      + scale(delta.trust)     ).coerceIn(0, 100)
+        val newRespect    = (current.respect    + scale(delta.respect)   ).coerceIn(0, 100)
+        val newAffection0 = (current.affection  + scale(delta.affection) ).coerceIn(0, 100)
+        val newCuriosity  = (current.curiosity  + scale(delta.curiosity) ).coerceIn(0, 100)
+        val newDependence = (current.dependence + scale(delta.dependence)).coerceIn(0, 100)
+        val newConflict   = (current.conflict   + scale(delta.conflict)  ).coerceIn(0, 100)
+
+        val rawStage = calcStage(newTrust, newAffection0)
+        val newStage = if (rawStage.ordinal >= currentStage.ordinal) rawStage else currentStage
+        val newAffection = newAffection0.coerceAtLeast(affectionFloor(newStage))
+
+        val now = System.currentTimeMillis()
+        db.withTransaction {
+            relationshipDao.updateAllWithSuppression(
+                current.fromId, current.toId,
+                newTrust, newRespect, newAffection, newCuriosity, newDependence, newConflict,
+                current.suppression,
+                newStage.name, sourceEventId, now,
+            )
+            eventRepo.append(WorldEventEntity(
+                id         = UUID.randomUUID().toString(),
+                type       = EventType.RELATIONSHIP_CHANGED.name,
+                actorId    = fromId,
+                targetId   = toId,
+                domain     = "INTERCHAR",
+                projectId  = null,
+                payload    = """{"trust":$newTrust,"affection":$newAffection,"stage":"${newStage.name}","bucket":"inter_character"}""",
+                importance = 3,
+                createdAt  = now,
+            ))
+        }
+        // 刻意不调用 maybeRecordMilestoneFromDelta——那是 owner 归属关系转折点记录，
+        // NON_OWNER 互动不应在 owner 关系历史上留下任何痕迹。
     }
 
     private suspend fun maybeRecordMilestoneFromDelta(

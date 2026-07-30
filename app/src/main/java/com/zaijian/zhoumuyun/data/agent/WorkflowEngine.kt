@@ -109,7 +109,10 @@ object WorkflowEngine {
      *
      * 按来源文件分组列出，方便下次新增工具时对照同类工具决定是否加入：
      */
-    private val SAFE_TOOL_NAMES = setOf(
+    // 可见性由 private 改为 internal（Step6）：ChainCreateTool 创建阶段校验
+    // checkToolName、ProductionChainEngineDeps.runCheckTool 运行时兜底校验都需要
+    // 引用本白名单。同模块内可见即可，不公开为 public。逻辑不变，仅改可见性修饰符。
+    internal val SAFE_TOOL_NAMES = setOf(
         // 原有 11 个（BuiltinTools / DataTools，均已确认无状态）
         "web_search", "calculator", "datetime", "translate", "file_read",
         "file_export", "weather", "url_fetch", "code_gen", "code_review", "unit_convert",

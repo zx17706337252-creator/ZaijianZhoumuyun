@@ -89,9 +89,14 @@ class ChatSessionDelegate(
             characterId == getCurrentCharacterId() && getReplyJob()?.isActive == true
         if (!isReenteringSameCharacterWithActiveReply) {
             getReplyJob()?.cancel()
+            // Task-1 修复（导航打断）：_streamingContent/_streamingPsych 必须与 replyJob
+            // 同步保护——若仅保护 replyJob 而清空这两个 StateFlow，StreamingMessageItem
+            // 会立即退化成 "…" 占位符（ChatMessageBubble.kt 的 displayContent 逻辑），
+            // 用户看到"生成中的对话消失了"，与 replyJob 被 cancel 的视觉效果完全一致。
+            // 同角色重入 + replyJob 仍活跃时，保留这两个流的当前值，让气泡继续显示。
+            _streamingContent.value = null
+            _streamingPsych.value = null
         }
-        _streamingContent.value = null
-        _streamingPsych.value = null
         observeJobs.forEach { it.cancel() }
         loadMessagesJob?.cancel()
         settlementCheckJob?.cancel()

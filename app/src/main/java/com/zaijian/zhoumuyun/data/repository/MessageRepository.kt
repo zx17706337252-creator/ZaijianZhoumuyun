@@ -1,5 +1,7 @@
 package com.zaijian.zhoumuyun.data.repository
 
+import com.zaijian.zhoumuyun.data.agent.AppEvent
+import com.zaijian.zhoumuyun.data.agent.EventPublisher
 import com.zaijian.zhoumuyun.data.db.dao.CharacterMessageCount
 import com.zaijian.zhoumuyun.data.db.dao.MessageDao
 import com.zaijian.zhoumuyun.data.db.entity.MessageEntity
@@ -17,7 +19,17 @@ import kotlinx.coroutines.flow.Flow
  */
 class MessageRepository(private val dao: MessageDao) {
 
-    suspend fun insert(message: MessageEntity) = dao.insert(message)
+    suspend fun insert(message: MessageEntity) {
+        dao.insert(message)
+        // §6 + §11.1 事件埋点：消息发送事件，供 ChainTriggerMatcher 匹配事件触发型链条。
+        // 消息已落库（属于持久化业务操作），走 publishPersistent 先写 PendingEventEntity
+        // 再 EventBus.emit()，防止 App 被杀期间事件丢失。
+        EventPublisher.publishPersistent(AppEvent(
+            name = "message_sent",
+            characterId = message.characterId,
+            payload = mapOf("messageId" to message.id),
+        ))
+    }
 
     suspend fun getByCharacter(characterId: Int, limit: Int = 100): List<MessageEntity> =
         dao.getByCharacter(characterId, limit)

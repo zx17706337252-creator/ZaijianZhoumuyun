@@ -1,6 +1,7 @@
 package com.zaijian.zhoumuyun.data.agent
 
 import com.zaijian.zhoumuyun.data.repository.IdentityRepository
+import com.zaijian.zhoumuyun.domain.currentSpeakerContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -17,6 +18,26 @@ private fun truncateAtSentenceBoundary(text: String, maxChars: Int): String {
     return if (lastBoundary > maxChars / 2) cut.take(lastBoundary + 1) else cut
 }
 
+/**
+ * 场景一记忆隔离修复：soul_update / narrative_memory_update / user_impression_update
+ * 三个工具写的是 CharacterIdentityEntity 上的单值字段（非逐行记忆表），没有
+ * MemoryEntity.isNarrativeOnly 那种"按行打标记，交给读取侧过滤"的空间——
+ * 一次 upsert 就是整字段覆盖，尤其 narrativeMemory 本身就是"关系记忆摘要"，
+ * owner 冒充角色 B 撩本角色产生的内容一旦覆盖进去，无法只挑出"这部分是冒充"
+ * 单独隔离。因此这三个工具选择拦截（返回失败 ToolResult），而非 memory_write
+ * 那种"写入但打标记"。
+ *
+ * 读取 currentSpeakerContext() 而非直接判断 __character_id 是否存在：工作流
+ * 后台执行（WorkflowEngine）没有活的协程上下文链路，currentSpeakerContext()
+ * 读不到 Element 时按约定回退 OWNER_DIRECT，天然不受此拦截影响，无需额外分支。
+ */
+private fun blockedForNonOwner(toolName: String, fieldLabel: String): ToolResult = ToolResult(
+    toolName = toolName,
+    success  = false,
+    content  = "",
+    error    = "当前对话疑似非 owner 本人（可能是在冒充第三方角色），为避免污染${fieldLabel}，本次未写入。",
+)
+
 class SoulUpdateTool(
     private val identityDao: IdentityRepository,
     private val characterId: () -> Int,
@@ -31,6 +52,8 @@ class SoulUpdateTool(
         val charId = params["__character_id"]?.toIntOrNull() ?: characterId()
         if (charId < 0) return@withContext ToolResult(name, false, "", "角色未初始化")
         val content = params["content"]?.trim() ?: return@withContext ToolResult(name, false, "", "需要 content 参数")
+        // 场景一记忆隔离修复：owner 冒充第三方时不写入人设备忘录。
+        if (currentSpeakerContext().isNonOwner) return@withContext blockedForNonOwner(name, "人设备忘录")
         val truncated = truncateAtSentenceBoundary(content, MAX_SOUL_CHARS)
         // P2 修复（批次3审查报告问题2）：句子边界截断比 translate 的裸 take 优雅，
         // 但 ToolResult 此前仍只说"已更新"，不提示内容被截断——角色的人设/记忆
@@ -87,6 +110,10 @@ class NarrativeMemoryUpdateTool(
         val charId = params["__character_id"]?.toIntOrNull() ?: characterId()
         if (charId < 0) return@withContext ToolResult(name, false, "", "角色未初始化")
         val content = params["content"]?.trim() ?: return@withContext ToolResult(name, false, "", "需要 content 参数")
+        // 场景一记忆隔离修复：owner 冒充第三方时不写入关系记忆摘要——这是本轮
+        // 排查中风险最高的一处，narrativeMemory 本身就是"关系发展阶段摘要"，
+        // 冒充产生的内容一旦写入，语义上就是把冒充当成真实关系发展记录。
+        if (currentSpeakerContext().isNonOwner) return@withContext blockedForNonOwner(name, "关系记忆摘要")
         val truncated = truncateAtSentenceBoundary(content, MAX_MEMORY_CHARS)
         // P2 修复（批次3审查报告问题2）：同 soul_update，截断发生时显式提示。
         val truncateNotice = if (truncated.length < content.length) {
@@ -141,6 +168,8 @@ class UserImpressionUpdateTool(
         val charId = params["__character_id"]?.toIntOrNull() ?: characterId()
         if (charId < 0) return@withContext ToolResult(name, false, "", "角色未初始化")
         val content = params["content"]?.trim() ?: return@withContext ToolResult(name, false, "", "需要 content 参数")
+        // 场景一记忆隔离修复：owner 冒充第三方时不写入对用户的印象。
+        if (currentSpeakerContext().isNonOwner) return@withContext blockedForNonOwner(name, "对用户的印象")
         val truncated = truncateAtSentenceBoundary(content, MAX_USER_CHARS)
         // P2 修复（批次3审查报告问题2）：同 soul_update，截断发生时显式提示。
         val truncateNotice = if (truncated.length < content.length) {

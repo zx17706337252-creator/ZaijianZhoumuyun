@@ -10,6 +10,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.ArrowForward
 import androidx.compose.material.icons.automirrored.outlined.Assignment
+import androidx.compose.material.icons.automirrored.outlined.Chat
 import androidx.compose.material.icons.automirrored.outlined.MenuBook
 import androidx.compose.material.icons.automirrored.outlined.Notes
 import androidx.compose.material.icons.automirrored.outlined.Send
@@ -171,6 +172,7 @@ object AppIcons {
     val ArrowBackFilled: ImageVector   = Icons.AutoMirrored.Filled.ArrowBack
     val ArrowForward: ImageVector      = Icons.AutoMirrored.Outlined.ArrowForward
     val Send: ImageVector              = Icons.AutoMirrored.Outlined.Send
+    val PrivateChat: ImageVector       = Icons.AutoMirrored.Outlined.Chat
     val MenuBook: ImageVector          = Icons.AutoMirrored.Outlined.MenuBook
     val TrendingUp: ImageVector        = Icons.AutoMirrored.Outlined.TrendingUp
     val Assignment: ImageVector        = Icons.AutoMirrored.Outlined.Assignment

@@ -420,3 +420,95 @@ internal fun migrateExportsToVaultCore(filesDir: File): MigrationResult {
     runCatching { marker.writeText("done") }
     return MigrationResult(moved, failures)
 }
+
+// ─────────────────────────────────────────────────────────────
+//  历史文件补建索引（方案 §4.2）
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * 把 vault 内尚未建过索引的文件路径入队 [FileIndexWorker]。
+ *
+ * 共享核心：[FileVaultViewModel.reindexAll]（手动按钮，单角色可见范围）与
+ * App 冷启动全量补建（[reindexAllVaultFilesOnColdStart]，全部角色/圆桌）
+ * 都调用这个函数，避免"差集扫描 + 批量入队"逻辑重复一份。
+ *
+ * 只做"补建还没被索引过的文件"，不做复杂对账（不处理已索引但文件已改动/
+ * 已删除的情况——那是 FileObserver 实时同步的职责，见
+ * [FileVaultViewModel.handleIndexSync]）。
+ *
+ * @param roots 要扫描的目录集合（调用方决定可见范围：单角色 or 全部角色）
+ * @return 实际入队补建索引的文件数
+ */
+internal suspend fun reindexUnindexedFilesUnder(context: Context, roots: List<File>): Int {
+    val allFiles = mutableListOf<File>()
+    fun collectFiles(dir: File) {
+        dir.listFiles()?.forEach { f ->
+            if (f.isDirectory) collectFiles(f) else allFiles.add(f)
+        }
+    }
+    roots.forEach { collectFiles(it) }
+
+    val alreadyIndexed = com.zaijian.zhoumuyun.data.db.AppDatabase.getInstance(context)
+        .fileIndexDao().getAllPaths().toHashSet()
+    val toIndex = allFiles.mapNotNull { f -> vaultRelativePathOf(context, f) }
+        .filter { it !in alreadyIndexed }
+
+    toIndex.forEach { relativePath -> enqueueFileIndexWork(context, relativePath) }
+    return toIndex.size
+}
+
+/** 把绝对路径转换为 vault 相对路径（如 "vault/personal/1/notes.pdf"）；不在 vault 内返回 null。 */
+internal fun vaultRelativePathOf(context: Context, file: File): String? {
+    val rootPath = vaultRoot(context).absolutePath
+    val filePath = file.absolutePath
+    if (!filePath.startsWith(rootPath)) return null
+    return "vault" + filePath.removePrefix(rootPath).let { if (it.startsWith("/")) it else "/$it" }
+}
+
+/** 入队一次性 [FileIndexWorker]，对同一 filePath 用 REPLACE 策略避免短时间内重复排队。 */
+internal fun enqueueFileIndexWork(context: Context, relativePath: String) {
+    val inputData = androidx.work.Data.Builder()
+        .putString(FileIndexWorker.KEY_FILE_PATH, relativePath)
+        .build()
+    val request = androidx.work.OneTimeWorkRequestBuilder<FileIndexWorker>()
+        .setInputData(inputData)
+        .build()
+    androidx.work.WorkManager.getInstance(context).enqueueUniqueWork(
+        "file_index_${relativePath.hashCode()}",
+        androidx.work.ExistingWorkPolicy.REPLACE,
+        request,
+    )
+}
+
+/**
+ * App 冷启动全量补建索引（方案 §4.2）。
+ *
+ * 与 [FileVaultViewModel.reindexAll]（用户手动点击、仅扫当前角色可见范围）
+ * 不同：这里在 App 启动时后台自动跑一次，覆盖**全部**角色私库 + **全部**
+ * 圆桌共享 + 项目共享——冷启动时没有"当前角色"上下文，也不需要按可见范围
+ * 过滤（这不是用户操作，只是把磁盘上已存在但数据库里还没有记录的文件
+ * 补上索引，不涉及越权访问的问题）。
+ *
+ * 手动触发 vs 自动触发的区别只在"扫描范围"，核心的差集+入队逻辑完全
+ * 复用 [reindexUnindexedFilesUnder]。
+ *
+ * 不依赖硬编码的角色 ID 范围（如 1..9）——直接遍历 vault/personal/ 和
+ * vault/shared/roundtable/ 下实际存在的子目录，天然覆盖女儿角色等
+ * ID 超出常规范围的情况。
+ *
+ * @return 实际入队补建索引的文件数
+ */
+suspend fun reindexAllVaultFilesOnColdStart(context: Context): Int {
+    val roots = mutableListOf<File>()
+
+    val personalRoot = File(vaultRoot(context), PERSONAL_DIR)
+    personalRoot.listFiles { f -> f.isDirectory }?.forEach { roots.add(it) }
+
+    val roundtableRoot = File(File(vaultRoot(context), SHARED_DIR), ROUNDTABLE_DIR)
+    roundtableRoot.listFiles { f -> f.isDirectory }?.forEach { roots.add(it) }
+
+    val project = projectVaultDir(context)
+    if (project.exists()) roots.add(project)
+
+    return reindexUnindexedFilesUnder(context, roots)
+}

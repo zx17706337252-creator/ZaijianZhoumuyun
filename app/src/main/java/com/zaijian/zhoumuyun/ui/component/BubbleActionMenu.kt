@@ -44,9 +44,11 @@ import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
  *
  * 现在长按改为先弹这个小菜单，用户自己选：
  *   ·"复制"     —— 保留原有秒复制整条消息的体验
- *   ·"选择文字" —— 把气泡内所有 MarkdownText 切到系统文字选择模式，
- *                   可拖手柄框选任意一段（由调用方驱动 selectable 状态，
- *                   本组件只负责菜单本身，不涉及 TextView 切换）。
+ *   ·"选择文字" —— Fix-BubbleTextSelect v3：气泡正文原地切换成纯 Compose
+ *                   SelectionContainer + Text（原始文本），可直接在气泡上
+ *                   拖手柄框选任意一段。不再走 TextView.setTextIsSelectable，
+ *                   不再跳独立弹窗（由调用方驱动 selectable 状态，本组件
+ *                   只负责菜单本身）。
  *
  * 视觉上不用 Material 默认 DropdownMenu（圆角矩形+纯白底，跟气泡的羊皮纸/黄铜
  * 语言不是一家人），照着气泡自己的配色手写一个小浮层：深色玄夜底 + 金线描边，
@@ -63,6 +65,9 @@ fun BubbleActionMenu(
     onCopy: () -> Unit,
     onSelectText: () -> Unit,
     onDismiss: () -> Unit,
+    // Fix-BubbleTextSelect v3：选字模式下菜单会换成"全部复制"（见调用方 v3 状态机），
+    // 平时（非选字模式）长按菜单不显示这一项，onCopy 已覆盖"秒复制整条"的需求。
+    onCopyAll: (() -> Unit)? = null,
 ) {
     if (!visible) return
 
@@ -104,6 +109,20 @@ fun BubbleActionMenu(
                     icon = AppIcons.TextSelect,
                     onClick = { onSelectText(); onDismiss() },
                 )
+                if (onCopyAll != null) {
+                    Box(
+                        modifier = Modifier
+                            .width(1.dp)
+                            .padding(vertical = 10.dp)
+                            .fillMaxHeight()
+                            .background(Palette.Gold.copy(alpha = 0.25f)),
+                    )
+                    MenuAction(
+                        label = "全部复制",
+                        icon = AppIcons.Copy,
+                        onClick = { onCopyAll(); onDismiss() },
+                    )
+                }
             }
         }
     }

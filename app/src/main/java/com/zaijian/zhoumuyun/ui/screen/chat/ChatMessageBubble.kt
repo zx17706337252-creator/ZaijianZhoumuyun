@@ -73,7 +73,11 @@ import com.zaijian.zhoumuyun.ui.theme.snapSpring
 
 
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.IntOffset
 import com.zaijian.zhoumuyun.ui.component.BreathingAvatar
 import com.zaijian.zhoumuyun.ui.component.BubbleActionMenu
@@ -325,69 +329,84 @@ internal fun MessageBubble(
                         animationSpec = if (charPressed) snapSpring else appSpring,
                         label         = "charBubblePressScale",
                     )
-                    // Fix-BubbleTextSelect：长按不再是"秒复制整条"，改为先弹一个
-                    // 小菜单，用户自己选"复制"还是"选择文字"。
-                    //   · menuVisible / menuOffset —— 菜单是否显示、显示在哪（贴着
+                    // Fix-BubbleTextSelect v3（选字闪退 + 选字面板占满屏幕右侧 + 跳窗体验重做）：
+                    // v1 把气泡内所有 MarkdownText 切到 TextView.setTextIsSelectable(true)，
+                    // 依赖系统 ActionMode 选字工具栏。在 Compose AndroidView + LazyColumn 复用
+                    // 环境下，这套系统选字（含部分 ROM 的"传送门"侧边面板）会：
+                    //   1) 渲染出一个占据屏幕整个右侧的巨大面板（UI 渲染异常）；
+                    //   2) 在回收复用的 TextView + Markwon span 组合上崩溃（选字/复制闪退）。
+                    // v2 改为跳一个独立全屏 Dialog（TextSelectDialog）来避开上述问题，
+                    // 但代价是要多一次"跳窗口"的体验，且弹窗样式与气泡本体风格脱节。
+                    // v3（当前版）：气泡正文原地切换渲染方式，不跳窗——
+                    //   · 平时：ContentBlockRenderer 正常渲染 Markdown（好看，不可选）。
+                    //   · 长按选"选择文字"后：气泡内容切换成 SelectionContainer 包裹的
+                    //     纯 Compose Text（message 原始文本，不含 Markdown 格式），
+                    //     可以直接在气泡原文上拖手柄框选——全程都是 Compose 原生
+                    //     文本组件，不触碰 AndroidView / TextView / 系统 ActionMode，
+                    //     v1 的崩溃根因（LazyColumn 回收 TextView+Markwon span）
+                    //     和"异形侧边面板"从架构上就碰不到。
+                    //   · 代价：选字模式下暂时看不到 Markdown 格式（粗体/表格等），
+                    //     显示纯文本——这是"原文可直接拖选"与"格式美观"之间的
+                    //     明确取舍，退出选字模式立即恢复正常渲染。
+                    //   · menuVisible / menuOffset —— 长按菜单是否显示、显示在哪（贴着
                     //     长按点，menuOffset 记录的是长按点相对本 Box 左上角的
                     //     本地坐标，Popup 的 offset 参数按这个来定位）。
-                    //   · isSelecting —— 是否处于"选择文字"模式。为 true 时：
-                    //     1) 气泡的 combinedClickable 让路（不响应点击全屏/长按
-                    //        弹菜单），完全交给 TextView 的原生拖选手势；
-                    //     2) ContentBlockRenderer 下所有 MarkdownText 切到
-                    //        setTextIsSelectable(true)（见 MarkdownText.kt）。
+                    //   · isTextSelectMode —— 气泡当前是否处于"可拖选纯文本"模式。
                     var menuVisible by remember { mutableStateOf(false) }
                     var menuOffset by remember { mutableStateOf(IntOffset.Zero) }
-                    var isSelecting by remember { mutableStateOf(false) }
+                    var isTextSelectMode by remember { mutableStateOf(false) }
+                    val clipboard = LocalClipboardManager.current
+                    // 提到这里（而不是留在 WorldBubble 内部 Column 里），因为下面的
+                    // BubbleActionMenu.onCopy 和"完成"按钮都在 WorldBubble 外层的
+                    // 这个 Box 作用域里，需要能访问到同一个值。
+                    val selectableText = message.content.ifBlank { message.psychText.orEmpty() }
 
                     Box {
                         WorldBubble(
                             modifier    = Modifier
                                 .widthIn(max = maxBubbleWidth)
                                 .graphicsLayer { scaleX = charScale; scaleY = charScale }
-                                .then(
-                                    // 选字模式下彻底不挂手势：把触摸事件完全让给
-                                    // TextView 自己的原生选择手势（拖手柄、系统气泡
-                                    // 菜单），不与外层任何点击/长按逻辑竞争。
-                                    //
-                                    // 非选字模式下用单一 pointerInput + detectTapGestures
-                                    // 同时处理"点按=全屏查看"和"长按=弹操作菜单"——
-                                    // 不再叠加 combinedClickable，两套独立手势探测器
-                                    // 同时监听同一批触摸事件会互相干扰（谁先消费、
-                                    // 按压态由谁驱动都不确定），选一套就够。按压缩放
-                                    // 反馈（charPressed）借用 charInteraction 手动
-                                    // 在 onPress 里驱动，效果与之前一致。
-                                    if (isSelecting) {
-                                        Modifier
-                                    } else {
-                                        Modifier.pointerInput(message.id) {
-                                            detectTapGestures(
-                                                onPress = { offset ->
-                                                    val press = androidx.compose.foundation.interaction.PressInteraction.Press(offset)
-                                                    charInteraction.emit(press)
-                                                    val released = tryAwaitRelease()
-                                                    charInteraction.emit(
-                                                        if (released) {
-                                                            androidx.compose.foundation.interaction.PressInteraction.Release(press)
-                                                        } else {
-                                                            androidx.compose.foundation.interaction.PressInteraction.Cancel(press)
-                                                        }
-                                                    )
-                                                },
-                                                onTap = {
-                                                    // v1.48：点击气泡全屏查看文本（角色气泡是 Markdown 渲染的）
-                                                    if (message.content.isNotBlank()) {
-                                                        onOpenFullText(message.content, true)
-                                                    }
-                                                },
-                                                onLongPress = { pos ->
-                                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                                    menuOffset = IntOffset(pos.x.toInt(), pos.y.toInt())
-                                                    menuVisible = true
-                                                },
+                                // 单一 pointerInput + detectTapGestures 同时处理
+                                // "点按=全屏查看"和"长按=弹操作菜单"——不叠加
+                                // combinedClickable，两套独立手势探测器同时监听同一批
+                                // 触摸事件会互相干扰。按压缩放反馈（charPressed）借用
+                                // charInteraction 手动在 onPress 里驱动，效果与之前一致。
+                                //
+                                // Fix-BubbleTextSelect v3：选字模式下（isTextSelectMode=true）
+                                // 这层手势要整个让路——SelectionContainer 需要自己接管长按/
+                                // 拖拽来画选区和手柄，若外层 pointerInput 仍在监听同一批触摸
+                                // 事件，会跟 SelectionContainer 抢手势，导致拖不出选区或点按
+                                // 误触发"全屏查看"。用 key(isTextSelectMode) 让 pointerInput
+                                // 在模式切换时重新安装，selectable 模式下传入什么手势都不做
+                                // 的 suspend 块，等于完全禁用这层。
+                                .pointerInput(message.id, isTextSelectMode) {
+                                    if (isTextSelectMode) return@pointerInput
+                                    detectTapGestures(
+                                        onPress = { offset ->
+                                            val press = androidx.compose.foundation.interaction.PressInteraction.Press(offset)
+                                            charInteraction.emit(press)
+                                            val released = tryAwaitRelease()
+                                            charInteraction.emit(
+                                                if (released) {
+                                                    androidx.compose.foundation.interaction.PressInteraction.Release(press)
+                                                } else {
+                                                    androidx.compose.foundation.interaction.PressInteraction.Cancel(press)
+                                                }
                                             )
-                                        }
-                                    }
-                                ),
+                                        },
+                                        onTap = {
+                                            // v1.48：点击气泡全屏查看文本（角色气泡是 Markdown 渲染的）
+                                            if (message.content.isNotBlank()) {
+                                                onOpenFullText(message.content, true)
+                                            }
+                                        },
+                                        onLongPress = { pos ->
+                                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                            menuOffset = IntOffset(pos.x.toInt(), pos.y.toInt())
+                                            menuVisible = true
+                                        },
+                                    )
+                                },
                             topStart    = Radius.md,
                             topEnd      = Radius.md,
                             bottomStart = Radius.xs,
@@ -422,22 +441,39 @@ internal fun MessageBubble(
                                 )
                             }
 
-                            // 窗口3：角色气泡使用 ContentBlockRenderer 渲染（块级结构化 + 行内语义标记）
-                            // 用户气泡（上方）保持原生 Text，FileExportCard 不受影响
-                            val contentBlocks = remember(message.content) {
-                                ContentBlockParser.parse(message.content)
-                            }
                             // 纯色填充后文字色不能再用 colors.textPrimary（中性墨色只是
                             // 为纸面底设计的，配饱和 accentColor 底对比度不稳）——
                             // 改用 contentOnFill() 按每个角色色的亮度自动选深/浅字。
-                            ContentBlockRenderer(
-                                blocks     = contentBlocks,
-                                textColor  = accentColor.contentOnFill(),
-                                style      = type.body,
-                                // Fix-BubbleTextSelect：由 BubbleActionMenu"选择
-                                // 文字"驱动，一路传给内部 MarkdownText。
-                                selectable = isSelecting,
-                            )
+                            val bubbleTextColor = accentColor.contentOnFill()
+
+                            if (isTextSelectMode) {
+                                // Fix-BubbleTextSelect v3：选字模式——原地切换成纯 Compose
+                                // SelectionContainer + Text，显示原始文本（不含 Markdown
+                                // 格式），可直接在气泡上长按拖手柄框选、用 Compose 自带的
+                                // 浮动菜单复制选中片段。不经过 AndroidView/TextView，
+                                // 不会触发 v1 的 LazyColumn 回收崩溃或异形选字面板。
+                                SelectionContainer {
+                                    Text(
+                                        text  = selectableText,
+                                        style = type.body,
+                                        color = bubbleTextColor,
+                                    )
+                                }
+                            } else {
+                                // 窗口3：角色气泡使用 ContentBlockRenderer 渲染（块级结构化 + 行内语义标记）
+                                // 用户气泡（上方）保持原生 Text，FileExportCard 不受影响
+                                val contentBlocks = remember(message.content) {
+                                    ContentBlockParser.parse(message.content)
+                                }
+                                ContentBlockRenderer(
+                                    blocks     = contentBlocks,
+                                    textColor  = bubbleTextColor,
+                                    style      = type.body,
+                                    // Fix-BubbleTextSelect v3：selectable 参数保持默认 false——
+                                    // 这条路径（Markwon+AndroidView）永远不再切换选字模式，
+                                    // 选字统一走上面的 isTextSelectMode 分支。
+                                )
+                            }
 
                             // 文档发送方式="一起发"（默认）：文件/表格卡片嵌进同一个
                             // WorldBubble 内部，跟文字共用一个外框，视觉上是一条消息。
@@ -475,7 +511,11 @@ internal fun MessageBubble(
                         }
                         }
 
-                        // Fix-BubbleTextSelect：长按操作菜单，贴着长按落点弹出。
+                        // Fix-BubbleTextSelect v3：长按操作菜单，贴着长按落点弹出。
+                        // 选字模式下（isTextSelectMode=true）菜单额外带"全部复制"；
+                        // 选字模式本身的进入/退出都由这个菜单驱动：
+                        //   ·"选择文字" → 进入 isTextSelectMode（气泡原地切纯文本可选）
+                        //   ·"全部复制" → 一键复制整条消息，同时退出选字模式
                         BubbleActionMenu(
                             visible      = menuVisible,
                             anchorOffset = menuOffset,
@@ -483,42 +523,35 @@ internal fun MessageBubble(
                                 // Fix-PsychOnlyMessageDrop 连带修复：content 为空、
                                 // 只有心理描写时，复制应复制 psychText，而不是复制
                                 // 空字符串。
-                                onCopyMessage(message.content.ifBlank { message.psychText.orEmpty() })
+                                onCopyMessage(selectableText)
                             },
-                            onSelectText = { isSelecting = true },
+                            onSelectText = { isTextSelectMode = true },
                             onDismiss    = { menuVisible = false },
+                            onCopyAll    = if (isTextSelectMode) {
+                                {
+                                    clipboard.setText(AnnotatedString(selectableText))
+                                    isTextSelectMode = false
+                                }
+                            } else null,
                         )
 
-                        // 选字模式下的退出入口：气泡右上角挂一个小提示条，点一下
-                        // 结束选择、恢复正常点击/长按手势。不用系统返回键或点击
-                        // 气泡外部退出——那样容易和"正在拖手柄选字"这个手势本身
-                        // 冲突（拖到气泡边界外松手可能被误判为"点了外部要退出"）。
-                        if (isSelecting) {
-                            Row(
+                        // Fix-BubbleTextSelect v3：选字模式下气泡外沿加一圈提示 + 退出入口，
+                        // 避免用户选完字之后不知道怎么退回正常显示。点击即退出选字模式，
+                        // 恢复 ContentBlockRenderer 的 Markdown 渲染。
+                        if (isTextSelectMode) {
+                            Box(
                                 modifier = Modifier
                                     .align(Alignment.TopEnd)
-                                    .padding(top = (-28).dp, end = 4.dp)
-                                    .clip(RoundedCornerShape(Radius.xs))
-                                    .background(Palette.Night)
-                                    .clickable(
-                                        interactionSource = remember { MutableInteractionSource() },
-                                        indication        = null,
-                                        onClick           = { isSelecting = false },
-                                    )
-                                    .padding(horizontal = Spacing.sm, vertical = 4.dp),
-                                verticalAlignment = Alignment.CenterVertically,
+                                    .padding(4.dp)
+                                    .clip(RoundedCornerShape(Radius.sm))
+                                    .background(Palette.Night.copy(alpha = 0.85f))
+                                    .clickable { isTextSelectMode = false }
+                                    .padding(horizontal = 8.dp, vertical = 4.dp),
                             ) {
-                                Icon(
-                                    imageVector = AppIcons.Check,
-                                    contentDescription = "完成选择",
-                                    tint     = Palette.GoldSoft,
-                                    modifier = Modifier.size(12.dp),
-                                )
-                                Spacer(Modifier.width(4.dp))
                                 Text(
                                     text  = "完成",
                                     style = type.label,
-                                    color = Palette.NightText,
+                                    color = Palette.GoldSoft,
                                 )
                             }
                         }
@@ -742,6 +775,35 @@ internal fun ThoughtCard(
                         style = type.caption,
                         color = colors.textDisabled,
                     )
+                }
+                // Fix-ThoughtCopy（思考内容无法复制的根因修复）：此前整张卡只有
+                // "点击展开/收起"一个交互，正文是纯 Text，没有任何复制入口。
+                // 标题栏加一键复制按钮——点击复制全部思考内容到剪贴板并短暂变为 ✓。
+                // clickable 在最内层，事件不会冒泡到外层 Column 的"展开/收起"切换。
+                var justCopied by remember { mutableStateOf(false) }
+                val clipboard = LocalClipboardManager.current
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(accentColor.copy(alpha = 0.10f))
+                        .clickable {
+                            clipboard.setText(AnnotatedString(thinkingText))
+                            justCopied = true
+                        }
+                        .padding(horizontal = 6.dp, vertical = 2.dp),
+                ) {
+                    Text(
+                        text  = if (justCopied) "✓ 已复制" else "复制",
+                        style = type.caption,
+                        color = accentColor,
+                    )
+                }
+                // 复制反馈 1.2s 后自动复原
+                if (justCopied) {
+                    androidx.compose.runtime.LaunchedEffect(Unit) {
+                        kotlinx.coroutines.delay(1200)
+                        justCopied = false
+                    }
                 }
                 Icon(
                     imageVector        = AppIcons.ExpandMore,
@@ -1168,6 +1230,9 @@ internal fun StreamingMessageItem(
     // 消息真正落库后才出现（此前流式阶段 psychText 恒为 null，PsychCard
     // 在角色打字期间完全不会渲染，是"折叠的思考过程不显示"反馈的成因之一）。
     val streamingPsych by chatViewModel.streamingPsych.collectAsStateWithLifecycle()
+    // Fix-StreamThinking：生成期间实时展示思考过程（ThoughtCard，默认折叠）。
+    // 输出节奏需求：思考先出，正式回复正文与文件卡片在收尾时一次性合并提交。
+    val streamingThinking by chatViewModel.streamingThinking.collectAsStateWithLifecycle()
     // 编译修复：isNullOrEmpty() 是扩展函数，不会对 streamingContent 触发智能转换收窄，
     // then 分支类型仍是 String?，导致整个表达式推断为 String?，与 content: String 不匹配。
     // 用局部 val 显式判空后取值，保证类型确定为 String。
@@ -1180,6 +1245,7 @@ internal fun StreamingMessageItem(
             content   = displayContent,
             createdAt = System.currentTimeMillis(),
             psychText = streamingPsych,
+            thinkingText = streamingThinking,
         ),
         accentColor   = accentColor,
         avatarUrl     = avatarUrl,

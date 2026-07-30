@@ -235,6 +235,50 @@ class BootReceiver : BroadcastReceiver() {
                     // 为进行中，不会造成数据损坏，可后续人工介入。
                     ZLog.w("BootReceiver", "开机恢复 workflow job 整体失败", e)
                 }
+
+                // ── 灵活自动化编排 · chain_runs 的 RUNNING 恢复（§11.3）──────────
+                // 设备重启导致正在执行的 Action 节点被打断（status 仍是 RUNNING）。
+                // WAITING 态不需要此处处理——WorkManager 会自动恢复其持久化的
+                // ChainResumeWorker WorkSpec。这里只对 RUNNING 态重新入队 immediate
+                // 恢复（delayMs=0），由 ChainResumeWorker 重新调用 ChainEngine.advance()。
+                //
+                // 对照上方 workflow_jobs 恢复段：同样独立 try-catch、单条 run 独立
+                // try-catch，避免一条异常中断整批处理；现场构造 ChainRunRepositoryImpl
+                // （不经 AppContainer，同 WorkflowJobWorker 模式）。
+                try {
+                    val chainRunRepository = com.zaijian.zhoumuyun.data.repository.ChainRunRepositoryImpl(
+                        chainRunDao = db.chainRunDao(),
+                        chainDefinitionDao = db.chainDefinitionDao(),
+                        pendingEventDao = db.pendingEventDao(),
+                        context = context,
+                    )
+                    val chainRunningRuns = chainRunRepository.findAllByStatus(
+                        com.zaijian.zhoumuyun.data.db.entity.ChainRunStatus.RUNNING,
+                    )
+                    val processedRunIds = mutableListOf<String>()
+                    for (run in chainRunningRuns) {
+                        try {
+                            // RUNNING 态说明 Action 节点执行到一半被杀——重新入队 immediate 恢复
+                            WorkManagerScheduler.enqueueChainResume(context, run.id, delayMs = 0)
+                            processedRunIds.add(run.id)
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            throw e
+                        } catch (e: Throwable) {
+                            ZLog.w("BootReceiver", "开机恢复 chain run 处理失败 runId=${run.id}", e)
+                        }
+                    }
+                    if (chainRunningRuns.isNotEmpty()) {
+                        ZLog.d(
+                            "BootReceiver",
+                            "开机恢复 chain run：共 ${chainRunningRuns.size} 条 RUNNING，" +
+                                "成功处理 ${processedRunIds.size} 条，已处理 runId=$processedRunIds",
+                        )
+                    }
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    ZLog.w("BootReceiver", "开机恢复 chain run 整体失败", e)
+                }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Throwable) {

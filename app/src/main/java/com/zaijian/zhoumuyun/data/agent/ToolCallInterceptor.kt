@@ -12,6 +12,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.async
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
@@ -19,7 +20,9 @@ import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Phase 13 · Tool Call Engine（Prompt-based Dispatch）
@@ -86,10 +89,10 @@ import kotlinx.coroutines.withContext
 /**
  * ToolCallInterceptor 向外 emit 的事件类型。
  *
- * ChatViewModel 按事件类型分发处理：
- *   - [TextDelta]   → 追加到 streamingContent（打字机）
- *   - [ToolStarted] → 更新 UI hint（"正在搜索…"）
- *   - [ToolDone]    → 清除 UI hint，记录工具结果到 workbenchTask
+ * ChatMessageOrchestrator 按事件类型分发处理：
+ *   - [TextDelta]   → 累积到 fullReply（Task-2：不再逐 token 更新 streamingContent）
+ *   - [ToolStarted] → 覆盖 streamingHint 为工具特定提示（如 "正在生成PDF…"）
+ *   - [ToolDone]    → 恢复 streamingHint 为 "正在生成回复…"（Task-2：不再清除）
  *   - [RoundDone]   → 本轮工具全部执行完毕，第二次回复开始前的分隔点
  */
 sealed class StreamEvent {
@@ -219,6 +222,138 @@ object ToolCallInterceptor {
     fun isToolInFlight(sceneType: String, characterId: Int): Boolean =
         toolInFlightKeys.contains(toolInFlightKey(sceneType, characterId))
 
+    // ═════════════════════════════════════════════════════════════════
+    //  方案 A：句子级事前门控（send 前剥离空头承诺话术）
+    // ═════════════════════════════════════════════════════════════════
+    //
+    // 核心思路（对照改造方案 v9 第 2.1~2.3 节）：
+    //   不再逐 delta 立即 send，而是先攒到 sendBuffer，按句子边界切分，
+    //   每凑够一个完整句子就和上一句（pendingSentence）拼成滑动窗口，
+    //   跑一次 FALSE_COMPLETION_CLAIM_REGEX 判断——命中则丢弃、不 send；
+    //   不命中则把上一句真正 send 出去，当前这句暂存为新的 pendingSentence。
+    //
+    // "迟一句发送"机制（坑6）：判断的是 pendingSentence（上一句），但正则
+    // 跑在"上一句+当前句"拼接的窗口上——这样即使上一句单独测不命中，也能
+    // 借当前句一起测出跨句假话。代价是打字机效果天然滞后一句。
+    //
+    // 判断条件（坑2/2.6 节订正）：
+    //   !anyToolSucceeded && pendingCalls.isEmpty() && 正则命中
+    // ——工具成功后的合法收尾语不会被误拦。
+    //
+    // 为什么用非 suspend 的"返回要 send 的文本"模式：
+    //   channelFlow 的 send() 是 suspend，Kotlin 不支持 local suspend fun，
+    //   也不支持在非 suspend 的普通函数里直接调 send。所以 gate 方法返回
+    //   "该 send 什么"（String? ），由处于 suspend 上下文的调用方执行 send。
+    //   日志用 ZLog.w（非 suspend，内部异步转发到 AgentLog）。
+    private class SentenceGate(
+        /** 跨轮状态：本请求此前是否有任意工具成功过（true 时不拦合法收尾语） */
+        private val anyToolSucceeded: Boolean,
+        /** 本轮待执行工具列表引用（live，随 feed 不断增长；isEmpty 判断用最新值） */
+        private val pendingCalls: List<ToolCall>,
+    ) {
+        /** 上一句还没确认放行、暂存等待和下一句拼窗判断 */
+        private var pendingSentence: String? = null
+        /** 本次 feed 累积的、尚未凑够一整句的文本残片 */
+        private val sendBuffer = StringBuilder()
+
+        /**
+         * 判断待测文本是否命中空头承诺正则。
+         * 条件对齐 claimsFileCompletionWithoutToolCall（2.6 节订正）：
+         * !anyToolSucceeded && pendingCalls.isEmpty() && 正则命中。
+         */
+        private fun isFalseClaim(text: String): Boolean {
+            val shouldCheck = !anyToolSucceeded && pendingCalls.isEmpty()
+            return shouldCheck && FALSE_COMPLETION_CLAIM_REGEX.containsMatchIn(text)
+        }
+
+        /**
+         * 把 pendingSentence 和新句子拼起来判断，决定 pendingSentence 是否放行。
+         * 无论放行与否都会把 pendingSentence 换成新句子（坑6 核心）。
+         * 返回：应 send 的文本（= 放行的上一句），null 表示丢弃/暂无。
+         */
+        fun advanceWindow(nextSentence: String): String? {
+            val prev = pendingSentence
+            pendingSentence = nextSentence
+            if (prev != null) {
+                val window = prev + nextSentence
+                if (isFalseClaim(window)) {
+                    ZLog.w(
+                        "ToolCall",
+                        "🚫 gate 拦截疑似空头承诺（窗口命中）：${window.take(40)}",
+                    )
+                    return null  // 上一句不 send；roundText 已在别处完整 append
+                }
+                return prev  // 放行上一句
+            }
+            return null  // 第一句：没有上一句可 send
+        }
+
+        /**
+         * round 结束（含异常）时的兜底吐出：pendingSentence 不再有"下一句"可拼。
+         * 先把 sendBuffer 里未成句的残片喂给 advanceWindow，再单独测 pendingSentence。
+         * 返回：应 send 的文本列表（调用方逐条 send）。
+         * @param skipGateCheck 异常路径优先级是"不丢字 > 不误判"，直接跳过正则照单发出
+         */
+        fun flush(skipGateCheck: Boolean = false): List<String> {
+            val toSend = mutableListOf<String>()
+            // 异常路径可能跳过了 preFeed/flush 收尾，sendBuffer 里可能还有残片
+            feedRemaining().forEach { toSend.add(it) }
+            // flush 最后一句 pendingSentence（没有"下一句"可拼，只能单独测）
+            val prev = pendingSentence
+            pendingSentence = null
+            if (prev != null) {
+                if (!skipGateCheck && isFalseClaim(prev)) {
+                    ZLog.w(
+                        "ToolCall",
+                        "🚫 gate 拦截疑似空头承诺（round 收尾单独测）：${prev.take(40)}",
+                    )
+                } else {
+                    toSend.add(prev)
+                }
+            }
+            return toSend
+        }
+
+        /**
+         * 把 sendBuffer 里未成句的残片作为一整句喂给 advanceWindow。
+         * 在 preFeed/flush 收尾文本处理之前调用，确保残片不丢失。
+         * 返回：本次应 send 的文本列表。
+         */
+        fun feedRemaining(): List<String> {
+            if (sendBuffer.isEmpty()) return emptyList()
+            val remaining = sendBuffer.toString()
+            sendBuffer.clear()
+            val toSend = mutableListOf<String>()
+            advanceWindow(remaining)?.let { toSend.add(it) }
+            return toSend
+        }
+
+        /**
+         * 喂入一段文本，按句子边界切分后逐句 advanceWindow。
+         * 返回：本次应 send 的句子列表（调用方逐条 send）。
+         */
+        fun feed(text: String): List<String> {
+            sendBuffer.append(text)
+            val toSend = mutableListOf<String>()
+            var lastCut = 0
+            val buf = sendBuffer.toString()
+            // 按中文句号、英文句号、感叹号、问号切分（保留标点在前一句末尾）
+            val sentenceEndRegex = Regex("[。！？!?]")
+            for (match in sentenceEndRegex.findAll(buf)) {
+                val end = match.range.last + 1
+                val sentence = buf.substring(lastCut, end)
+                lastCut = end
+                advanceWindow(sentence)?.let { toSend.add(it) }
+            }
+            // 把已切出的部分从 sendBuffer 移除，保留剩余残片
+            if (lastCut > 0) {
+                sendBuffer.setLength(0)
+                sendBuffer.append(buf.substring(lastCut))
+            }
+            return toSend
+        }
+    }
+
     /**
      * 流式调用 LLM 并自动处理工具调用。
      *
@@ -314,6 +449,35 @@ object ToolCallInterceptor {
         // 但没有重试之前失败的工具，说明它在撒谎——需要拦截。
         val previousFailedTools = mutableSetOf<String>()
 
+        // Fix-DupFileGen①：跨轮成功追踪 + 完全重复调用去重。
+        //
+        // 根因（agent_log.txt 实测）：第 N 轮 file_export/excel_gen 真正执行成功后，
+        // Phase 3 回注结果，第 N+1 轮模型按指示自然回复"文件已生成/发给你了"——
+        // 这句是【合法的收尾确认】，但下方的"空头承诺检测"只查本轮 pendingCalls，
+        // 把这句合法确认误判为"声称完成却没调工具"，打回重发；被打回的模型收到
+        // "你并没有实际调用任何工具标签"的错误指控，只能再调一次工具自证——
+        // 于是又生成一个内容不同的新文件。循环往复，一次用户请求产出 3-6 个文件，
+        // 并伴随 5-6 轮无效 LLM 往返（用户视角：卡死几分钟）。
+        //
+        // 修复：任何一轮有工具真正成功过后，后续轮次的"完成确认"一律放行，
+        // 空头承诺检测只在"整个请求没有任何工具成功过"时才生效。
+        var anyToolSucceeded = false
+        // 同请求内已成功执行的文件类调用签名（工具名|文件名|参数哈希），
+        // 完全一致的重复调用直接跳过，防止任何路径下的重复落盘。
+        val executedFileSignatures = mutableSetOf<String>()
+        // Fix-DupFileGen③：同请求内【按工具名】的文件生成成功次数限流。
+        //
+        // 根因（agent_log.txt 实测）：Fix-DupFileGen② 的签名去重只拦"参数完全一致"的
+        // 重复调用，但模型被打回重试时几乎都会换文件名/微调内容（公馆记录.xlsx →
+        // _v2.xlsx → _v3.xlsx；顾澜的日常.txt → 碎碎念.txt → 日常.md），签名每次都
+        // 不同，去重完全不触发，导致一次请求产出 3-6 个同主题不同版本的文件。
+        //
+        // 修复：在签名去重之上叠加"同 toolName 成功次数"上限——同一请求内同一个
+        // file_producing 工具最多成功执行 MAX 次（默认 2：1 次正常生成 + 1 次容忍模型
+        // 的修订重试），超过后一律拦截并提示模型"已生成过同类文件"。按 toolName 精确
+        // 匹配，不误伤"同请求内调用不同文件工具"（Excel+PPT+PDF 各自独立计数）。
+        val fileToolSuccessCount = mutableMapOf<String, Int>()
+
         while (round < maxRounds) {
             val parser = ToolParser()
             val pendingCalls = mutableListOf<ToolCall>()
@@ -331,6 +495,9 @@ object ToolCallInterceptor {
             // 的下一轮才展示。
             val isForcedLockRound = pendingFilePaths.isNotEmpty() && round < 2
 
+            // 方案 A：非锁死轮次启用句子级事前门控（锁死轮次不维护 gate 状态）
+            val gate = if (!isForcedLockRound) SentenceGate(anyToolSucceeded, pendingCalls) else null
+
             // ── Phase 1：流式接收 LLM 输出 ─────────────────────
             // P0-5 修复：使用 chatStream() 替代 chat()，以获取 finish_reason 截断信号。
             // finish_reason=="length" 表示 maxTokens 截断；同时 flush() 的 hasPendingTag
@@ -342,14 +509,21 @@ object ToolCallInterceptor {
                         is ChatStreamItem.TextDelta -> {
                             val result = parser.feed(item.text)
 
-                            // 立即输出纯文本（打字机效果）——锁死阶段不展示给用户
-                            if (result.cleanText.isNotEmpty()) {
-                                if (!isForcedLockRound) send(StreamEvent.TextDelta(result.cleanText))
-                                roundText.append(result.cleanText)
-                            }
-
-                            // 收集本轮发现的工具调用
+                            // 坑2：必须先 addAll detectedCalls 再做 gate 判断，
+                            // 否则同一个 delta 里"标签+收尾语"同时到达时
+                            // pendingCalls 还是旧值，会误拦合法收尾语
                             pendingCalls.addAll(result.detectedCalls)
+
+                            if (result.cleanText.isNotEmpty()) {
+                                // roundText 始终完整拼接（坑3：不删被拦截的句子）
+                                roundText.append(result.cleanText)
+                                if (isForcedLockRound) {
+                                    // 锁死轮次：roundText 已 append，不 send、不跑 gate
+                                } else {
+                                    // 方案 A：句子级 gate（迟一句发送 + 滑动窗口）
+                                    gate!!.feed(result.cleanText).forEach { send(StreamEvent.TextDelta(it)) }
+                                }
+                            }
                         }
                         is ChatStreamItem.FinishReason -> {
                             if (item.reason == "length") {
@@ -364,6 +538,10 @@ object ToolCallInterceptor {
                 // P1-5 修复：catch Throwable 而非 Exception——Error 子类（OOM 等）
                 // 此前击穿 Exception 导致 channelFlow 异常退出、用户无错误提示。
                 com.zaijian.zhoumuyun.util.AgentLog.error("LLM", "LLM 调用失败（第 ${round + 1} 轮）", e)
+                // 坑7b：异常路径不丢字优先，跳过正则、照单发出 pending 暂存内容
+                if (!isForcedLockRound) {
+                    gate!!.flush(skipGateCheck = true).forEach { send(StreamEvent.TextDelta(it)) }
+                }
                 send(StreamEvent.TextDelta("\n\n[抱歉，遇到了一些问题，稍后再试？]"))
                 break
             }
@@ -373,16 +551,30 @@ object ToolCallInterceptor {
             // 完整的工具标签（流最后一行恰好是完整标签但还没被 feed 处理完），
             // 改为先再 feed 一次空串让 processBuf 扫尽 buffer，再 flush 截断尾部碎片。
             val preFeedResult = parser.feed("")
-            if (preFeedResult.cleanText.isNotEmpty()) {
-                if (!isForcedLockRound) send(StreamEvent.TextDelta(preFeedResult.cleanText))
-                roundText.append(preFeedResult.cleanText)
-            }
             pendingCalls.addAll(preFeedResult.detectedCalls)
+            if (!isForcedLockRound) {
+                // 先 flush gate 的 sendBuffer 残片（未成句的文本），避免丢失
+                gate!!.feedRemaining().forEach { send(StreamEvent.TextDelta(it)) }
+            }
+            if (preFeedResult.cleanText.isNotEmpty()) {
+                roundText.append(preFeedResult.cleanText)
+                if (!isForcedLockRound) {
+                    // 方案 A（v7）：收尾文本走 advanceWindow，和正文同一套拼窗逻辑
+                    gate!!.advanceWindow(preFeedResult.cleanText)?.let { send(StreamEvent.TextDelta(it)) }
+                }
+            }
 
             val flushResult = parser.flush()
             if (flushResult.cleanText.isNotEmpty()) {
-                if (!isForcedLockRound) send(StreamEvent.TextDelta(flushResult.cleanText))
                 roundText.append(flushResult.cleanText)
+                if (!isForcedLockRound) {
+                    gate!!.advanceWindow(flushResult.cleanText)?.let { send(StreamEvent.TextDelta(it)) }
+                }
+            }
+
+            // 坑7a：round 结束前 flush 最后一句（pendingSentence 里还压着一句没有"下一句"可拼）
+            if (!isForcedLockRound) {
+                gate!!.flush(skipGateCheck = false).forEach { send(StreamEvent.TextDelta(it)) }
             }
 
             // P0-5 修复：综合截断信号。两个来源：
@@ -608,7 +800,11 @@ object ToolCallInterceptor {
                 // 原样展示给用户（用户会看到"已生成"却没有任何文件卡片）。
                 // 与上面的截断续写分支互斥（wasTruncated 已在前面处理并 continue），
                 // 走到这里说明 wasTruncated 为 false，纯粹是模型主动选择不调用工具。
-                if (round < maxRounds - 1 && claimsFileCompletionWithoutToolCall(roundText.toString(), pendingCalls)) {
+                //
+                // Fix-DupFileGen①：加 anyToolSucceeded 前置条件——本请求此前已有工具
+                // 真正成功过时，这句"已完成"是合法收尾确认，不是空头承诺，直接放行
+                // （原实现误伤此场景导致重复生成 + 重试风暴，见上方声明处注释）。
+                if (round < maxRounds - 1 && !anyToolSucceeded && claimsFileCompletionWithoutToolCall(roundText.toString(), pendingCalls)) {
                     com.zaijian.zhoumuyun.util.AgentLog.warn(
                         "ToolCall",
                         "⚠ 检测到疑似空头承诺（声称已生成/已发送但本轮无工具调用），打回重发（第 ${round + 1} 轮）",
@@ -647,13 +843,14 @@ object ToolCallInterceptor {
                 //      不能让假话就这样成为最终定论）。
                 //   3. 把更正文本一并并入 roundText，保证持久化到数据库的消息
                 //      内容和用户在界面上实际看到的一致。
-                if (claimsFileCompletionWithoutToolCall(roundText.toString(), pendingCalls)) {
+                // Fix-DupFileGen①：同上，已有工具成功过时这是合法收尾，不再追加更正话术。
+                if (!anyToolSucceeded && claimsFileCompletionWithoutToolCall(roundText.toString(), pendingCalls)) {
                     com.zaijian.zhoumuyun.util.AgentLog.error(
                         "ToolCall",
                         "⛔ 空头承诺重试耗尽（已达 ${maxRounds} 轮上限仍未调用任何工具），" +
                             "已拦截虚假完成话术，原文前 200 字：${roundText.toString().take(200)}",
                     )
-                    val correction = "\n\n（……其实我这边没有真的生成成功，工具没调用上，容我重新试一次，或者你再跟我说一声。）"
+                    val correction = "\n\n（这个我还没能真的做成，工具没调用上，容我重新试一次，或者你再跟我说一声。）"
                     send(StreamEvent.TextDelta(correction))
                     roundText.append(correction)
                 }
@@ -670,7 +867,7 @@ object ToolCallInterceptor {
                             "⛔ 工具失败后虚假完成声明重试耗尽（${maxRounds} 轮上限），" +
                                 "失败工具: $previousFailedTools，原文前 200 字：${roundText.toString().take(200)}",
                         )
-                        val correction = "\n\n（……其实我这边没有真的生成成功，之前尝试时出了点问题，容我重新试一次，或者你再跟我说一声。）"
+                        val correction = "\n\n（这个之前尝试时出了点问题，还没真的做成，容我重新试一次，或者你再跟我说一声。）"
                         send(StreamEvent.TextDelta(correction))
                         roundText.append(correction)
                     }
@@ -699,6 +896,9 @@ object ToolCallInterceptor {
             }
 
             // ── Phase 2：串行执行工具调用 ─────────────────────
+            // 方案 B（3.2 节）：调用工具轮次的纯文本篇幅统计埋点
+            logVerboseToolCallRound(roundText.toString(), pendingCalls)
+
             val toolResultParts = mutableListOf<String>()
             // 根因修复（静默失败）：此前 Phase 3 不区分成败，一律指示 LLM
             // "不要提及工具或搜索的过程"——工具真失败时，这条指令连同失败原因
@@ -707,6 +907,15 @@ object ToolCallInterceptor {
             // 而实际上工具已经执行过且已失败。用本轮是否有任何工具失败/被禁用/
             // 未注册来决定 Phase 3 给 LLM 的收尾指令（见下方 anyFailed 分支）。
             var anyFailed = false
+            // Fix-限流嘴替：Fix-DupFileGen③ 的去重限流拦截此前完全不设任何标志——
+            // 走的是普通 continue，toolResultParts 里只留一句"本会话已生成过同类
+            // 文件"，Phase 3 收尾指令按 anyFailed=false 处理，给的是中性的"用你自己
+            // 的语气回复我"。但限流拦截意味着这次调用实际上【没有产出新文件】，
+            // 语义上更接近失败而非成功，中性指令没有约束模型必须如实说明"这次没
+            // 生成"，模型容易把限流提示和同批次里其它成功结果糅合成模糊的"最后
+            // 还是生成了"（agent_log.txt 实测：excel_gen 先被拒后又成功一次，模型
+            // 把两次结果混述成单一的"成功"结论）。单独标记出来，走专门的收尾指令。
+            var anyRateLimited = false
 
             for (call in pendingCalls) {
                 if (call.toolName in disabledToolNames) {
@@ -724,6 +933,41 @@ object ToolCallInterceptor {
                     com.zaijian.zhoumuyun.util.AgentLog.warn("ToolCall", "⊘ ${call.toolName} 未注册（LLM 生成了该工具标签但 registry 里没有），跳过")
                     toolResultParts.add("[工具 ${call.toolName} 不可用]")
                     anyFailed = true
+                    continue
+                }
+
+                // Fix-DupFileGen②：同一请求内【完全一致】的文件生成调用（同工具+同文件名+
+                // 同参数）直接跳过——第一次已经成功落盘，再执行只会多产出一个内容雷同的
+                // 新文件。只挡"完全一致"的重复，同文件名但参数/内容不同的调用视为
+                // 模型的修订意图，正常放行。签名仅在成功后登记（见下方），
+                // 失败后的重试不会被误挡。
+                val fileSignature = fileCallSignature(call)
+                if (fileSignature != null && fileSignature in executedFileSignatures) {
+                    com.zaijian.zhoumuyun.util.AgentLog.warn(
+                        "ToolCall", "⊘ ${call.toolName} 与此前成功调用完全重复，跳过（防止重复生成文件）",
+                    )
+                    toolResultParts.add("[${call.toolName}：相同文件已生成，无需重复执行]")
+                    continue
+                }
+                // Fix-DupFileGen③：按工具名限流——同请求内同一 file_producing 工具成功
+                // 次数已达上限，判定为"换名反复生成"（见 fileToolSuccessCount 顶部根因），
+                // 直接拦截不再执行，告知模型已生成过同类文件、如需新增请先等用户确认。
+                // 用 fileSignature != null 作守卫（等价于 call.toolName in FILE_PRODUCING_TOOLS，
+                // 且复用已算好的值），非文件类工具不进入此分支。
+                if (fileSignature != null &&
+                    (fileToolSuccessCount[call.toolName] ?: 0) >= MAX_FILE_TOOL_SUCCESSES_PER_REQUEST
+                ) {
+                    com.zaijian.zhoumuyun.util.AgentLog.warn(
+                        "ToolCall",
+                        "⊘ ${call.toolName} 本请求已成功 ${MAX_FILE_TOOL_SUCCESSES_PER_REQUEST} 次，" +
+                            "判定为换名反复生成，跳过执行（防止重复文件）",
+                    )
+                    toolResultParts.add(
+                        "[${call.toolName}：本次调用被拦截，未生成新文件——" +
+                            "本会话该类文件已生成过 ${MAX_FILE_TOOL_SUCCESSES_PER_REQUEST} 次，" +
+                            "如确需新增不同内容的同类文件，请先告知用户并等待确认]",
+                    )
+                    anyRateLimited = true
                     continue
                 }
 
@@ -751,6 +995,16 @@ object ToolCallInterceptor {
                     anyFailed = true
                     // Fix-3：记录失败的工具名，供下一轮虚假完成声明检测使用
                     previousFailedTools.add(call.toolName)
+                } else {
+                    // Fix-DupFileGen：登记成功——放行后续轮次的合法完成确认，
+                    // 并登记文件调用签名防止完全重复执行。
+                    anyToolSucceeded = true
+                    fileSignature?.let {
+                        executedFileSignatures.add(it)
+                        // Fix-DupFileGen③：按工具名累计成功次数，超限后下一轮拦截换名重生成。
+                        fileToolSuccessCount[call.toolName] =
+                            (fileToolSuccessCount[call.toolName] ?: 0) + 1
+                    }
                 }
                 toolResultParts.add(
                     if (toolResult.success) toolResult.content
@@ -791,6 +1045,15 @@ object ToolCallInterceptor {
                         "（不需要暴露工具名称、报错信息等技术细节，也不要堆砌道歉套话），" +
                         "可以问我要不要换个方式再试。禁止假装该操作已经完成，" +
                         "禁止对失败这件事只字不提、顾左右而言他。")
+                } else if (anyRateLimited) {
+                    // Fix-限流嘴替：以上工具结果里，"本次调用被拦截"和其它调用的
+                    // "已生成"可能同时存在（比如同一批里一个文件被拦截、另一个
+                    // 文件正常生成）。明确要求模型逐条对应，不能把两种不同结果
+                    // 揉成一句笼统的"都做好了"或含糊带过限流的那一条。
+                    append("以上信息中，有的操作是正常执行的结果，有的操作被系统按重复限制拦截、" +
+                        "本次并没有真正生成新文件。请逐条对应着说清楚：哪些确实做好了，" +
+                        "哪些这次没有生成（不需要暴露工具名称、报错信息等技术细节）。" +
+                        "禁止把被拦截的那部分也说成'已完成'，禁止笼统地说'都发给你了'。")
                 } else if (wasTruncated) {
                     // P0-5 修复：截断自查。模型上一轮输出被 maxTokens 截断，
                     // 已执行的工具可能只是计划中的一部分。要求模型检查是否
@@ -819,21 +1082,34 @@ object ToolCallInterceptor {
         // 说明最后一轮工具已执行、结果已 append 进 currentMessages 但没有下一次 LLM 消费，
         // 必须再发一次不解析新工具调用的收尾请求，保证用户总能看到回应。
         if (round == maxRounds) {
+            // 此分支是独立于主循环的第二套 Phase 1 实现，此前直接 send 没有 gate。
+            val tailPendingCalls = mutableListOf<ToolCall>()
+            val tailGate = SentenceGate(anyToolSucceeded, tailPendingCalls)
             try {
                 val parser = ToolParser()
                 // P0-5: 使用 chatStream() 保持一致
                 provider.chatStream(currentMessages, systemPrompt, config).collect { item ->
                     if (item is ChatStreamItem.TextDelta) {
                         val result = parser.feed(item.text)
-                        if (result.cleanText.isNotEmpty()) send(StreamEvent.TextDelta(result.cleanText))
+                        tailPendingCalls.addAll(result.detectedCalls)
+                        if (result.cleanText.isNotEmpty()) {
+                            tailGate.feed(result.cleanText).forEach { send(StreamEvent.TextDelta(it)) }
+                        }
                     }
                 }
                 // L4 修复同主循环：先 feed("") 扫尽 buffer 里已完整的标签，
                 // 再 flush() 截断尾部未闭合碎片，避免末轮完整工具标签被丢弃。
                 val preFeed = parser.feed("")
-                if (preFeed.cleanText.isNotEmpty()) send(StreamEvent.TextDelta(preFeed.cleanText))
+                tailPendingCalls.addAll(preFeed.detectedCalls)
+                tailGate.feedRemaining().forEach { send(StreamEvent.TextDelta(it)) }
+                if (preFeed.cleanText.isNotEmpty()) {
+                    tailGate.advanceWindow(preFeed.cleanText)?.let { send(StreamEvent.TextDelta(it)) }
+                }
                 val final = parser.flush()
-                if (final.cleanText.isNotEmpty()) send(StreamEvent.TextDelta(final.cleanText))
+                if (final.cleanText.isNotEmpty()) {
+                    tailGate.advanceWindow(final.cleanText)?.let { send(StreamEvent.TextDelta(it)) }
+                }
+                tailGate.flush(skipGateCheck = false).forEach { send(StreamEvent.TextDelta(it)) }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
@@ -844,6 +1120,8 @@ object ToolCallInterceptor {
                 com.zaijian.zhoumuyun.util.AgentLog.error(
                     "ToolCall", "末轮收尾 LLM 流式失败（round=$round）", e,
                 )
+                // 坑7b：异常路径不丢字优先，跳过正则、照单发出 pending 暂存内容
+                tailGate.flush(skipGateCheck = true).forEach { send(StreamEvent.TextDelta(it)) }
                 send(StreamEvent.TextDelta("\n\n[抱歉，遇到了一些问题，稍后再试？]"))
             }
         }
@@ -922,41 +1200,70 @@ object ToolCallInterceptor {
             val timeoutLabel = if (call.toolName in LLM_DEPENDENT_TOOLS) "LLM" else "标准"
             com.zaijian.zhoumuyun.util.AgentLog.info("ToolCall", "▶ ${call.toolName} 开始（${timeoutLabel}超时 ${effectiveTimeout / 1000}s）\n  params: ${sanitizeParams(call.params)}")
             try {
-                kotlinx.coroutines.withTimeout(effectiveTimeout) {
+                // Fix-StuckTimeout（竞速超时，根因：agent_log "pptx_gen 超时（90s，实际 210497ms）"）：
+                // 原实现 kotlinx.coroutines.withTimeout 直接包住 tool.execute——但这些
+                // 工具内部是阻塞式调用（POI 写盘、chatSyncWithRetry 底层 HTTP），执行
+                // 过程没有挂起点，协作式取消在阻塞期间无法生效：标称 90s 超时，实际
+                // 硬生生等了 210s 直到阻塞调用自己返回才"触发超时"，用户全程卡在
+                // "正在生成"。
+                // 改为竞速模式：工具执行放进独立 Deferred（NonCancellable，不受超时
+                // 取消影响），withTimeoutOrNull 只包裹"等待结果"这个可挂起动作——
+                // 超时到点立即返回 null、主流程马上继续，不再被阻塞调用绑架。
+                // 被甩下的后台执行若最终成功产出文件，由 watcher 走孤儿文件兜底投递，
+                // 避免"磁盘有文件、用户看不见"。
+                val deferred = async(kotlinx.coroutines.NonCancellable) {
                     tool.execute(call.params)
-                }.also { r ->
+                }
+                val raced = withTimeoutOrNull(effectiveTimeout) { deferred.await() }
+                if (raced == null) {
                     val elapsed = System.currentTimeMillis() - startTime
-                    if (r.success) {
-                        // P2 修复：file_read/url_fetch 等工具的成功结果是完整文件/网页内容，
-                        // 原先 take(300) 会把前 300 字符写进可导出日志，现改为只记长度。
-                        val resultPreview = if (call.toolName in setOf("file_read", "url_fetch")) {
-                            "[内容长度: ${r.content.length}字符]"
-                        } else {
-                            r.content.take(300)
+                    com.zaijian.zhoumuyun.util.AgentLog.error(
+                        "ToolCall",
+                        "⏱ ${call.toolName} 超时（${effectiveTimeout / 1000}s，实际 ${elapsed}ms），主流程已继续，后台执行若产出文件将走孤儿兜底",
+                    )
+                    kotlinx.coroutines.CoroutineScope(coroutineContext).launch {
+                        try {
+                            val late = deferred.await()
+                            if (late.success) {
+                                com.zaijian.zhoumuyun.util.AgentLog.warn(
+                                    "ToolCall",
+                                    "⚠ ${call.toolName} 超时后最终执行成功，按孤儿文件处理",
+                                )
+                                recoverOrphanedToolResult(late, activityContext)
+                            }
+                        } catch (_: Throwable) {
+                            // 后台 watcher 只做补救，任何异常都不再影响主流程
                         }
-                        com.zaijian.zhoumuyun.util.AgentLog.info(
-                            "ToolCall",
-                            "✔ ${call.toolName} 成功（用时 ${elapsed}ms）\n  result: $resultPreview${if (r.tablePayloadJson != null) "\n  [附带 tablePayloadJson]" else ""}",
-                        )
-                    } else {
-                        com.zaijian.zhoumuyun.util.AgentLog.warn(
-                            "ToolCall",
-                            "⚠ ${call.toolName} 业务失败（用时 ${elapsed}ms）\n  error: ${r.error}",
-                        )
+                    }
+                    ToolResult(
+                        toolName = call.toolName,
+                        success  = false,
+                        content  = "[${call.toolName} 执行超时（${effectiveTimeout / 1000}s）]",
+                        error    = "timeout",
+                    )
+                } else {
+                    raced.also { r ->
+                        val elapsed = System.currentTimeMillis() - startTime
+                        if (r.success) {
+                            // P2 修复：file_read/url_fetch 等工具的成功结果是完整文件/网页内容，
+                            // 原先 take(300) 会把前 300 字符写进可导出日志，现改为只记长度。
+                            val resultPreview = if (call.toolName in setOf("file_read", "url_fetch")) {
+                                "[内容长度: ${r.content.length}字符]"
+                            } else {
+                                r.content.take(300)
+                            }
+                            com.zaijian.zhoumuyun.util.AgentLog.info(
+                                "ToolCall",
+                                "✔ ${call.toolName} 成功（用时 ${elapsed}ms）\n  result: $resultPreview${if (r.tablePayloadJson != null) "\n  [附带 tablePayloadJson]" else ""}",
+                            )
+                        } else {
+                            com.zaijian.zhoumuyun.util.AgentLog.warn(
+                                "ToolCall",
+                                "⚠ ${call.toolName} 业务失败（用时 ${elapsed}ms）\n  error: ${r.error}",
+                            )
+                        }
                     }
                 }
-            } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
-                val elapsed = System.currentTimeMillis() - startTime
-                com.zaijian.zhoumuyun.util.AgentLog.error(
-                    "ToolCall",
-                    "⏱ ${call.toolName} 超时（${effectiveTimeout / 1000}s，实际 ${elapsed}ms）",
-                )
-                ToolResult(
-                    toolName = call.toolName,
-                    success  = false,
-                    content  = "[${call.toolName} 执行超时（${effectiveTimeout / 1000}s）]",
-                    error    = "timeout",
-                )
             } catch (e: CancellationException) {
                 // 理论上不会走到这里：NonCancellable 屏蔽了"调用方 replyJob 被取消"
                 // 这一信号源，withTimeout 自身的取消已经在上面单独 catch。保留这条
@@ -1079,6 +1386,19 @@ object ToolCallInterceptor {
     private const val MAX_DEGRADE_ATTEMPTS = 2
 
     /**
+     * Fix-StuckGuard：单个工具"尝试 + 降级重试"全链路的总耗时预算。
+     *
+     * 根因（用户反馈"生成失败时卡在那里很久无法继续对话"）：第 1 次尝试 +
+     * 瞬时重试 + 每轮降级（LLM 决策调用 + 再次执行）各自都可能耗时几十秒，
+     * 最坏情况单个工具能拖 5-8 分钟（agent_log 实测 pptx_gen 单轮 210s）。
+     * 期间用户只能干等"正在生成"，什么也做不了。
+     *
+     * 超过预算后立即终态放弃：失败结果照常回注，角色会在最终回复里自然告知
+     * "没做成"，对话立即可继续，而不是无限卡在工具层。
+     */
+    private const val DEGRADE_TIME_BUDGET_MS = 150_000L
+
+    /**
      * 降级策略上下文：传递给 [streamWithTools] 的活动上下文信息。
      *
      * 用于在降级过程中写入 [AgentActivityEventEntity]（eventType=DEGRADE_*）。
@@ -1165,6 +1485,129 @@ object ToolCallInterceptor {
     }
 
     /**
+     * 方案 B（3.2 节）：调用工具轮次的纯文本篇幅统计——独立于 A 的 gate 逻辑，
+     * 只做统计埋点，不拦截 send。只在"本轮 round 结束、pendingCalls 非空"时跑一次。
+     *
+     * 调用点：Phase 2（工具执行）之前。先跑两周日志收集"模型在调用工具的那一轮
+     * 纯文本篇幅"的真实分布，再据此决定 3.1 节 prompt 规则要不要接入（3.3 节）。
+     */
+    private suspend fun logVerboseToolCallRound(roundText: String, pendingCalls: List<ToolCall>) {
+        if (pendingCalls.isEmpty()) return  // 本轮没调用工具，不是 B 要观察的场景
+        val plainTextLength = roundText.length  // 简化统计，不做分词，先看字符数量级
+        com.zaijian.zhoumuyun.util.AgentLog.info(
+            "ToolCallVerbosity",
+            "本轮调用了 ${pendingCalls.size} 个工具，纯文本长度 $plainTextLength 字",
+        )
+    }
+
+    /**
+     * 方案 A 单元测试入口：驱动一次完整的 SentenceGate 生命周期
+     * （feed 各 delta → feedRemaining → flush），返回最终放行的拼接文本。
+     *
+     * SentenceGate 是本类的 private 嵌套类，测试文件位于 app/src/test，
+     * 与本文件是不同源码集，即使同包名也无法直接 `new SentenceGate(...)`。
+     * 这个 internal 方法就是测试类访问它的唯一入口，本身不含任何断言逻辑，
+     * 断言全部下放到 [SentenceGateTest] 里各自独立的 @Test 方法。
+     *
+     * @param skipFinalGateCheck 对应 flush(skipGateCheck=...)，默认 false（正常收尾路径）；
+     *   传 true 用于验证"异常路径不丢字"（跳过最后一句的正则拦截，照单全发）。
+     */
+    internal fun runSentenceGate(
+        deltas: List<String>,
+        anyToolSucceeded: Boolean,
+        pendingCalls: List<ToolCall> = emptyList(),
+        skipFinalGateCheck: Boolean = false,
+    ): String {
+        val gate = SentenceGate(anyToolSucceeded, pendingCalls.toMutableList())
+        val sent = StringBuilder()
+        for (delta in deltas) { gate.feed(delta).forEach { sent.append(it) } }
+        gate.feedRemaining().forEach { sent.append(it) }
+        gate.flush(skipGateCheck = skipFinalGateCheck).forEach { sent.append(it) }
+        return sent.toString()
+    }
+
+    /**
+     * 方案 A 单元测试入口（旧）：验证 SentenceGate 核心行为，11 个场景全部塞在一个方法里，
+     * 一旦某条断言失败只会报"自检应全部通过"，看不出具体是第几条。
+     *
+     * 保留此方法仅做兼容 / 回归对照，不再是主测试入口。
+     * 新增测试请使用 [runSentenceGate]，在 [SentenceGateTest] 里写成独立的 @Test。
+     */
+    internal fun runSentenceGateSelfTest(): Boolean {
+        fun runGate(deltas: List<String>, anyToolSucceeded: Boolean, pendingCallsList: List<ToolCall> = emptyList()): String =
+            runSentenceGate(deltas, anyToolSucceeded, pendingCallsList)
+
+        // 1. 正常文本全通过
+        if (runGate(listOf("好的，我来帮你。这是安排。"), false) != "好的，我来帮你。这是安排。") return false
+
+        // 2. 空头承诺被拦截
+        if (runGate(listOf("好的。已经为您生成了。"), false) != "") return false
+
+        // 3. 工具成功后合法收尾不拦
+        if (runGate(listOf("好的。已经为您生成了。"), true) != "好的。已经为您生成了。") return false
+
+        // 4. 本轮有 pendingCalls 不拦
+        if (runGate(listOf("好的。已经为您生成了。"), false, listOf(ToolCall("pdf_export", emptyMap(), ""))) != "好的。已经为您生成了。") return false
+
+        // 5. 跨句空头承诺滑动窗口拦截
+        if (runGate(listOf("已经把这份数据整理了一下今天。发送给你了"), false) != "发送给你了") return false
+
+        // 6. 迟一句发送：三句话全发出
+        if (runGate(listOf("第一句话。第二句话。第三句话。"), false) != "第一句话。第二句话。第三句话。") return false
+
+        // 7. 未成句残片不丢失
+        if (runGate(listOf("这是没有句号的半句话"), false) != "这是没有句号的半句话") return false
+
+        // 8. 多delta分片拼句
+        if (runGate(listOf("好的，", "我来帮", "你看看。", "这是结果。"), false) != "好的，我来帮你看看。这是结果。") return false
+
+        // 9. 请查收被拦
+        if (runGate(listOf("文件已准备好，请查收"), false) != "") return false
+
+        // 10. 异常路径不丢字
+        if (runSentenceGate(listOf("已经为您生成了。"), false, skipFinalGateCheck = true) != "已经为您生成了。") return false
+
+        // 11. 正常长文本不误伤
+        val longNormal = runGate(listOf(
+            "好的，我来帮你看看这个问题。",
+            "根据我的分析，",
+            "主要有以下几个原因。"
+        ), false)
+        if (longNormal != "好的，我来帮你看看这个问题。根据我的分析，主要有以下几个原因。") return false
+
+        return true
+    }
+
+    /**
+     * Fix-DupFileGen②：会真实落盘产出文件的工具集合。
+     * 用于"同请求内完全重复调用"去重——只有这些工具的重复执行才会造成
+     * 用户可见的重复文件，其他工具（搜索/记忆/日程等）重复执行无害，不干预。
+     */
+    private val FILE_PRODUCING_TOOLS = setOf(
+        "file_export", "excel_gen", "pptx_gen", "docx_gen",
+        "pdf_export", "html_gen", "markdown_to_doc", "table_export", "zip_export",
+    )
+
+    /**
+     * Fix-DupFileGen③：同一请求内，同一个 file_producing 工具允许成功执行的最大次数。
+     * 取 2 = 1 次正常生成 + 1 次容忍模型的修订重试；超过即视为"换名反复生成"而拦截。
+     * 权衡：如需支持"一次合法生成多个同类文件"（如用户明确要 3 个 Excel），可调高此值，
+     * 或改为按用户消息中显式声明的文件数动态放宽。
+     */
+    private val MAX_FILE_TOOL_SUCCESSES_PER_REQUEST = 2
+
+    /**
+     * 为文件类工具调用生成去重签名；非文件类工具返回 null（不参与去重）。
+     * 签名 = 工具名 + 文件名（name/title/names 任一）+ 全参数哈希，
+     * 只有"完全一致"的调用才会撞上同一签名，同名但内容不同的修订调用不受影响。
+     */
+    private fun fileCallSignature(call: ToolCall): String? {
+        if (call.toolName !in FILE_PRODUCING_TOOLS) return null
+        val fileName = call.params["name"] ?: call.params["title"] ?: call.params["names"] ?: ""
+        return "${call.toolName}|$fileName|${call.params.toString().hashCode()}"
+    }
+
+    /**
      * §2.1.2 降级策略状态机对外入口：在 [executeWithDegradationCore] 之上包一层
      * "工具执行中"标记维护（Fix-孤儿文件 ③，见 [toolInFlightKeys] 顶部说明）。
      *
@@ -1235,7 +1678,12 @@ object ToolCallInterceptor {
         val isTransient = lastResult.error == "timeout" ||
             lastResult.content.startsWith("[${currentCall.toolName} 执行异常")
 
-        if (isTransient) {
+        // Fix-StuckGuard：总耗时预算已耗尽时跳过重试，直接带着失败结果收尾，
+        // 避免单个工具的降级链把整轮回复拖进几分钟级的"假死"。
+        fun budgetExhausted(): Boolean =
+            (System.currentTimeMillis() - startTime) >= DEGRADE_TIME_BUDGET_MS
+
+        if (isTransient && !budgetExhausted()) {
             // 瞬时类失败：原参数重试1次（不问 LLM）
             attempts++
             recordDegradeEvent(activityContext, "DEGRADE_RETRY", currentCall.toolName,
@@ -1246,7 +1694,7 @@ object ToolCallInterceptor {
 
         // ── 业务类降级 ──
         var degradeAttempts = 0
-        while (degradeAttempts < MAX_DEGRADE_ATTEMPTS) {
+        while (degradeAttempts < MAX_DEGRADE_ATTEMPTS && !budgetExhausted()) {
             degradeAttempts++
             val decision = askDegradeDecision(
                 provider, currentCall, lastResult, disabledToolNames
@@ -1382,7 +1830,7 @@ object ToolCallInterceptor {
     private fun parseParamsString(raw: String): Map<String, String> {
         if (raw.isBlank()) return emptyMap()
         val result = mutableMapOf<String, String>()
-        val pattern = Regex("""(\w+)="((?:[^"\\]|\\.)*)"""")
+        val pattern = Regex("""(\w+)="((?:[^"\\]|\\.)*)${'"'}""")
         pattern.findAll(raw).forEach { m ->
             result[m.groupValues[1]] = unescapeAttr(m.groupValues[2])
         }

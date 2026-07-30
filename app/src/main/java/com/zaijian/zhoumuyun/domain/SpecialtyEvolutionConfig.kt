@@ -67,6 +67,16 @@ object SpecialtyEvolutionConfig {
     /** 每日修炼"创作产出"本身使用的 temperature，比判断类调用更高，鼓励创作多样性 */
     const val PRACTICE_TEMPERATURE = 0.9f
 
+    // ── 角色忠诚锁定·多角色私聊（方案 v1.5 第 6.3 节）──────────────
+    /**
+     * 连续施压轮数上限：A↔B 私聊中，A 连续命中"施压类内容"达到此值后，
+     * 本轮 B 的 prompt 从机制三"正常代入"版本切换为"拒绝反应"版本。
+     *
+     * 设为配置项而非硬编码，默认 4，后续按实际体验调整只需改配置不改代码。
+     * 中性消息插入会清零计数器（方案 6.3 节）。
+     */
+    const val PRESSURE_ROUND_LIMIT = 4
+
     // ── 已知限制（诚实记录，不在注释里隐藏设计债）─────────────────
     //
     // 1. PROMOTION_MIN_STABLE_MERGE_CYCLES 目前依赖人工核对，没有做到

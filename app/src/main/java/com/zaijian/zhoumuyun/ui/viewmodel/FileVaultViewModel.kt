@@ -6,6 +6,10 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import androidx.work.Data
+import androidx.work.ExistingWorkPolicy
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -15,14 +19,17 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import com.zaijian.zhoumuyun.data.agent.FileIndexWorker
 import com.zaijian.zhoumuyun.data.agent.personalVaultDir
 import com.zaijian.zhoumuyun.data.agent.projectVaultDir
+import com.zaijian.zhoumuyun.data.agent.reindexUnindexedFilesUnder
 import com.zaijian.zhoumuyun.data.agent.resolveVaultPath
 import com.zaijian.zhoumuyun.data.agent.VaultCallContext
 import com.zaijian.zhoumuyun.data.agent.VaultPathResolution
 import com.zaijian.zhoumuyun.data.agent.VaultScope
 import com.zaijian.zhoumuyun.data.agent.vaultRoot
 import com.zaijian.zhoumuyun.data.agent.withVaultContext
+import com.zaijian.zhoumuyun.data.db.AppDatabase
 import com.zaijian.zhoumuyun.util.TimeFormatUtils
 import com.zaijian.zhoumuyun.util.ZLog
 import java.io.File
@@ -86,6 +93,8 @@ data class FileVaultUiState(
     val expandedPaths: Set<String> = emptySet(),
     val deleteTarget: VaultNode? = null,
     val snackbarMessage: String? = null,
+    /** 手动补建索引扫描中：期间禁用触发按钮，避免连点触发重复扫描。 */
+    val isReindexing: Boolean = false,
 )
 
 // ─────────────────────────────────────────────────────────────
@@ -155,10 +164,129 @@ class FileVaultViewModel(
                     // onEvent 在 FileObserver 的后台线程回调，不能直接操作
                     // Compose 状态。通过 viewModelScope.launch 转回主线程。
                     scheduleReload()
+                    // file_search 索引同步（方案 §4.3）：FileObserver 是所有 vault
+                    // 写入路径（Agent 工具/用户手动导入/圆桌协作等）汇合后唯一必经的
+                    // 文件系统层面感知点，挂在这里比逐个改写入调用点更不容易漏改。
+                    handleIndexSync(event, dir, path)
                 }
             }
         }
         fileObservers.forEach { it.startWatching() }
+    }
+
+    /**
+     * file_search 索引同步（方案 §4.3 / §4.2 [v5]）。
+     *
+     * - CREATE/CLOSE_WRITE（文件新建或写入完成）→ 入队 [FileIndexWorker] 建/更新索引
+     * - DELETE/MOVED_FROM（文件被删除或移走）→ 同步删除对应索引记录
+     * - MODIFY 不在这里处理：会在写入过程中密集触发，交给 CLOSE_WRITE 兜底，
+     *   避免同一次写入触发多次索引任务
+     *
+     * [path] 是相对 [dir] 的文件名（FileObserver 语义），拼接后转换成
+     * vault 相对路径（如 "vault/personal/1/notes.pdf"）——与
+     * [FileIndexEntity.filePath]/[FileIndexWorker.KEY_FILE_PATH] 的约定一致。
+     */
+    private fun handleIndexSync(event: Int, dir: File, path: String?) {
+        if (path.isNullOrEmpty()) return
+        // FileObserver 对目录本身的结构性事件（如 vault 根下新增子目录）也会回调，
+        // 此处只关心文件，交由下一次 scanVaultTree 走目录分支处理，不进索引表。
+        val target = File(dir, path)
+        if (target.isDirectory) return
+
+        val context = getApplication<Application>()
+        val relativePath = vaultRelativePath(context, target) ?: return
+
+        when (event and FileObserver.ALL_EVENTS) {
+            FileObserver.CREATE, FileObserver.CLOSE_WRITE -> {
+                enqueueFileIndex(context, relativePath)
+            }
+            FileObserver.DELETE, FileObserver.MOVED_FROM -> {
+                viewModelScope.launch(Dispatchers.IO) {
+                    try {
+                        AppDatabase.getInstance(context).fileIndexDao().deleteByPath(relativePath)
+                    } catch (e: Throwable) {
+                        ZLog.e("FileVault", "索引删除失败：$relativePath", e)
+                    }
+                }
+            }
+        }
+    }
+
+    /** 把绝对路径转换为 vault 相对路径（如 "vault/personal/1/notes.pdf"）；不在 vault 内返回 null。 */
+    private fun vaultRelativePath(context: Application, file: File): String? {
+        val rootPath = vaultRoot(context).absolutePath
+        val filePath = file.absolutePath
+        if (!filePath.startsWith(rootPath)) return null
+        return "vault" + filePath.removePrefix(rootPath).let { if (it.startsWith("/")) it else "/$it" }
+    }
+
+    /** 入队一次性 [FileIndexWorker]，对同一 filePath 用 REPLACE 策略避免短时间内重复排队。 */
+    private fun enqueueFileIndex(context: Application, relativePath: String) {
+        val inputData = Data.Builder()
+            .putString(FileIndexWorker.KEY_FILE_PATH, relativePath)
+            .build()
+        val request = OneTimeWorkRequestBuilder<FileIndexWorker>()
+            .setInputData(inputData)
+            .build()
+        WorkManager.getInstance(context).enqueueUniqueWork(
+            "file_index_${relativePath.hashCode()}",
+            ExistingWorkPolicy.REPLACE,
+            request,
+        )
+    }
+
+    /**
+     * 手动补建索引（方案 4.2 节）。
+     *
+     * 只在用户主动点击时触发，不做成自动后台任务；只补建"还没被索引过"的
+     * 历史文件，不做复杂对账。
+     *
+     * 注意：这里不能直接复用 [collectWatchedDirs]——它为了在 vault 根新增
+     * 子目录时也能被 FileObserver 感知到，把 `vaultRoot(context)` 本身也
+     * 放进了监听列表；但 vaultRoot 下的 vault/personal/ 平级放着*所有*角色的
+     * 私库（vault/personal/{characterId}/），vault/shared/roundtable/ 下也
+     * 平级放着*所有*圆桌（不分是否当前角色参与）。如果直接递归 collectWatchedDirs
+     * 返回的目录列表，会把其他角色的私库文件、当前角色未参与的圆桌文件也
+     * 一并扫入索引——越权访问了不可见范围。
+     *
+     * 因此改为与 [scanVaultTree] 同款的三段可见范围手动收集：角色私库 +
+     * 仅参与的圆桌共享 + 项目共享，跳过 vault 根本身。
+     *
+     * 差集扫描 + 批量入队的核心逻辑复用 [reindexUnindexedFilesUnder]——
+     * 与 App 冷启动全量补建（[reindexAllVaultFilesOnColdStart]）共用同一个
+     * 实现，两者只在"传入哪些根目录"上不同（单角色可见范围 vs 全部角色）。
+     */
+    fun reindexAll() {
+        if (_uiState.value.isReindexing) return
+        viewModelScope.launch {
+            _uiState.update { it.copy(isReindexing = true) }
+            val queuedCount = withContext(Dispatchers.IO) {
+                val context = getApplication<Application>()
+                val visibleRoots = mutableListOf<File>()
+
+                val personal = personalVaultDir(context, characterId)
+                if (personal.exists()) visibleRoots.add(personal)
+
+                val roundtableRoot = File(File(vaultRoot(context), "shared"), "roundtable")
+                if (roundtableRoot.exists()) {
+                    roundtableRoot.listFiles { f -> f.isDirectory }?.forEach { rtDir ->
+                        val participants = rtDir.name.split("_")
+                        if (characterId.toString() in participants) visibleRoots.add(rtDir)
+                    }
+                }
+
+                val project = projectVaultDir(context)
+                if (project.exists()) visibleRoots.add(project)
+
+                reindexUnindexedFilesUnder(context, visibleRoots)
+            }
+            _uiState.update {
+                it.copy(
+                    isReindexing = false,
+                    snackbarMessage = if (queuedCount > 0) "已补建 $queuedCount 个文件的索引" else "没有需要补建索引的文件",
+                )
+            }
+        }
     }
 
     /** 收集需要监听的目录列表（与 scanVaultTree 的可见范围一致）。 */

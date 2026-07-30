@@ -619,25 +619,27 @@ class DocxGenTool(
  *
  * 标签格式：<tool:pdf_export title="{文档标题}" content="{Markdown 内容}" orientation="{portrait|landscape}"/>
  *
- * 实现：
- *   Step1: Markdown（或 LLM 生成）→ 带 CSS 的 HTML
- *   Step2: file_export 落盘（.pdf.html），命名区分于普通 html
+ * 实现（Fix-RealPdf，v1 起替代"HTML 伪 PDF"方案）：
+ *   Step1: Markdown（或 LLM 生成）→ [SimplePdfWriter] 真排版
+ *   Step2: writeVaultStream 落盘为真正的 .pdf 二进制文件（application/pdf）
  *
- * 注：WebView.PrintDocumentAdapter 需要 Activity Context + 主线程，
- * 工具层以 HTML 落盘替代，用户通过浏览器「打印→另存为PDF」完成转换。
+ * 旧实现产出 "$title.pdf.html"（HTML 内容伪装 PDF 文件名，用户需浏览器打开再
+ * 「打印→另存为PDF」）——用户反馈"生成的 pdf 是 html 后缀"，且文件管理器/
+ * WPS 无法直接识别。现改用 android.graphics.pdf.PdfDocument 本地排版生成真 PDF，
+ * 纯 Kotlin 绘制、无 WebView/Activity 依赖、IO 线程即可完成。
  * content 为空时 LLM 自动生成内容。
  */
 class PdfExportTool(
     private val providerFn:    () -> LLMProvider?,
     private val fileExportTool: FileExportTool,
-    @Suppress("unused") private val context: Context,   // 预留给未来 WebView 打印升级
+    private val context: Context,
 ) : AgentTool {
 
     override val name = "pdf_export"
     // P0 修复：description 只留正面表述，实现细节（浏览器打印另存）挪到 usageNotes。
     // 原文"（需通过浏览器打印另存为PDF完成转换）"每次随工具列表展示给 LLM，等于每次暗示"这工具不太行"。
     override val description = "根据内容生成PDF文档并导出到对话框"
-    override val usageNotes = "导出 .pdf.html 文件，用浏览器打开后通过「打印→另存为PDF」完成最终转换。" +
+    override val usageNotes = "导出真正的 .pdf 文件（application/pdf），可直接在应用内预览或用 WPS/系统阅读器打开。" +
         "title 为文档标题，content 为 Markdown 内容（留空则由 LLM 自动生成），" +
         "orientation 可选 portrait(纵向)/landscape(横向)，默认 portrait。"
     override val paramKeys = listOf("title", "content", "orientation")
@@ -665,35 +667,29 @@ class PdfExportTool(
                     )
                 }
 
-                val pageStyle = if (orientation == "landscape")
-                    "size: A4 landscape;" else "size: A4 portrait;"
-
-                val html = markdownToStyledHtml(title, markdown, pageStyle)
-
-                val exportResult = fileExportTool.execute(
-                    mapOf(
-                        "name"    to "$title.pdf.html",
-                        "content" to html,
-                        "format"  to "html",
-                    )
-                )
-
-                if (!exportResult.success) {
-                    ToolResult(name, false, "PDF 生成失败：文件写入错误。", "file_write_failed")
-                } else {
-                    // 1.3：pdf_export 同 docx_gen，产出的是 HTML，不是真 .pdf，
-                    // 卡片需要提示走浏览器打印另存为 PDF。
-                    val contentWithHint = withOpenHint(
-                        content  = exportResult.content,
-                        openHint = "提示：需用浏览器打开另存",
-                    )
-                    ToolResult(
-                        toolName = name,
-                        success  = true,
-                        content  = "[PDF 文档已准备：$title]\n提示：通过浏览器打开后使用「打印 → 另存为 PDF」导出正式 PDF。\n$contentWithHint",
-                        userHint = "正在生成 PDF…",
+                // Fix-RealPdf：用 PdfDocument 本地排版生成真 PDF 二进制，
+                // writeVaultStream 落盘（与 zip_export 同款二进制写入路径）。
+                val metaJson = writeVaultStream(
+                    context  = context,
+                    rawFileName = "$title.pdf",
+                    mimeType = "application/pdf",
+                ) { out ->
+                    SimplePdfWriter.write(
+                        out       = out,
+                        title     = title,
+                        markdown  = markdown,
+                        landscape = orientation == "landscape",
                     )
                 }
+                val fileName  = org.json.JSONObject(metaJson).optString("fileName", "$title.pdf")
+                val sizeBytes = org.json.JSONObject(metaJson).optLong("sizeBytes", 0L)
+
+                ToolResult(
+                    toolName = name,
+                    success  = true,
+                    content  = "[PDF 文档已生成：$title]\n文件已生成：$fileName（${formatSizeLabel(sizeBytes)}）\n$metaJson",
+                    userHint = "正在生成 PDF…",
+                )
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e  // 协程取消必须重新抛出，不能当成业务失败吞掉
             } catch (e: Throwable) {
@@ -704,6 +700,173 @@ class PdfExportTool(
                 toolFailure(name, "PDF 生成失败，请稍后重试。", "pdf_export_failed", e)
             }
         }
+}
+
+/**
+ * 文件大小展示（与 BuiltinTools.FileExportTool 内部 formatSize 同款规则，
+ * 避免跨文件引用 private 实现）。
+ */
+private fun formatSizeLabel(bytes: Long): String = when {
+    bytes < 1024        -> "${bytes} B"
+    bytes < 1024 * 1024 -> "${"%.1f".format(bytes / 1024.0)} KB"
+    else                -> "${"%.1f".format(bytes / 1024.0 / 1024.0)} MB"
+}
+
+// ─────────────────────────────────────────────────────────────
+//  SimplePdfWriter — 真·PDF 生成器（Fix-RealPdf）
+//
+//  用 android.graphics.pdf.PdfDocument 把 Markdown 文本排版成多页 PDF：
+//    - A4 纸（595×842pt，横向时互换），48pt 页边距
+//    - 标题 20pt 粗体；# / ## / ### 三级标题分别 16/13.5/12pt 粗体
+//    - 正文 11pt；列表项加 "• " 前缀与缩进；自动换行（StaticLayout）与分页
+//    - 剥离行内 Markdown 记号（** __ ` 等），保证纯文本展示干净
+//  中文走系统默认字体（Typeface.DEFAULT），无需内嵌字体文件。
+// ─────────────────────────────────────────────────────────────
+private object SimplePdfWriter {
+
+    private const val PAGE_W_PORTRAIT = 595
+    private const val PAGE_H_PORTRAIT = 842
+    private const val MARGIN = 48f
+    private const val PARA_GAP = 7f
+    private const val HEADING_GAP_BEFORE = 10f
+
+    private class LineSpec(
+        val text: String,
+        val paint: android.text.TextPaint,
+        val indent: Float,
+        val gapBefore: Float,
+    )
+
+    fun write(out: java.io.OutputStream, title: String, markdown: String, landscape: Boolean) {
+        val pageW = if (landscape) PAGE_H_PORTRAIT else PAGE_W_PORTRAIT
+        val pageH = if (landscape) PAGE_W_PORTRAIT else PAGE_H_PORTRAIT
+        val contentWidth = (pageW - MARGIN * 2).toInt()
+
+        fun textPaint(size: Float, bold: Boolean, color: Int): android.text.TextPaint =
+            android.text.TextPaint().apply {
+                isAntiAlias = true
+                textSize = size
+                typeface = if (bold) android.graphics.Typeface.create(
+                    android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD,
+                ) else android.graphics.Typeface.DEFAULT
+                this.color = color
+            }
+
+        val titlePaint = textPaint(20f, true, android.graphics.Color.rgb(0x1a, 0x25, 0x2f))
+        val h1Paint    = textPaint(16f, true, android.graphics.Color.rgb(0x1a, 0x25, 0x2f))
+        val h2Paint    = textPaint(13.5f, true, android.graphics.Color.rgb(0x2c, 0x3e, 0x50))
+        val h3Paint    = textPaint(12f, true, android.graphics.Color.rgb(0x34, 0x49, 0x5e))
+        val bodyPaint  = textPaint(11f, false, android.graphics.Color.rgb(0x2c, 0x3e, 0x50))
+        val quotePaint = textPaint(11f, false, android.graphics.Color.rgb(0x6b, 0x74, 0x80))
+
+        // 行内 Markdown 记号清理：**bold** __bold__ *em* _em_ `code`
+        fun cleanInline(raw: String): String = raw
+            .replace(Regex("\\*\\*(.+?)\\*\\*"), "$1")
+            .replace(Regex("__(.+?)__"), "$1")
+            .replace(Regex("\\*(.+?)\\*"), "$1")
+            .replace(Regex("`([^`]*)`"), "$1")
+            .trim()
+
+        // 把 Markdown 行解析成排版片段
+        val specs = mutableListOf<LineSpec>()
+        specs.add(LineSpec(cleanInline(title).ifBlank { "文档" }, titlePaint, 0f, 0f))
+        var inCodeBlock = false
+        for (line in markdown.lines()) {
+            when {
+                line.startsWith("```") -> { inCodeBlock = !inCodeBlock; continue }
+                inCodeBlock -> {
+                    if (line.isNotBlank()) specs.add(LineSpec(line, quotePaint, 12f, 0f))
+                    continue
+                }
+                line.startsWith("### ") -> specs.add(LineSpec(cleanInline(line.drop(4)), h3Paint, 0f, HEADING_GAP_BEFORE))
+                line.startsWith("## ")  -> specs.add(LineSpec(cleanInline(line.drop(3)), h2Paint, 0f, HEADING_GAP_BEFORE))
+                line.startsWith("# ")   -> specs.add(LineSpec(cleanInline(line.drop(2)), h1Paint, 0f, HEADING_GAP_BEFORE))
+                line.startsWith("> ")   -> specs.add(LineSpec(cleanInline(line.drop(2)), quotePaint, 12f, 0f))
+                line.matches(Regex("^[-*+] .+")) -> specs.add(LineSpec("• " + cleanInline(line.drop(2)), bodyPaint, 14f, 0f))
+                line.matches(Regex("^\\d+\\. .+")) -> specs.add(LineSpec(cleanInline(line), bodyPaint, 14f, 0f))
+                line.matches(Regex("^(-{3,}|\\*{3,}|_{3,})$")) -> specs.add(LineSpec("────────────────", quotePaint, 0f, 0f))
+                line.isBlank() -> specs.add(LineSpec("", bodyPaint, 0f, 0f))
+                else -> specs.add(LineSpec(cleanInline(line), bodyPaint, 0f, 0f))
+            }
+        }
+
+        val doc = android.graphics.pdf.PdfDocument()
+        try {
+            var pageNum = 1
+            var page = doc.startPage(
+                android.graphics.pdf.PdfDocument.PageInfo.Builder(pageW, pageH, pageNum).create()
+            )
+            var canvas = page.canvas
+            var y = MARGIN
+
+            fun startNewPage() {
+                doc.finishPage(page)
+                pageNum++
+                page = doc.startPage(
+                    android.graphics.pdf.PdfDocument.PageInfo.Builder(pageW, pageH, pageNum).create()
+                )
+                canvas = page.canvas
+                y = MARGIN
+            }
+
+            for (spec in specs) {
+                // 空行：只推进段间距，不排版
+                if (spec.text.isEmpty()) {
+                    y += PARA_GAP
+                    continue
+                }
+                val availableWidth = (contentWidth - spec.indent).toInt().coerceAtLeast(48)
+                val layout = android.text.StaticLayout.Builder
+                    .obtain(spec.text, 0, spec.text.length, spec.paint, availableWidth)
+                    .setAlignment(android.text.Layout.Alignment.ALIGN_NORMAL)
+                    .setLineSpacing(0f, 1.25f)
+                    .build()
+                // 分页①：段落起始的 gapBefore 会把顶部推过页底，且当前页非空白 → 先换页。
+                // 只判断"起始位置"而非整段能否放下——单段高度超过一整页可用高度的情况
+                // 交给下面的逐行续排处理，避免整段被一次性 draw 到画布边界之外而丢失。
+                if (y + spec.gapBefore > pageH - MARGIN && y > MARGIN) {
+                    startNewPage()
+                }
+                y += spec.gapBefore
+                // Fix-RealPdf②：超长段落跨页续排。
+                // 原实现 layout.draw(canvas) 一次性画整段，当单段高度 > 当前页剩余空间时，
+                // 超出页底的内容画到了该页独立 Canvas 边界之外——PdfDocument 每页是独立
+                // Canvas，不会自动流入下页、也不会被裁剪显示，直接丢失（实测约 80 行连续
+                // 文字会丢约 26 行）。改为用 StaticLayout 逐行 API 按行渲染：每画完一行检查
+                // 是否越界，越界则 startNewPage() 后继续画剩余行，无论段落多长都能正确跨页。
+                // 逐行平移 + clipRect 是 StaticLayout 单行渲染的标准做法（其单行 draw API 非公开）。
+                val lineCount = layout.lineCount
+                for (i in 0 until lineCount) {
+                    val lineTop = layout.getLineTop(i)
+                    val lineBottom = layout.getLineBottom(i)
+                    val lineHeight = (lineBottom - lineTop).toFloat()
+                    // 分页②：当前行底部将越出页底可用区域，且当前页非空白 → 换页。
+                    // 不要求整行能完整放下（极端大字号单行也可能超一页），只保证已画
+                    // 内容不越界；换页后从页顶起画这一行，至少头部可见，不会整段丢失。
+                    if (y + lineHeight > pageH - MARGIN && y > MARGIN) {
+                        startNewPage()
+                    }
+                    canvas.save()
+                    // 平移到当前绘制位置；用 clipRect 限定只渲染第 i 行（layout 内部坐标），
+                    // 这样调用 layout.draw 不会把其它行也画出来。lineTop/lineBottom 为该行
+                    // 在 layout 内部的上下边界，平移 (y - lineTop) 后该行顶部正好落在 y。
+                    canvas.translate(MARGIN + spec.indent, y - lineTop)
+                    canvas.clipRect(
+                        0f, lineTop.toFloat(),
+                        availableWidth.toFloat(), lineBottom.toFloat(),
+                    )
+                    layout.draw(canvas)
+                    canvas.restore()
+                    y += lineHeight
+                }
+                y += PARA_GAP
+            }
+            doc.finishPage(page)
+            doc.writeTo(out)
+        } finally {
+            doc.close()
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -762,7 +925,11 @@ class HtmlGenTool(
                     providerFn   = providerFn,
                     systemPrompt = "你是专业前端工程师，生成自包含的精美 HTML 页面。只输出 HTML 代码，绝对不要解释，不要 Markdown 代码块包裹。",
                     userPrompt   = prompt,
-                    maxTokens    = 2000,
+                    // Fix-HtmlBlank（浏览器打开空白页 根因之一）：2000 tokens 对
+                    // "完整 HTML+大段内联 CSS" 经常不够，输出在 <style> 或 <body>
+                    // 中途被 maxTokens 硬截断——残缺 HTML 在浏览器里就是白屏。
+                    // 放宽到 4000，配合下方 ensureCompleteHtml 的完整性修复双保险。
+                    maxTokens    = 4000,
                     temperature  = 0.5f,
                 )
 
@@ -772,10 +939,17 @@ class HtmlGenTool(
                     .replace(Regex("\\n?```\\s*$", RegexOption.MULTILINE), "")
                     .trim()
 
+                // Fix-HtmlBlank：截断/缺骨架的 HTML 一律修复为可渲染的完整文档，
+                // 修复后仍无实际内容则直接判失败（不产出空白文件误导用户）。
+                val finalHtml = ensureCompleteHtml(cleanHtml, title)
+                if (finalHtml == null) {
+                    return@withContext ToolResult(name, false, "HTML 生成失败：模型未产出有效内容。", "html_empty")
+                }
+
                 val exportResult = fileExportTool.execute(
                     mapOf(
                         "name"    to "$title.html",
-                        "content" to cleanHtml,
+                        "content" to finalHtml,
                         "format"  to "html",
                     )
                 )
@@ -816,6 +990,7 @@ class HtmlGenTool(
 class MarkdownToDocTool(
     @Suppress("unused") private val providerFn: () -> LLMProvider?,   // 预留，当前不需要 LLM
     private val fileExportTool: FileExportTool,
+    private val context: Context,   // Fix-RealPdf：pdf 分支 writeVaultStream 落盘需要
 ) : AgentTool {
 
     override val name = "markdown_to_doc"
@@ -834,33 +1009,44 @@ class MarkdownToDocTool(
             val title  = params["title"]?.trim() ?: "文档"
 
             return@withContext try {
-                val pageStyle = if (format == "pdf") "size: A4 portrait;" else ""
-                val html = markdownToStyledHtml(title, content, pageStyle)
-
-                val fileName = when (format) {
-                    "pdf"  -> "$title.pdf.html"
-                    else   -> "$title.html"
-                }
-
-                val exportResult = fileExportTool.execute(
-                    mapOf(
-                        "name"    to fileName,
-                        "content" to html,
-                        "format"  to "html",
-                    )
-                )
-
-                if (!exportResult.success) {
-                    ToolResult(name, false, "Markdown 转换失败：文件写入错误。", "file_write_failed")
-                } else {
-                    val formatNote = if (format == "pdf")
-                        "\n提示：通过浏览器打开后使用「打印 → 另存为 PDF」导出正式 PDF。" else ""
+                if (format == "pdf") {
+                    // Fix-RealPdf：与 pdf_export 同一条真 PDF 路径，
+                    // 不再产出 "$title.pdf.html" 伪 PDF。
+                    val metaJson = writeVaultStream(
+                        context  = context,
+                        rawFileName = "$title.pdf",
+                        mimeType = "application/pdf",
+                    ) { out ->
+                        SimplePdfWriter.write(out, title, content, landscape = false)
+                    }
+                    val fileName  = org.json.JSONObject(metaJson).optString("fileName", "$title.pdf")
+                    val sizeBytes = org.json.JSONObject(metaJson).optLong("sizeBytes", 0L)
                     ToolResult(
                         toolName = name,
                         success  = true,
-                        content  = "[Markdown 已转换为 $format 格式：$fileName]$formatNote\n${exportResult.content}",
+                        content  = "[Markdown 已转换为 pdf 格式：$fileName]\n文件已生成：$fileName（${formatSizeLabel(sizeBytes)}）\n$metaJson",
                         userHint = "正在转换 Markdown…",
                     )
+                } else {
+                    val html = markdownToStyledHtml(title, content)
+                    val exportResult = fileExportTool.execute(
+                        mapOf(
+                            "name"    to "$title.html",
+                            "content" to html,
+                            "format"  to "html",
+                        )
+                    )
+
+                    if (!exportResult.success) {
+                        ToolResult(name, false, "Markdown 转换失败：文件写入错误。", "file_write_failed")
+                    } else {
+                        ToolResult(
+                            toolName = name,
+                            success  = true,
+                            content  = "[Markdown 已转换为 html 格式：$title.html]\n${exportResult.content}",
+                            userHint = "正在转换 Markdown…",
+                        )
+                    }
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e  // 协程取消必须重新抛出，不能当成业务失败吞掉
@@ -869,6 +1055,82 @@ class MarkdownToDocTool(
                 toolFailure(name, "Markdown 转换失败，请稍后重试。", "md_to_doc_failed", e)
             }
         }
+}
+
+// ─────────────────────────────────────────────────────────────
+//  内部工具函数：HTML 完整性修复（Fix-HtmlBlank）
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * 把模型输出的 HTML 修复为"浏览器必然可渲染"的完整文档。
+ *
+ * 背景（用户反馈"html 用浏览器打开无任何渲染内容、空白页面，但对话预览里
+ * 能看到源码"）：html_gen 让 LLM 直接输出完整 HTML，两种典型坏产出——
+ *   1) maxTokens 截断：文档断在 <style> 块或 <body> 中途，浏览器按"样式未闭合/
+ *      正文缺失"解析，白屏；
+ *   2) 骨架缺失：模型只输出了内容片段（没有 <html>/<head>/<body> 骨架），
+ *      部分浏览器对裸片段渲染异常。
+ *
+ * 修复策略（按序执行）：
+ *   1. 砍掉末尾未闭合的半个标签（"<div class=" 这种截断尾巴）；
+ *   2. 完全没有骨架标签时，把内容当 body 片段包进标准骨架；
+ *   3. 补齐未闭合的 </style> / </body> / </html>；
+ *   4. body 实际内容为空（纯样式/纯标签无文字）→ 返回 null 让上层判失败。
+ */
+private fun ensureCompleteHtml(raw: String, title: String): String? {
+    var html = raw.trim()
+    if (html.isEmpty()) return null
+
+    // 1. 砍掉末尾未闭合的半个标签（最后一个 "<" 之后没有 ">"）
+    val lastLt = html.lastIndexOf('<')
+    val lastGt = html.lastIndexOf('>')
+    if (lastLt > lastGt) {
+        html = html.substring(0, lastLt).trimEnd()
+    }
+    if (html.isEmpty()) return null
+
+    // 2. 骨架缺失：无 <html/<!doctype/<body 任一 → 按 body 片段包骨架
+    val lower = html.lowercase()
+    if (!lower.contains("<html") && !lower.contains("<!doctype") && !lower.contains("<body")) {
+        html = """
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>${escape(title)}</title>
+<style>
+  body { font-family: "PingFang SC","Noto Sans SC","Microsoft YaHei",system-ui,sans-serif;
+         font-size: 15px; line-height: 1.8; color: #2c3e50;
+         max-width: 800px; margin: 0 auto; padding: 32px 24px; }
+</style>
+</head>
+<body>
+$html
+</body>
+</html>
+        """.trimIndent()
+    } else {
+        // 3. 补齐未闭合标签（先 style 后 body/html，顺序不能反）
+        val sb = StringBuilder(html)
+        val hasStyleOpen = Regex("<style[^>]*>", RegexOption.IGNORE_CASE).containsMatchIn(sb)
+        val hasStyleClose = sb.contains("</style>", ignoreCase = true)
+        if (hasStyleOpen && !hasStyleClose) sb.append("\n</style>")
+        val hasBodyOpen = Regex("<body[^>]*>", RegexOption.IGNORE_CASE).containsMatchIn(sb)
+        if (hasBodyOpen && !sb.contains("</body>", ignoreCase = true)) sb.append("\n</body>")
+        if (sb.contains("<html", ignoreCase = true) && !sb.contains("</html>", ignoreCase = true)) {
+            sb.append("\n</html>")
+        }
+        html = sb.toString()
+    }
+
+    // 4. 有效内容校验：剥掉所有标签与空白后必须还有文字，否则视为无效产出
+    val visibleText = html
+        .replace(Regex("<style[\\s\\S]*?</style>", RegexOption.IGNORE_CASE), "")
+        .replace(Regex("<script[\\s\\S]*?</script>", RegexOption.IGNORE_CASE), "")
+        .replace(Regex("<[^>]+>"), "")
+        .trim()
+    return if (visibleText.isEmpty()) null else html
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1064,6 +1326,6 @@ fun AgentToolRegistry.registerCreativeDocTools(context: Context) {
         DocxGenTool(providerFn = providerFn, fileExportTool = fileExport),
         PdfExportTool(providerFn = providerFn, fileExportTool = fileExport, context = context),
         HtmlGenTool(providerFn = providerFn, fileExportTool = fileExport),
-        MarkdownToDocTool(providerFn = providerFn, fileExportTool = fileExport),
+        MarkdownToDocTool(providerFn = providerFn, fileExportTool = fileExport, context = context),
     )
 }

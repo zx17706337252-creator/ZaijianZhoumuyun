@@ -59,6 +59,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val _streamingPsych = MutableStateFlow<String?>(null)
     val streamingPsych: StateFlow<String?> = _streamingPsych.asStateFlow()
 
+    // Fix-StreamThinking：流式阶段实时剥离的思考过程（[thinking:...] 增量解析），
+    // 独立 StateFlow——思考先出（ThoughtCard 实时展示），正文+文件收尾一次性合并提交。
+    private val _streamingThinking = MutableStateFlow<String?>(null)
+    val streamingThinking: StateFlow<String?> = _streamingThinking.asStateFlow()
+
     // A-1 修复：关系状态供顶部 Header 使用。
     private val _relForHeader = MutableStateFlow<RelationshipEntity?>(null)
     val relForHeader: StateFlow<RelationshipEntity?> = _relForHeader.asStateFlow()
@@ -87,6 +92,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val pregnancyPressureDataStore get() = container.pregnancyPressureDataStore
     private val taskRepo get() = container.taskRepo
     private val projectRepo get() = container.projectRepo
+    private val agentStoreRepo get() = container.agentStoreRepo
     private val workflowRepo get() = container.workflowRepo
     private val daughterRepo get() = container.daughterCharacterRepo
     private val presenceEngine: PresenceEngine get() = container.presenceEngine
@@ -135,6 +141,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         memoryDao        = memoryDao,
         learningGoalRepo = learningGoalRepo,
         workflowRepo     = workflowRepo,
+        chainRunRepository = container.chainRunRepository,
         taskRepo         = taskRepo,
         memoryEngine     = memoryEngine,
         scheduleRepo     = scheduleRepo,
@@ -143,6 +150,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         githubConfigStore = githubConfigStore,
         skillRepo        = skillRepo,
         projectRepo      = projectRepo,
+        agentStoreRepo   = agentStoreRepo,
     )
 
     // ── 孕期 + 背景图 + 女儿注册 ────────────────────────────────
@@ -258,6 +266,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         _uiState                      = _uiState,
         _streamingContent             = _streamingContent,
         _streamingPsych               = _streamingPsych,
+        _streamingThinking            = _streamingThinking,
         messageRepo                   = messageRepo,
         memoryRepo                    = memoryRepo,
         memoryEngine                  = memoryEngine,
@@ -273,6 +282,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         taskRepo                      = taskRepo,
         projectRepo                   = projectRepo,
         workflowRepo                  = workflowRepo,
+        chainRunRepository            = container.chainRunRepository,
         eventRepo                     = eventRepo,
         pregnancyDelegate             = pregnancyDelegate,
         agentRelationEngine           = agentRelationEngine,

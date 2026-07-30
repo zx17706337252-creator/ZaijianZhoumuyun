@@ -83,6 +83,10 @@ internal fun ChatSettingsSheet(
     // 视觉范式。vaultFileCount 用于副标题角标（为 0 时显示引导文案）。
     onNavigateToVault: () -> Unit = {},
     vaultFileCount: Int = 0,
+    // 角色间私聊入口：跳转到私聊管理面板（PrivateChatScreen，全局配对列表，
+    // 不带 characterId 参数——与 onNavigateToVault/onNavigateToSchedule 不同，
+    // 该面板本身管理全部角色对，不是单一角色专属页面）。默认空实现向后兼容。
+    onNavigateToPrivateChat: () -> Unit = {},
     // 文档发送方式：默认一起发（true），底部面板内可切换为"分开发"（false）。
     attachFilesTogether: Boolean = true,
     onAttachFilesTogetherChange: (Boolean) -> Unit = {},
@@ -222,6 +226,39 @@ internal fun ChatSettingsSheet(
                         style = type.caption,
                         color = colors.textSecondary,
                     )
+                }
+            }
+
+            HorizontalDivider(color = colors.border, modifier = Modifier.padding(horizontal = Spacing.screenHorizontal))
+
+            // 角色间私聊入口：视觉范式与"文件"/"日程"/"角色档案"严格一致。
+            // 点击触发 onNavigateToPrivateChat 并关闭 Sheet。这里不带 characterId——
+            // PrivateChatScreen 本身是全局配对管理面板（列出全部角色对），
+            // 不是当前角色专属页面，用户进去后自己选谁跟谁配对。
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable {
+                        onNavigateToPrivateChat()
+                        onDismiss()
+                    }
+                    .padding(
+                        horizontal = Spacing.screenHorizontal,
+                        vertical   = Spacing.md,
+                    ),
+                verticalAlignment     = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Spacing.md),
+            ) {
+                com.zaijian.zhoumuyun.ui.design.IconBadge(
+                    icon               = AppIcons.PrivateChat,
+                    contentDescription = null,
+                    tint               = accentColor,
+                    background         = accentColor.copy(alpha = 0.12f),
+                    size               = 20.dp,
+                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(text = "角色私聊", style = type.body, color = colors.textPrimary)
+                    Text(text = "让角色之间私下聊天", style = type.caption, color = colors.textSecondary)
                 }
             }
 

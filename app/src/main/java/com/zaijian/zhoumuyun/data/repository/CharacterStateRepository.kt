@@ -1,5 +1,7 @@
 package com.zaijian.zhoumuyun.data.repository
 
+import com.zaijian.zhoumuyun.data.agent.AppEvent
+import com.zaijian.zhoumuyun.data.agent.EventPublisher
 import com.zaijian.zhoumuyun.data.db.dao.CharacterStateDao
 import com.zaijian.zhoumuyun.data.db.entity.toDomain
 import com.zaijian.zhoumuyun.data.db.entity.toEntity
@@ -62,6 +64,17 @@ class CharacterStateRepository(
 
     suspend fun updateState(characterId: Int, state: CharacterStateLayer) {
         dao.upsertState(state.toEntity(characterId))
+        // §6 EventBus 埋点：角色状态更新事件，供 ChainTriggerMatcher 匹配事件触发型链条
+        // §11.1：心情值已写入 Room，走 publishPersistent 先落盘再 EventBus.emit()，
+        // 防止 App 被杀期间事件丢失。
+        EventPublisher.publishPersistent(AppEvent(
+            name = "state_updated",
+            characterId = characterId,
+            payload = mapOf(
+                "primaryEmotion" to state.emotionalState.primaryEmotion.name,
+                "intensity" to state.emotionalState.intensity,
+            ),
+        ))
     }
 
     /** 重置为角色 initialState（删除持久化行，下次读取自动 fallback）。 */

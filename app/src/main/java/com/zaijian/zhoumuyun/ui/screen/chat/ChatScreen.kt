@@ -69,14 +69,18 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.lifecycle.viewmodel.compose.viewModel
 
 import android.content.Context
+import android.content.ContextWrapper
 import android.net.Uri
 import android.provider.OpenableColumns
+import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.DisposableEffect
 import coil.compose.AsyncImage
 import coil.request.CachePolicy
 import coil.request.ImageRequest
 import com.zaijian.zhoumuyun.data.model.DefaultPresenceStates
+import com.zaijian.zhoumuyun.domain.PresenceEngine
 import com.zaijian.zhoumuyun.ui.component.BreathingAvatar
 import com.zaijian.zhoumuyun.ui.component.FertileWindowConsentDialog
 import com.zaijian.zhoumuyun.ui.theme.AnimDuration
@@ -115,6 +119,26 @@ private const val TIMESTAMP_INTERVAL_MS = 30 * 60 * 1000L
 
 private fun formatTimestamp(ms: Long): String = TimeFormatUtils.formatTime(ms)
 
+/**
+ * Fix-ChatVmScope（退出私聊生成中断/气泡消失的根因修复）：
+ * ChatViewModel 类头注释自称"应用内单例"，但此前 `chatViewModel: ChatViewModel = viewModel()`
+ * 解析到的是 NavBackStackEntry 的 ViewModelStore——退出私聊页（popBackStack）该 entry
+ * 立即销毁，ViewModel.onCleared() → viewModelScope 整体取消 → 正在生成的 replyJob 被杀、
+ * 流式气泡消失（尤其 excel_gen/pptx_gen 这类耗时文件生成必死）。
+ *
+ * 修复：把 ViewModel 挂到 Activity 的 ViewModelStore 上，作用域与 App 同寿，
+ * 退出/重进私聊页不再取消生成任务；重进时 ChatSessionDelegate.init() 的
+ * "同角色 + replyJob 仍活跃" 分支会保住流式气泡状态，消息落库后自动出现在列表里。
+ *
+ * 从 Context 链上安全解析宿主 Activity（Compose 下 LocalContext 可能被
+ * ContextThemeWrapper 包若干层，不能强转）。
+ */
+private tailrec fun Context.findComponentActivity(): ComponentActivity? = when (this) {
+    is ComponentActivity -> this
+    is ContextWrapper    -> baseContext.findComponentActivity()
+    else                 -> null
+}
+
 // ─────────────────────────────────────────────────────────────
 //  ChatScreen  — 单聊页（Phase 4 Step 1）
 //  设计规范 §13
@@ -139,6 +163,10 @@ fun ChatScreen(
     // v147（文件保险库改造）：跳转到文件库（FileVaultScreen）。与 onNavigateToSchedule
     // 同款签名 (Int) -> Unit，由 AppNavigation 透传 navigate 到 AppRoute.FileVault。
     onNavigateToVault: (Int) -> Unit = {},
+    // 角色间私聊入口：跳转到私聊管理面板（PrivateChatScreen）。签名为
+    // () -> Unit（不带 characterId）——与 onNavigateToVault/onNavigateToSchedule
+    // 不同，该面板本身管理全部角色对，不是单一角色专属页面。
+    onNavigateToPrivateChat: () -> Unit = {},
     // v1.48：跳转到统一文件预览编辑页（FilePreviewEditorScreen）。
     // 参数是文件绝对路径，由 AppNavigation 透传 navigate 到 AppRoute.FilePreview。
     onNavigateToFilePreview: (String) -> Unit = {},
@@ -150,7 +178,16 @@ fun ChatScreen(
     // 标准 viewModel() 工厂可自动处理，无需自定义工厂。
     // 原来的 ChatViewModelFactory 传入新实例会干扰 Compose 的 ViewModel 缓存，
     // 导致 setChatMode() 更新的是游离实例，UI 读取的是另一个实例，状态无法同步。
-    chatViewModel: ChatViewModel = viewModel(),
+    //
+    // Fix-ChatVmScope：viewModelStoreOwner 从默认的 NavBackStackEntry 提升到宿主
+    // Activity——退出私聊页不再销毁 ViewModel，生成中的回复/文件在后台继续跑完
+    // （见文件上方 findComponentActivity 注释）。AndroidViewModel 的标准工厂
+    // （AndroidViewModelFactory）对 Activity owner 同样适用，无需自定义工厂。
+    // @Preview 设计时环境没有宿主 Activity，回退到默认 owner（与旧行为一致）。
+    chatViewModel: ChatViewModel = run {
+        val activity = LocalContext.current.findComponentActivity()
+        if (activity != null) viewModel(viewModelStoreOwner = activity) else viewModel()
+    },
 ) {
     val colors   = ZaijianTheme.colors
     val type     = ZaijianTheme.typography
@@ -176,6 +213,17 @@ fun ChatScreen(
     // 初始化 ChatViewModel（绑定角色 ID）
     LaunchedEffect(characterId) {
         chatViewModel.init(characterId)
+    }
+
+    // Fix-ChatVmScope 连带修复：ViewModel 提升为 Activity 作用域后，onCleared()
+    // 不再随"退出私聊页"触发，原先在 onCleared 里做的"清除前台角色标记"挪到这里——
+    // composable 离开组合（退出聊天页/切换角色）时清理，语义与原来一致。
+    DisposableEffect(characterId) {
+        onDispose {
+            if (PresenceEngine.foregroundChatCharacterId == characterId) {
+                PresenceEngine.foregroundChatCharacterId = null
+            }
+        }
     }
 
     // 观察 UI 状态
@@ -430,6 +478,11 @@ fun ChatScreen(
     // Compose State 变量 uiState，snapshotFlow 能正确感知每次重组产生的新快照值。
     // P1-3 修复：snapshotFlow 改为收集独立的 streamingContent（不再读 uiState.streamingContent）。
     // 先通过 collectAsStateWithLifecycle 转为 Compose State，snapshotFlow 才能正确感知每次变化。
+    //
+    // Task-2 说明：合并输出模式下 _streamingContent 在流式期间保持 null（不再逐 token 更新），
+    // 此 snapshotFlow 不会在流式期间触发（len 恒为 0）。自动滚动改由上方
+    // LaunchedEffect(messages.size, isTyping) 覆盖——isTyping 变 true 时滚动到占位气泡，
+    // messages.size 增加时滚动到新消息。此代码保留不动（无害），若未来恢复打字机模式可复用。
     val streamingContentForScroll by chatViewModel.streamingContent.collectAsStateWithLifecycle()
     LaunchedEffect(listState) {
         snapshotFlow { streamingContentForScroll?.length ?: 0 }
@@ -762,8 +815,10 @@ fun ChatScreen(
                 }
 
                 // Phase 13：工具执行提示行
-                // streamingHint 非 null 时在打字机气泡下方显示一行小提示，
-                // ToolDone 事件到达后 streamingHint 置 null，提示自动消失。
+                // streamingHint 非 null 时在打字机气泡下方显示一行小提示。
+                // Task-2：ToolDone 不再置 null，而是恢复为 "正在生成回复…" 通用提示，
+                // 避免工具完成到流式结束之间的空窗期用户看到无提示的 "…" 以为卡住了。
+                // streamingHint 仅在流式结束（onComplete/finally）时置 null。
                 if (streamingHint != null) {
                     item(key = "tool_hint") {
                         ToolHintRow(
@@ -921,6 +976,9 @@ fun ChatScreen(
                 // v147：透传文件库入口回调，与 onNavigateToSchedule 同款范式。
                 onNavigateToVault    = { onNavigateToVault(characterId) },
                 vaultFileCount       = vaultFileCount,
+                // 角色间私聊入口：透传给 ChatSettingsSheet，与 onNavigateToVault
+                // 同款范式，只是不带 characterId 参数。
+                onNavigateToPrivateChat = onNavigateToPrivateChat,
                 // 文档发送方式：默认一起发（true），底部面板内切换即时生效
                 // （ChatViewModel.setAttachFilesTogether 已做乐观更新 + 后台持久化）。
                 attachFilesTogether  = attachFilesTogether,

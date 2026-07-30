@@ -150,6 +150,18 @@ data class MemoryEntity(
 
     /** 最后一次被 Prompt 召回的时间（用于计算 recency_score） */
     val lastAccessedAt: Long,
+
+    // ── v75→v76 新增：角色忠诚锁定·叙事记忆标记（方案 v1.5 第 4.2 节）─────
+    // speakerContext == NON_OWNER 的对话产生的记忆打 isNarrativeOnly = true。
+    // 凡是以读取 MemoryEntity 为输入做长期归纳/总结类判断的模块，读取时跳过
+    // 带此标记的条目，防止"温水煮青蛙"——多轮非 owner 暧昧互动在长期记忆里被
+    // 归纳出"这个人对她有持续影响力"的印象。
+    //
+    // ⚠️ 修正说明（对照代码核实）：DistillationEngine（读 EvaluationSessionDao）
+    // 与 IdentityPromotionEvaluator（读 SpecialtyProfile.styleNotes）当前均不读取
+    // MemoryEntity，此标记对它们无效——本字段供未来读取 MemoryEntity 做归纳的
+    // 模块过滤用；IdentityPromotionEvaluator 的真实隔离见 4.3 节 styleNotes 输入源锁定。
+    val isNarrativeOnly: Boolean = false,
 )
 
 // ─────────────────────────────────────────────────────────────

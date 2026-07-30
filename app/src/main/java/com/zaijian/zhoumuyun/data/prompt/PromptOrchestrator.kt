@@ -15,6 +15,7 @@ import com.zaijian.zhoumuyun.data.model.toChineseDescription
 import com.zaijian.zhoumuyun.data.model.PregnancyState
 import com.zaijian.zhoumuyun.domain.displayLabel
 import com.zaijian.zhoumuyun.domain.parseUserGenderType
+import com.zaijian.zhoumuyun.domain.SpeakerContext
 
 /**
  * Prompt Orchestration Layer
@@ -257,6 +258,19 @@ object PromptOrchestrator {
         // 注入位置：层位 8.7，紧接 Tool Layer（taskBlock 内含工具描述块）之后——
         // 技能本质是"工具使用模式的组合"，逻辑上离工具最近（§3）。
         skillCatalogBlock: String = "",
+        // ── 角色忠诚锁定·speakerContext（方案 v1.5 第 6.1.1 节）──────────
+        // 机制一产出的身份标记。⚠️ 默认值必须为 OWNER_DIRECT——圆桌
+        //（RoundtableBotReplyGenerator/RoundtableIdleManager）、后台工单
+        //（AgentTaskJobExecutor）三处未适配的调用方不显式传参，吃默认值，
+        // 行为与改造前完全一致（不注入机制三叙事主权/拒绝反应文案、不额外耗 token）。
+        // 仅 ChatMessageOrchestrator（owner 直接私聊，经 IdentityGuard 判定）与
+        // PrivateChatEngine（A↔B 角色间私聊，第零级短路恒为 NON_OWNER）显式传参。
+        speakerContext: SpeakerContext = SpeakerContext.OWNER_DIRECT,
+        // 角色忠诚锁定·6.3 拒绝反应轮抑制机制三（方案 v1.5 第 6.3 节）。
+        // 拒绝反应文案与机制三叙事主权"互斥不叠加"。PrivateChatEngine 在施压达阈值的
+        // 拒绝反应轮传 true 抑制机制三（由调用方自行追加 6.3 拒绝反应文案）；
+        // 其余调用方默认 false，行为不变。
+        suppressNarrativeSovereignty: Boolean = false,
     ): String {
         // ── Identity 字符串字段：一次性构建 IdentityPromptFields（W2 问题3 重构）──
         // 每个字段沿用原有 DB-prioritized 模式：identityEntity 非空优先，否则 fallback
@@ -372,6 +386,22 @@ object PromptOrchestrator {
             }
         }
 
+        // ── 角色忠诚锁定·机制二/三 prompt 文案（方案 v1.5 第二/三节）──────
+        // ownerName 解析：优先 ownerAliases[0]（owner 合法自称），回退到角色对 owner
+        // 的关系称谓（userRoleLabelPrivate，如"老公"），再回退"他"。与 buildUserIdentityBlock
+        // 的"他"指代风格一致。
+        val ownerAliases = parseJsonArrayOrNull(identityEntity?.ownerAliasesJson) ?: emptyList()
+        val ownerName = ownerAliases.firstOrNull()
+            ?: identityEntity?.userRoleLabelPrivate?.takeIf { it.isNotEmpty() }
+            ?: "他"
+        // 机制二·身份锚点：始终注入（不分身份），在人设正文之前，独立块
+        val loyaltyAnchorBlock = LoyaltyPromptBlocks.buildAnchorBlock(ownerName)
+        // 机制三·叙事主权：仅 NON_OWNER 且未抑制时注入（含第3条亲密行为红线）；
+        // 拒绝反应轮 suppressNarrativeSovereignty=true 抑制（与 6.3 拒绝反应互斥不叠加）；
+        // OWNER_DIRECT 为空串，零开销
+        val narrativeSovereigntyBlock = if (speakerContext.isNonOwner && !suppressNarrativeSovereignty)
+            LoyaltyPromptBlocks.buildNarrativeSovereigntyBlock(ownerName) else ""
+
         val stateBlock  = buildStateBlock(presenceActivity, presenceFocus, presenceMood, presenceEnergy, relationshipSnapshot, interCharRelBlock, characterState, character.id, daughterStateLayer, daughterCustomEnums)
         val memoryBlock = buildMemoryBlock(coreMemories, relevantMemories)
         // E1 审计报告 §2.5 修复：跨块去重。个人记忆块和群体记忆块各自内部已去重，
@@ -459,7 +489,14 @@ object PromptOrchestrator {
             // 入口处的自动注入），不再依赖 prompt——用户要求"从程序上锁死"。
             // 程序会扫描消息历史里的"用户导入了一个文件"通知，自动执行 file_read
             // 工具并把结果注入对话历史，LLM 第一轮生成时就能看到真实内容。
+            // 机制二·身份锚点（在人设正文之前，独立块，不被角色卡后续内容稀释权重；始终注入）
+            append(loyaltyAnchorBlock)
+            appendLine(); appendLine()
             append(identityBlockWithPregnancy)                                                       // 1. Identity（不裁）
+            // 机制三·叙事主权（仅 NON_OWNER 注入；OWNER_DIRECT 为空串跳过，零开销）
+            if (narrativeSovereigntyBlock.isNotEmpty()) {
+                appendLine(); appendLine(); append(narrativeSovereigntyBlock)
+            }
             if (rKnow.isNotEmpty())                { appendLine(); appendLine(); append(rKnow)                } // 2. Knowledge
             if (stateBlock.isNotEmpty())           { appendLine(); appendLine(); append(stateBlock)           } // 3. State（不裁）
             if (agentRelationSnapshot.isNotEmpty()){ appendLine(); appendLine(); append(agentRelationSnapshot)} // 3.5
@@ -503,6 +540,9 @@ object PromptOrchestrator {
 
             // 固定层（不参与裁剪）的总长度
             val fixedLen = identityBlockWithPregnancy.length +
+                // 忠诚锁定文案（机制二锚点 + 机制三叙事主权）属固定层，不裁剪
+                (loyaltyAnchorBlock.length + 4) +
+                (if (narrativeSovereigntyBlock.isNotEmpty()) narrativeSovereigntyBlock.length + 4 else 0) +
                 (if (stateBlock.isNotEmpty()) stateBlock.length + 4 else 0) +
                 (if (agentRelationSnapshot.isNotEmpty()) agentRelationSnapshot.length + 4 else 0) +
                 (if (planBlock.isNotEmpty()) planBlock.length + 4 else 0) +

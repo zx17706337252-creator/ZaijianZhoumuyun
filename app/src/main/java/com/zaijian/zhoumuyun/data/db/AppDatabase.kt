@@ -99,6 +99,24 @@ import com.zaijian.zhoumuyun.data.db.entity.CompetitionWeightConfigEntity    // 
 import com.zaijian.zhoumuyun.data.db.entity.JudgeAccuracyLogEntity           // 裁判竞争
 import com.zaijian.zhoumuyun.data.db.entity.SkillEditLogEntity          // Window C 技能系统
 import com.zaijian.zhoumuyun.data.db.entity.SkillEntity                  // Window C 技能系统
+import com.zaijian.zhoumuyun.data.db.dao.PrivateChatPairDao              // 角色间私聊
+import com.zaijian.zhoumuyun.data.db.dao.PrivateChatMessageDao           // 角色间私聊
+import com.zaijian.zhoumuyun.data.db.dao.PrivateChatSessionDao           // 角色间私聊
+import com.zaijian.zhoumuyun.data.db.dao.PrivateChatSessionAndPairDao    // 角色间私聊跨表事务
+import com.zaijian.zhoumuyun.data.db.entity.PrivateChatPairEntity        // 角色间私聊
+import com.zaijian.zhoumuyun.data.db.entity.PrivateChatMessageEntity     // 角色间私聊
+import com.zaijian.zhoumuyun.data.db.entity.PrivateChatSessionEntity     // 角色间私聊
+import com.zaijian.zhoumuyun.data.db.dao.AgentStoreDao                   // Agent 结构化存储
+import com.zaijian.zhoumuyun.data.db.dao.ChainDefinitionDao             // 灵活自动化编排·链条定义
+import com.zaijian.zhoumuyun.data.db.dao.ChainRunDao                    // 灵活自动化编排·链条运行实例
+import com.zaijian.zhoumuyun.data.db.dao.PendingEventDao                // 灵活自动化编排·待处理事件
+import com.zaijian.zhoumuyun.data.db.dao.FileIndexDao                  // 文件搜索·文件索引DAO
+import com.zaijian.zhoumuyun.data.db.entity.AgentStoreRecordEntity       // Agent 结构化存储
+import com.zaijian.zhoumuyun.data.db.entity.ChainDefinitionEntity        // 灵活自动化编排·链条定义
+import com.zaijian.zhoumuyun.data.db.entity.ChainRunEntity               // 灵活自动化编排·链条运行实例
+import com.zaijian.zhoumuyun.data.db.entity.PendingEventEntity           // 灵活自动化编排·待处理事件
+import com.zaijian.zhoumuyun.data.db.entity.FileIndexEntity             // 文件搜索·文件索引主表
+import com.zaijian.zhoumuyun.data.db.entity.FileIndexFtsEntity           // 文件搜索·FTS4虚拟表
 
 /**
  * 再见周慕云 · Room 数据库
@@ -234,8 +252,29 @@ import com.zaijian.zhoumuyun.data.db.entity.SkillEntity                  // Wind
         SkillEntity::class,                     // Window C 技能系统（Agent 自主技能）
         SkillEditLogEntity::class,              // Window C 技能变更日志
         MemoryTagEntity::class,                 // Window A-1 L2 记忆索引层
+        PrivateChatPairEntity::class,            // 角色间私聊配对配置
+        PrivateChatMessageEntity::class,         // 角色间私聊消息
+        PrivateChatSessionEntity::class,         // 角色间私聊会话状态
+        AgentStoreRecordEntity::class,           // Agent 结构化存储（通用记录表，collection 分组）
+        ChainDefinitionEntity::class,            // 灵活自动化编排——链条定义
+        ChainRunEntity::class,                   // 灵活自动化编排——链条运行实例
+        PendingEventEntity::class,               // 灵活自动化编排——待处理事件（§11.1 事件落盘兜底）
+        FileIndexEntity::class,                  // 文件搜索——文件索引主表
+        FileIndexFtsEntity::class,               // 文件搜索——FTS4 全文检索虚拟表
     ],
-    version = 70,  // 69 → 70：Window A-1 L2 记忆索引层——新增 memory_tags 表，
+    version = 76,  // 75 → 76：角色忠诚锁定机制——character_identity 新增 ownerAliasesJson/
+    // characterCallsOwnerJson（机制一判定依据），messages 新增 speakerContext（机制四状态隔离），
+    // private_chat_pairs 新增 characterDisconnectState（6.4 角色自主下线），
+    // memories 新增 isNarrativeOnly（4.2 记忆隔离）。详见 Migration75to76.kt。
+    // 74 → 75：文件搜索——新增 file_index / file_index_fts 表，
+    // 纯新增表，不改动任何既有 schema，详见 Migration74to75.kt。
+    // 72 → 73：灵活自动化编排——新增 chain_definitions/chain_runs 两张表，
+    // 纯新增表，不改动任何既有 schema，详见 Migration72to73.kt。
+    // 71 → 72：Agent 结构化存储——新增 agent_store_records 表，
+    // 纯新增表，不改动任何既有 schema，详见 Migration71to72.kt。
+    // 70 → 71：角色间私聊——新增 private_chat_pairs/messages/sessions 三张表，
+    // 纯新增表，不改动任何既有 schema，详见 Migration70to71.kt。
+    // 69 → 70：Window A-1 L2 记忆索引层——新增 memory_tags 表，
     // 为每条记忆建立结构化标签索引，支持 L2 优先检索路由（L2 tag 精确匹配 → L1 FTS4 全文匹配）。
     // 纯新增表，不改动任何既有 schema，详见 Migration69to70.kt。
     // 承载 Agent 自主创建/编辑/废弃的可复用技能及其变更日志。纯新增表，不改动任何既有
@@ -337,6 +376,15 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun promotedSkillTagDao(): PromotedSkillTagDao        // 擅长领域标签墙
     abstract fun notificationReadStateDao(): NotificationReadStateDao  // 通知中心已读状态
     abstract fun skillDao(): SkillDao                                  // Window C 技能系统
+    abstract fun privateChatPairDao(): PrivateChatPairDao              // 角色间私聊
+    abstract fun privateChatMessageDao(): PrivateChatMessageDao       // 角色间私聊
+    abstract fun privateChatSessionDao(): PrivateChatSessionDao       // 角色间私聊
+    abstract fun privateChatSessionAndPairDao(): PrivateChatSessionAndPairDao  // 角色间私聊跨表事务
+    abstract fun agentStoreDao(): AgentStoreDao                       // Agent 结构化存储
+    abstract fun chainDefinitionDao(): ChainDefinitionDao             // 灵活自动化编排·链条定义
+    abstract fun chainRunDao(): ChainRunDao                           // 灵活自动化编排·链条运行实例
+    abstract fun pendingEventDao(): PendingEventDao                   // 灵活自动化编排·待处理事件
+    abstract fun fileIndexDao(): FileIndexDao                         // 文件搜索·文件索引
 
     /**
      * S2 修复：原子记录工作流步骤（插入步骤结果 + 推进 currentStep 在同一事务内）。
@@ -395,16 +443,22 @@ abstract class AppDatabase : RoomDatabase() {
                         com.zaijian.zhoumuyun.data.db.migration.MIGRATION_67_68,
                         com.zaijian.zhoumuyun.data.db.migration.MIGRATION_68_69,
                         com.zaijian.zhoumuyun.data.db.migration.MIGRATION_69_70,
+                        com.zaijian.zhoumuyun.data.db.migration.MIGRATION_70_71,
+                        com.zaijian.zhoumuyun.data.db.migration.MIGRATION_71_72,
+                        com.zaijian.zhoumuyun.data.db.migration.MIGRATION_72_73,
+                        com.zaijian.zhoumuyun.data.db.migration.MIGRATION_73_74,
+                        com.zaijian.zhoumuyun.data.db.migration.MIGRATION_74_75,
+                        com.zaijian.zhoumuyun.data.db.migration.MIGRATION_75_76,
                     )
                     .fallbackToDestructiveMigrationOnDowngrade()
                     // P1-11 修复：原先仅有 fallbackToDestructiveMigrationOnDowngrade()
                     // （只兜底"版本号变小"这一种场景）。若本地库版本号落在上面
-                    // 69 条迁移链覆盖范围之外（脏数据、库文件损坏、或未来某次
+                    // 70 条迁移链覆盖范围之外（脏数据、库文件损坏、或未来某次
                     // 漏加 migration），Room 会在 build() 首次访问时抛
                     // IllegalStateException，且这是 onCreate() 主线程同步调用，
                     // 会导致应用直接崩溃且无法启动，用户唯一自救手段是手动清数据。
                     // 追加 fallbackToDestructiveMigration()：仅在"迁移路径缺失/
-                    // 执行异常"时触发清库重建兜底，不影响正常情况下 69 条迁移链
+                    // 执行异常"时触发清库重建兜底，不影响正常情况下 70 条迁移链
                     // 的照常执行，不会掩盖真实的 migration bug。
                     .fallbackToDestructiveMigration()
                     .build()

@@ -43,6 +43,7 @@ class AgentActivityRepository(
         const val ROUNDTABLE_BOT = "roundtable_bot"       // 圆桌被动回复（RoundtableBotReplyGenerator）
         const val ROUNDTABLE_IDLE = "roundtable_idle"     // 圆桌闲时主动发言（RoundtableIdleManager）
         const val WORKFLOW = "workflow"                    // WorkflowEngine 镜像埋点（2.1.4）
+        const val CHAIN = "chain"                          // 灵活自动化编排·链条节点埋点（Step7）
     }
 
     // ── eventType（方案 2.2.2 字段说明）──────────────────────────────────

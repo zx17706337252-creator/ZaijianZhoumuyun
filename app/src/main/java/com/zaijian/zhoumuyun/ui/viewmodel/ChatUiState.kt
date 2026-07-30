@@ -52,6 +52,17 @@ data class ChatUiState(
     // false = 文件卡片各自独立成一张气泡/卡片（旧版效果）。
     // 由 FileDeliveryDataStore 持久化，ChatViewModel.init 订阅后覆盖此默认值。
     val attachFilesTogether: Boolean = true,
+
+    // ── 角色忠诚锁定·会话级状态位（方案 v1.5 第 1.4 节，验收后修复）──────────────
+    // 原实现为单个 Boolean，但 ChatViewModel 挂在 Activity 级 ViewModelStore 上
+    // （Fix-ChatVmScope，见 ChatScreen.kt），_uiState 跨全部角色复用、不随
+    // ChatSessionDelegate.init(characterId) 重建——单个 Boolean 会导致"角色A误判
+    // 命中 → 切到角色B/C/...全部被污染为 NON_OWNER"，直到杀进程才解除。
+    // 改为按 characterId 分片：一旦本角色会话中任一级检测命中身份异常，
+    // 该角色对应位置 true 并保持（不因后续几句话"表现正常"而自动解除，避免被中途
+    // 洗白），但不影响其他角色。不落库、不进长期记忆。
+    val defenseModeByCharacter: Map<Int, Boolean> = emptyMap(),
+
 )
 
 enum class KnowledgeInjectMode { AUTO, MANUAL }

@@ -297,6 +297,15 @@ class SpecialtyEvolutionEngine(
     /**
      * 将若干阶段摘要并入现有 styleNotes，整段重写（不是追加）。
      * 这是用户要求"留下精华"的核心执行点——见方案第5.5节完整 Prompt 设计。
+     *
+     * ⚠️ 架构红线（方案 v1.5 第 4.3 节·soulNote 输入源锁定）：
+     * styleNotes 是 CharacterIdentity.soulNote 的唯一晋升输入源（经
+     * IdentityPromotionEvaluator），而 soulNote 是角色人格本能层。本函数的输入
+     * stageDigests 必须只来自 DailyPracticeWorker（每日自动练习产出），**绝不能**
+     * 让 ChatMessageOrchestrator / PrivateChatEngine / RoundtableMessageOrchestrator
+     * 产生的对话内容（无论 speakerContext 是否为 NON_OWNER）直接或间接流入此处。
+     * 若未来需要让 DailyPracticeWorker 参考近期对话历史，必须先按
+     * speakerContext == NON_OWNER 过滤，并重新评审本红线是否仍然成立。
      */
     suspend fun mergeStageDigestsIntoProfile(
         currentStyleNotes: String,

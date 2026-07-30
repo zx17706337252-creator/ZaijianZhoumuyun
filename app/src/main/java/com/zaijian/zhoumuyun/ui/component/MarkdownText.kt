@@ -32,13 +32,15 @@ import io.noties.markwon.ext.tasklist.TaskListPlugin
  * @param textColor  文字颜色（与气泡主题一致）
  * @param style      字体样式（fontSize 同步自 AppTypography.body）
  * @param modifier   布局修饰符
- * @param selectable Fix-BubbleTextSelect：默认 false，走"长按整条复制"这套自定义
- *                   交互（isClickable/isLongClickable 关闭，事件透传给外层
- *                   combinedClickable，见下方 Fix-LongClickReset）。
- *                   由 BubbleActionMenu 里"选择文字"选项驱动为 true 时，切到
- *                   Android 原生的 setTextIsSelectable(true) 模式——此时交由
- *                   系统接管长按，弹出拖选手柄和系统自带的复制/全选气泡菜单，
- *                   两种模式互斥，不能同时生效。
+ *
+ * Fix-BubbleTextSelect v3：此组件不再支持切换选字模式（曾经的 selectable 参数
+ * 及配套的 TextView.setTextIsSelectable(true) 逻辑已删除）。原因：这套系统级
+ * 选字在 Compose AndroidView + LazyColumn 复用环境下会有两个真实崩溃/渲染问题
+ * ——部分 ROM 弹出占满屏幕右侧的异形选字面板，以及 view 被回收复用时崩溃。
+ * 现在"选择文字"功能改为在气泡层原地切换成纯 Compose SelectionContainer + Text
+ * （见 ChatMessageBubble.kt 的 isTextSelectMode），不再经过这个组件、不再经过
+ * TextView，从架构上避开上述问题。此组件永远只读展示，长按事件透传给外层
+ * combinedClickable（见下方 Fix-LongClickReset）。
  */
 @Composable
 fun MarkdownText(
@@ -46,7 +48,6 @@ fun MarkdownText(
     textColor: Color,
     style: TextStyle,
     modifier: Modifier = Modifier,
-    selectable: Boolean = false,
 ) {
     val context = LocalContext.current
 
@@ -118,28 +119,6 @@ fun MarkdownText(
             view.setTextColor(textColor.toArgb())
             view.textSize = style.fontSize.value
 
-            // Fix-BubbleTextSelect：selectable 状态本身不依赖 markdown 内容是否
-            // 变化，每次重组都要同步——因为这个值由外部菜单操作驱动，随时可能
-            // 在 markdown 不变的情况下从 false 切到 true（点了"选择文字"）或
-            // 从 true 切回 false（选完文字后退出选择模式）。
-            //
-            // setTextIsSelectable(true)：Android 原生选字模式，内部会自己接管
-            // 长按并挂一个 ArrowKeyMovementMethod，此时不需要（也不应该）再管
-            // isClickable——选择模式和"外层 combinedClickable 长按复制"是两套
-            // 互斥的手势系统，同时打开只会互相打架。
-            //
-            // 切回 false 时，必须重新执行一遍 Fix-LongClickReset 的收紧逻辑——
-            // setTextIsSelectable(false) 不保证把 movementMethod/isClickable
-            // 干净地复位到我们要的状态，稳妥起见每次都显式设一遍。
-            if (view.isTextSelectable != selectable) {
-                view.setTextIsSelectable(selectable)
-                if (!selectable) {
-                    view.movementMethod = null
-                    view.isClickable = false
-                    view.isLongClickable = false
-                }
-            }
-
             // 只有内容真正变化时才重新解析 Markdown
             if (markdown != lastRendered.value) {
                 // Fix-预览闪退：Markwon（含 TablePlugin/TaskListPlugin 扩展）对畸形输入
@@ -171,19 +150,11 @@ fun MarkdownText(
                 // onLongClick（长按复制）收不到事件——这正是此前"长按复制/角色
                 // 气泡文字可拖选"失效的根因：factory 里设的 false 只在 View
                 // 首次创建时生效一瞬间，第一次真正的 setMarkdown() 调用就会
-                // 把它悄悄翻回 true。
-                //
-                // Fix-BubbleTextSelect 连带修改：这个复位只在非选字模式下执行——
-                // selectable=true 时用户正在框选文字，这里如果无条件复位会把
-                // setTextIsSelectable(true) 挂的选择态 movementMethod 冲掉，
-                // 选字模式下理论上很少会撞上 markdown 内容变化（消息已经渲染
-                // 完了才会去长按选字），但防御性地把判断加上，避免流式消息还
-                // 没结束、用户已经点了"选择文字"这种边缘情况下选择手柄突然消失。
-                if (!selectable) {
-                    view.movementMethod = null
-                    view.isClickable = false
-                    view.isLongClickable = false
-                }
+                // 把它悄悄翻回 true。此组件不再有 selectable 分支（见 v3 改动），
+                // 每次解析后无条件复位。
+                view.movementMethod = null
+                view.isClickable = false
+                view.isLongClickable = false
             }
         },
         modifier = modifier,

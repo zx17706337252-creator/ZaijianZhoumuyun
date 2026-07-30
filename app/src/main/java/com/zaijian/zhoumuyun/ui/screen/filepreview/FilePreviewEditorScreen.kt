@@ -2,13 +2,21 @@ package com.zaijian.zhoumuyun.ui.screen.filepreview
 
 import androidx.compose.material3.ExperimentalMaterial3Api
 import android.content.Intent
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -120,6 +128,9 @@ fun FilePreviewEditorScreen(
                             is PreviewContent.Textual -> content.sourceFilePath
                             is PreviewContent.Html -> content.sourceFilePath
                             is PreviewContent.Unsupported -> content.filePath
+                            // Fix-PptxPreview / Fix-RealPdf：幻灯片/PDF 预览页同样支持导出与外部打开
+                            is PreviewContent.Slides -> content.sourceFilePath
+                            is PreviewContent.Pdf -> content.filePath
                             else -> null
                         }
                         if (filePath != null) {
@@ -211,6 +222,16 @@ fun FilePreviewEditorScreen(
                             )
                         }
 
+                        // Fix-PptxPreview：PPT 应用内文字版预览（逐页幻灯片卡片）
+                        is PreviewContent.Slides -> {
+                            SlidesPreviewEditor(slides = content.slides)
+                        }
+
+                        // Fix-RealPdf 配套：PDF 应用内位图预览（PdfRenderer）
+                        is PreviewContent.Pdf -> {
+                            PdfPreviewEditor(filePath = content.filePath)
+                        }
+
                         is PreviewContent.Unsupported -> {
                             UnsupportedView(
                                 fileName = content.fileName,
@@ -262,6 +283,183 @@ fun FilePreviewEditorScreen(
                     // viewModel.clearStatus() 恢复到 Loaded，这里短暂显示空即可。
                 }
             }
+        }
+    }
+}
+
+/**
+ * Fix-PptxPreview：PPTX 文字版预览——逐页幻灯片卡片列表。
+ *
+ * 应用内预览的定位是"不离开 App 确认 PPT 内容对不对"，不还原排版
+ * （排版预览交给 WPS/Office）。每页一张卡片：页码 + 提取出的文本行
+ * （首行按标题样式强调，与 PPT 每页"标题+要点"的典型结构一致）。
+ */
+@Composable
+private fun SlidesPreviewEditor(slides: List<List<String>>) {
+    val colors = ZaijianTheme.colors
+    val type = ZaijianTheme.typography
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(Spacing.md),
+        verticalArrangement = Arrangement.spacedBy(Spacing.md),
+    ) {
+        items(slides.size) { index ->
+            val lines = slides[index]
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(colors.bgElevated)
+                    .border(1.dp, colors.border, RoundedCornerShape(12.dp))
+                    .padding(Spacing.md),
+            ) {
+                Text(
+                    text = "第 ${index + 1} 页 / 共 ${slides.size} 页",
+                    style = type.label,
+                    color = colors.textDisabled,
+                )
+                Spacer(Modifier.height(Spacing.xs))
+                lines.forEachIndexed { lineIdx, line ->
+                    Text(
+                        text = line,
+                        style = if (lineIdx == 0) type.cardTitle else type.body,
+                        color = colors.textPrimary,
+                    )
+                    if (lineIdx < lines.size - 1) Spacer(Modifier.height(4.dp))
+                }
+            }
+        }
+    }
+}
+
+/** PDF 应用内预览的最大页数（防几百页文档撑爆内存/列表）。 */
+private const val MAX_PDF_PREVIEW_PAGES = 30
+
+/**
+ * Fix-RealPdf 配套：PDF 位图预览。
+ *
+ * 用 android.graphics.pdf.PdfRenderer（API 21+，minSdk 26 覆盖）逐页渲染。
+ * 内存安全设计：
+ *   - 页数探测与单页渲染各自独立开/关渲染器，不常驻；
+ *   - 单页位图在 LazyColumn item 进入组合时才渲染（produceState），
+ *     划出屏幕的 item 随组合销毁释放位图，避免整本 PDF 位图常驻内存；
+ *   - 渲染宽度固定 1080px、页数封顶 [MAX_PDF_PREVIEW_PAGES]。
+ */
+@Composable
+private fun PdfPreviewEditor(filePath: String) {
+    val colors = ZaijianTheme.colors
+    val type = ZaijianTheme.typography
+
+    // 页数探测（打开一次渲染器即关闭，代价极小）
+    val pageCount by produceState(initialValue = -1, key1 = filePath) {
+        value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching {
+                android.os.ParcelFileDescriptor.open(
+                    File(filePath), android.os.ParcelFileDescriptor.MODE_READ_ONLY,
+                ).use { pfd ->
+                    android.graphics.pdf.PdfRenderer(pfd).use { it.pageCount }
+                }
+            }.getOrDefault(0)
+        }
+    }
+
+    when {
+        pageCount < 0 -> {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator(color = colors.accent)
+            }
+        }
+        pageCount == 0 -> {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(Spacing.lg),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
+            ) {
+                Text(
+                    text = "无法解析该 PDF 文件（可能已损坏或加密）",
+                    style = type.body,
+                    color = colors.textSecondary,
+                )
+            }
+        }
+        else -> {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(horizontal = Spacing.sm, vertical = Spacing.sm),
+            ) {
+                items(pageCount.coerceAtMost(MAX_PDF_PREVIEW_PAGES)) { index ->
+                    PdfPageImage(filePath = filePath, pageIndex = index)
+                }
+                if (pageCount > MAX_PDF_PREVIEW_PAGES) {
+                    item {
+                        Text(
+                            text = "仅预览前 $MAX_PDF_PREVIEW_PAGES 页（共 $pageCount 页），完整文档请导出后查看",
+                            style = type.caption,
+                            color = colors.textSecondary,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(Spacing.md),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** 单页 PDF 位图渲染（进入组合才渲染，离开组合随 produceState 释放）。 */
+@Composable
+private fun PdfPageImage(filePath: String, pageIndex: Int) {
+    val colors = ZaijianTheme.colors
+    val bitmap by produceState<android.graphics.Bitmap?>(initialValue = null, key1 = filePath, key2 = pageIndex) {
+        value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching {
+                android.os.ParcelFileDescriptor.open(
+                    File(filePath), android.os.ParcelFileDescriptor.MODE_READ_ONLY,
+                ).use { pfd ->
+                    android.graphics.pdf.PdfRenderer(pfd).use { renderer ->
+                        val page = renderer.openPage(pageIndex)
+                        val targetWidth = 1080
+                        val scale = targetWidth.toFloat() / page.width
+                        val bmp = android.graphics.Bitmap.createBitmap(
+                            targetWidth,
+                            (page.height * scale).toInt().coerceAtLeast(1),
+                            android.graphics.Bitmap.Config.ARGB_8888,
+                        )
+                        bmp.eraseColor(android.graphics.Color.WHITE)
+                        page.render(bmp, null, null, android.graphics.pdf.PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                        page.close()
+                        bmp
+                    }
+                }
+            }.getOrNull()
+        }
+    }
+
+    val bmp = bitmap
+    if (bmp != null) {
+        Image(
+            bitmap = bmp.asImageBitmap(),
+            contentDescription = "第 ${pageIndex + 1} 页",
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 4.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .border(1.dp, colors.border, RoundedCornerShape(8.dp)),
+            contentScale = ContentScale.FillWidth,
+        )
+    } else {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(240.dp)
+                .padding(vertical = 4.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            CircularProgressIndicator(color = colors.accent)
         }
     }
 }

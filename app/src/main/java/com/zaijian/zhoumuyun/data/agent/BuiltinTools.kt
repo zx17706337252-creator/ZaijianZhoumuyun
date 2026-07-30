@@ -1577,8 +1577,14 @@ class DiagLogExportTool(private val context: Context) : AgentTool {
 // ─────────────────────────────────────────────────────────────
 
 /**
- * 注册所有内置网络/IO工具（8个）。
+ * 注册所有内置网络/IO工具（9个）。
  * 在 ZaijianApp.onCreate() 中调用，ProviderManager.init() 之后。
+ *
+ * file_search（FileSearchTool）补录：此前该工具已实现（FileSearchTool.kt）
+ * 但从未被注册进 AgentToolRegistry，导致索引即使建好 Agent 也调不到搜索
+ * 能力（"交付了但不可用"）。构造函数第二个参数 characterIdProvider 有默认值
+ * （取 VaultCallContextHolder.get().characterId），与 FileReadTool(context)
+ * 同款静态占位注册方式一致，无需额外传参。
  */
 fun AgentToolRegistry.registerBuiltinTools(context: Context) {
     registerAll(
@@ -1591,5 +1597,6 @@ fun AgentToolRegistry.registerBuiltinTools(context: Context) {
         FileExportTool.getInstance(context),
         ArchiveExportTool(context),
         DiagLogExportTool(context),
+        FileSearchTool(context),
     )
 }

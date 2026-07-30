@@ -32,6 +32,7 @@ import com.zaijian.zhoumuyun.data.agent.BuildApkTool
 import com.zaijian.zhoumuyun.data.agent.BuildStatusCheckTool
 import com.zaijian.zhoumuyun.data.agent.CiCdStartTool
 import com.zaijian.zhoumuyun.data.agent.WorkflowStartTool
+import com.zaijian.zhoumuyun.data.agent.ChainCreateTool
 import com.zaijian.zhoumuyun.data.agent.CreateGithubRepoTool
 import com.zaijian.zhoumuyun.data.agent.GitCommitPushTool
 import com.zaijian.zhoumuyun.data.agent.registerBuiltinTools
@@ -42,6 +43,7 @@ import com.zaijian.zhoumuyun.data.agent.registerPersonalTools
 import com.zaijian.zhoumuyun.data.agent.registerCreativeDocTools
 import com.zaijian.zhoumuyun.data.agent.registerDataVisTools
 import com.zaijian.zhoumuyun.data.agent.registerAgentMetaTools
+import com.zaijian.zhoumuyun.data.agent.registerAgentStoreTools
 import com.zaijian.zhoumuyun.data.agent.registerEmailTools
 import com.zaijian.zhoumuyun.data.agent.registerSoulMemoryUserTools
 import com.zaijian.zhoumuyun.data.agent.TaskStartTool
@@ -302,6 +304,11 @@ class ZaijianApp : Application() {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         appScope = scope   // P1-13-21：公开给 FCM Service 等全局使用
 
+        // §6.1 灵活自动化编排：启动 ChainTriggerMatcher 常驻订阅
+        // 必须在 appScope 创建之后调用，ChainTriggerMatcher 挂在 appScope 上
+        // （不能挂在 ChatViewModel.viewModelScope 上，详见 §6.1）
+        com.zaijian.zhoumuyun.data.AppContainer.instance.startChainSystem(scope)
+
         // 3. 注册 Agent 工具（按模块）
         //
         // 性能 M3 修复（完整版）：全部工具注册块移入 appScope.launch(Dispatchers.Default)，
@@ -368,6 +375,28 @@ class ZaijianApp : Application() {
                 throw e
             } catch (e: Throwable) {
                 ZLog.e("ZaijianApp", "Reminder 闹钟恢复执行异常", e)
+            }
+        }
+
+        // 方案 §4.2：App 冷启动全量补建历史文件索引。
+        // 只补建"还没被索引过"的文件，不做复杂对账（与 FileVaultViewModel.reindexAll()
+        // 手动按钮同款核心逻辑，见 VaultIo.kt 的 reindexUnindexedFilesUnder），
+        // 区别仅在于这里覆盖全部角色私库 + 全部圆桌共享 + 项目共享（冷启动时没有
+        // "当前角色"概念，不受可见范围限制）。与其它一次性冷启动任务同一模式：
+        // 独立 launch + try-catch + ZLog，失败不阻断启动、不连累其它子系统。
+        // 每次冷启动都会跑一次差集扫描（不是只在首次安装/升级后跑一次）——
+        // 差集本身的开销是 1 次数据库查询 + 内存比较，文件数不大时可忽略；
+        // 已建过索引的文件不会重复入队 Worker。
+        scope.launch(Dispatchers.Default) {
+            try {
+                val queued = com.zaijian.zhoumuyun.data.agent.reindexAllVaultFilesOnColdStart(this@ZaijianApp)
+                if (queued > 0) {
+                    ZLog.i("ZaijianApp", "冷启动补建索引：入队 $queued 个历史文件")
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                ZLog.e("ZaijianApp", "冷启动补建索引执行异常", e)
             }
         }
 
@@ -952,6 +981,17 @@ class ZaijianApp : Application() {
                 characterId = { -1 },
             )
         }.onFailure { ZLog.e("ZaijianApp", "registerSoulMemoryUserTools 注册失败", it) }
+        // Agent 结构化存储（方案_Agent结构化存储_最终版 8.10 第①处）：与上方
+        // registerSoulMemoryUserTools() 同款 {-1} 静态占位注册——保证 App 启动早期
+        // WorkflowEngine 等无 ChatViewModel 存活的后台路径也能通过
+        // AgentToolRegistry.get("store_*") 拿到工具实例；真实角色 ID 由
+        // ChatToolRegistrar.registerCharacterTools() 第②处覆盖注册。
+        runCatching {
+            AgentToolRegistry.registerAgentStoreTools(
+                repo = com.zaijian.zhoumuyun.data.AppContainer.instance.agentStoreRepo,
+                characterIdProvider = { -1 },
+            )
+        }.onFailure { ZLog.e("ZaijianApp", "registerAgentStoreTools 注册失败", it) }
 
         // S8-窗口11 P1-8-7 修复：RuleDistillTool 改为 providerFn 闭包模式后，
         // 不再需要在注册时刻判断 activeProvider 是否为 null——工具本身可以
@@ -1083,6 +1123,15 @@ class ZaijianApp : Application() {
                     // 原代码错误地照搬了 CiCdStartTool 的 db/workflowJobDao/
                     // workflowStepResultDao 三参数写法，与真实构造函数不符。
                     workflowRepository = WorkflowRepository(db, db.workflowJobDao(), db.workflowStepResultDao(), context),
+                    characterId        = { -1 },
+                ),
+                // §7 灵活自动化编排：注册 chain_create 工具，LLM 可创建事件触发的
+                // Wait/Check/Action/End 节点链。与 WorkflowStartTool 同款静态占位注册，
+                // characterId 传 { -1 }，由 ChatViewModel.init() 动态覆盖。
+                // chainRunRepository 复用 AppContainer 共享实例（已在本函数上方
+                // 通过 appContainer = AppContainer.instance 获取），避免重复构造。
+                ChainCreateTool(
+                    chainRunRepository = appContainer.chainRunRepository,
                     characterId        = { -1 },
                 ),
             )

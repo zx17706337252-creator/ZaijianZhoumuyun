@@ -26,6 +26,7 @@ import com.zaijian.zhoumuyun.data.repository.PregnancyRepository
 import com.zaijian.zhoumuyun.data.repository.ProjectRepository
 import com.zaijian.zhoumuyun.data.repository.TaskRepository
 import com.zaijian.zhoumuyun.data.repository.WorkflowRepository
+import com.zaijian.zhoumuyun.data.repository.ChainRunRepository
 import com.zaijian.zhoumuyun.data.repository.AgentActivityRepository
 import com.zaijian.zhoumuyun.data.agent.AgentToolRegistry
 import com.zaijian.zhoumuyun.data.agent.SkillRegistry
@@ -38,8 +39,12 @@ import com.zaijian.zhoumuyun.data.agent.withVaultContext
 import com.zaijian.zhoumuyun.domain.AgentRelationEngine
 import com.zaijian.zhoumuyun.domain.ChatTagParser
 import com.zaijian.zhoumuyun.domain.EvaluationEngine
+import com.zaijian.zhoumuyun.domain.IdentityGuard
+import com.zaijian.zhoumuyun.domain.OwnerIdentityProfile
 import com.zaijian.zhoumuyun.domain.PresenceEngine
 import com.zaijian.zhoumuyun.domain.RelationshipEngine
+import com.zaijian.zhoumuyun.domain.SpeakerContext
+import com.zaijian.zhoumuyun.domain.withSpeakerContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -56,6 +61,11 @@ class ChatMessageOrchestrator(
     private val _uiState: MutableStateFlow<ChatUiState>,
     private val _streamingContent: MutableStateFlow<String?>,
     private val _streamingPsych: MutableStateFlow<String?>,
+    // Fix-StreamThinking（输出节奏需求：思考过程先出，正式回复+文件最后一起发）：
+    // 流式阶段从 fullReply 里增量解析 [thinking:...] 标签内容推给此流，
+    // StreamingMessageItem 收集后以 ThoughtCard 形式实时展示（默认折叠，
+    // 与落库后的呈现一致）；正式回复正文与文件卡片仍在收尾时一次性合并提交。
+    private val _streamingThinking: MutableStateFlow<String?>,
     private val messageRepo: MessageRepository,
     private val memoryRepo: MemoryRepository,
     private val memoryEngine: MemoryEngine,
@@ -71,6 +81,9 @@ class ChatMessageOrchestrator(
     private val taskRepo: TaskRepository,
     private val projectRepo: ProjectRepository,
     private val workflowRepo: WorkflowRepository,
+    // 灵活自动化编排（验收缺口修复，§11.10）：链条未播报查询用，与 workflowRepo
+    // 同款来源——ChatViewModel 传入 AppContainer.instance.chainRunRepository。
+    private val chainRunRepository: ChainRunRepository,
     private val eventRepo: EventRepository,
     private val pregnancyDelegate: PregnancyPromptDelegate,
     private val agentRelationEngine: AgentRelationEngine,
@@ -335,7 +348,7 @@ class ChatMessageOrchestrator(
                 // 查 isReported=0 的已完成任务；取第一条生成简短 recap 后立即标记已读，
                 // 避免同一任务结果在多条消息里重复播报。
                 val unreportedJob = workflowRepo.findUnreported(getCurrentCharacterId()).firstOrNull()
-                val workflowRecapPatch = if (unreportedJob != null) {
+                val workflowRecapText = if (unreportedJob != null) {
                     val statusLabel = when (unreportedJob.status) {
                         "COMPLETED" -> "\u2705 完成"
                         "FAILED"    -> "\u274C 失败"
@@ -351,6 +364,46 @@ class ChatMessageOrchestrator(
                         append("请在本次回复中，用你自己的语气自然地提及这件事（一句话即可），不要暴露技术细节。")
                     }
                 } else ""
+
+                // ── chainRecapPatch：灵活自动化编排 · 链条播报（验收缺口修复，§11.10）──
+                // 与上方 workflowRecapPatch 同一模式、并列查询：ChainRunRepository.findUnreported()
+                // 数据层此前已实现（含 characterId=-1 项目级链条），但从未被任何 UI/业务层调用，
+                // 链条即使正确跑完 End(COMPLETED)，结果也只是安静躺在 chain_runs 表里，用户
+                // 永远不会知道。此处补上查询 + 拼接播报文案，标记已读逻辑见下方 751 行附近。
+                // 文案前缀"[链条自动化播报]"与"[后台任务播报]"区分开，避免用户/角色混淆两种机制。
+                val unreportedChainRun = chainRunRepository.findUnreported(getCurrentCharacterId()).firstOrNull()
+                val chainRecapText = if (unreportedChainRun != null) {
+                    val statusLabel = when (unreportedChainRun.status) {
+                        "COMPLETED" -> "\u2705 完成"
+                        "FAILED"    -> "\u274C 失败"
+                        "CANCELLED" -> "\u26AA 已取消"
+                        else        -> unreportedChainRun.status
+                    }
+                    // ChainRunEntity 没有独立的 goal/failReason 字段（对照 WorkflowJobEntity）：
+                    // 链条名称需从其定义查（可能已被禁用/删除，findDefinition 返回 null 时降级为
+                    // 通用描述）；失败原因走 context._failReason（ChainRunRepositoryImpl.markFailed
+                    // 写入的约定 key，见 §5.5）。
+                    val chainName = chainRunRepository.findDefinition(unreportedChainRun.chainDefId)?.name
+                        ?: "自动化规则"
+                    val detail = try {
+                        org.json.JSONObject(unreportedChainRun.context).optString("_failReason", "")
+                    } catch (e: Exception) {
+                        ""
+                    }
+                    buildString {
+                        appendLine("[链条自动化播报]")
+                        appendLine("上次自动化规则「$chainName」已 $statusLabel。")
+                        if (detail.isNotBlank()) appendLine("原因：${detail.take(120)}")
+                        append("请在本次回复中，用你自己的语气自然地提及这件事（一句话即可），不要暴露技术细节。")
+                    }
+                } else ""
+
+                // 两种播报都存在时用空行分隔，拼进同一个 prompt 槽位（PromptOrchestrator
+                // 侧 workflowRecapPatch 参数本身就是"非空则整块 append"的简单字符串处理，
+                // 不改函数签名，改动面最小）。
+                val workflowRecapPatch = listOf(workflowRecapText, chainRecapText)
+                    .filter { it.isNotBlank() }
+                    .joinToString("\n\n")
 
                 // ── 检查5b：D5 关系阶段快照（State Layer 之後注入）──────────────
                 // 仅对女儿角色（characterId >= 1000）查询；普通母亲角色直接用空字符串，零开销。
@@ -375,6 +428,34 @@ class ChatMessageOrchestrator(
                             .map { it.toolName!! },
                         taskCompleted = false,
                     )
+                }
+
+                // ── 角色忠诚锁定·机制一：身份判定（方案 v1.5 第一节，验收后修复）──
+                // 在 buildSystemPrompt 之前跑 IdentityGuard，产出 speakerContext。
+                // 一旦本角色会话内命中异常，该角色对应的 defense mode 置 true 并保持，
+                // 不因后续"表现正常"而自动解除（1.4 节：避免被中途洗白）。
+                //
+                // Fix-验收后-跨角色污染：defenseMode 按 characterId 分片存取
+                // （ChatUiState.defenseModeByCharacter），不再用单一 Boolean——
+                // ChatViewModel 挂在 Activity 级 ViewModelStore（Fix-ChatVmScope），
+                // _uiState 跨全部角色复用，单一 Boolean 会导致一次误判污染全部角色。
+                val activeCharacterId = getCurrentCharacterId()
+                val ownerAliases = parseJsonArrayOrNull(identityEntity?.ownerAliasesJson) ?: emptyList()
+                val characterCallsOwner = parseJsonArrayOrNull(identityEntity?.characterCallsOwnerJson) ?: emptyList()
+                val ownerProfile = OwnerIdentityProfile(ownerAliases, characterCallsOwner)
+                val prevDefenseMode = _uiState.value.defenseModeByCharacter[activeCharacterId] ?: false
+                val speakerContext = IdentityGuard.detectSpeakerContext(
+                    message = text,
+                    profile = ownerProfile,
+                    sessionDefenseMode = prevDefenseMode,
+                    // 第二级轻量分类：暂不启用（需真实 LLM 调用），纯规则模式零成本。
+                    // 生产环境可在此注入 provider 分类调用，当前第一级正则已覆盖样例 A/B 场景。
+                    level2Classifier = null,
+                )
+                if (speakerContext.isNonOwner && !prevDefenseMode) {
+                    _uiState.update {
+                        it.copy(defenseModeByCharacter = it.defenseModeByCharacter + (activeCharacterId to true))
+                    }
                 }
 
                 val systemPrompt = PromptOrchestrator.buildSystemPrompt(
@@ -405,6 +486,7 @@ class ChatMessageOrchestrator(
                     agentRelationSnapshot = agentRelationSnapshot,
                     taskLayerBlock        = taskLayerBlock,
                     skillCatalogBlock     = skillCatalogBlock,
+                    speakerContext        = speakerContext,
                 )
 
                 val config = LLMConfig(
@@ -419,6 +501,11 @@ class ChatMessageOrchestrator(
                 // P3-18 修复：统一 _streamingContent 重置值为 null
                 _streamingContent.value = null
                 _streamingPsych.value = null
+                _streamingThinking.value = null
+                // Task-2：设置通用加载提示，覆盖"AI 正在准备/生成"的整个等待期。
+                // ToolStarted 会覆盖为工具特定提示（如"正在生成PDF…"），
+                // ToolDone 恢复为此通用提示，finally 块统一清空。
+                _uiState.update { it.copy(streamingHint = "正在生成回复…") }
                 val fullReply = StringBuilder()
                 // P0-1（Agent附件下发方案 v2.0）：暂存本轮工具产出的文件元数据 JSON。
                 // v66（1.7 P3）：改用 list 收集本轮全部文件，不再是"后一次覆盖前一次"——
@@ -442,6 +529,16 @@ class ChatMessageOrchestrator(
                 try {
                     // v147 验收返工：身份绑定到协程（VaultCallContextElement），
                     // 避免进程级 AtomicReference 被并发的 streamWithTools 覆盖。
+                    //
+                    // 场景一记忆隔离修复：同一作用域内再包一层 withSpeakerContext，
+                    // 把 446 行已算出的 speakerContext 也绑到协程上，让
+                    // MemoryWriteTool/SoulUpdateTool/NarrativeMemoryUpdateTool/
+                    // UserImpressionUpdateTool 的 execute() 内能通过
+                    // currentSpeakerContext() 读到"owner 本人 vs owner 正在
+                    // 冒充第三方"，避免冒充产生的记忆被当成正常互动写入/覆盖。
+                    // 与 withVaultContext 是两个独立的 CoroutineContext.Element，
+                    // 嵌套顺序不影响各自读取。
+                    withSpeakerContext(speakerContext) {
                     withVaultContext(VaultCallContext(getCurrentCharacterId(), VaultScope.PERSONAL)) {
                     ToolCallInterceptor.streamWithTools(
                         provider        = provider,
@@ -456,39 +553,28 @@ class ChatMessageOrchestrator(
                     ).collect { event ->
                         when (event) {
                             is StreamEvent.TextDelta -> {
+                                // Task-2（一次性合并输出）：不再逐 delta 更新 _streamingContent /
+                                // _streamingPsych。改为内部累积 fullReply，等整轮生成（文字 +
+                                // 工具调用）全部完成后，在循环结束处一次性组装最终消息落库渲染。
+                                //
+                                // 原实现每个 token 都调 stripTagsForDisplayWithPsych 并更新两个
+                                // StateFlow → StreamingMessageItem 重组 → 打字机效果。这导致
+                                // "文字先流式出现 → 工具执行完成话术 → 文件卡片最后跳出来"
+                                // 的三段式闪烁（用户描述为"一闪一闪的""跟闪屏一样"）。
+                                //
+                                // tag 剥离逻辑仍在循环结束后的 cleanReply 流程中执行（见下方
+                                // stripThinkingTag / stripPsychText / stripMoodTag），不依赖此处
+                                // 的流式剥离结果，删除此处不影响最终消息内容。
+                                //
+                                // 期间用 streamingHint = "正在生成回复…" 提示用户（在 collect
+                                // 开始前设置，见下方），StreamingMessageItem 显示 "…" 占位符
+                                // + ToolHintRow 提示行，消除空窗感。
                                 fullReply.append(event.text)
-                                // Fix-MoodLeak（zaijian）：display-only 剥离，fullReply 保持原样供后续解析。
-                                // [mood:xxx] 固定出现在末尾；流式过程中标签可能还没打完，
-                                // stripPartialMoodTagForDisplay 同时兜住"完整标签"和"半截标签"两种情况。
-                                //
-                                // H1 修复：原实现每个 token 都调 stripPartialMoodTagForDisplay，
-                                // 内部跑两次正则（MOOD_TAG_REGEX + PARTIAL_MOOD_TAG_REGEX），
-                                // 且每次都先 fullReply.toString() 创建新 String，整个流式过程累计 O(n²) 复杂度。
-                                //
-                                // 优化策略：绝大多数 token 正文中不含 '[' 字符，直接输出。
-                                // 只有末尾出现 '[' 时（可能是 mood 标签前缀），才触发完整的剥离逻辑，
-                                // 将正则调用频率从"每个 token"降低到"接近末尾的少数 token"。
-                                //
-                                // Fix-ThinkingLeak（zaijian）：新增 [thinking:...] 标签剥离，接入同一条
-                                // display-only 管道。与 mood 不同，thinking 标签可能出现在正文任意位置
-                                // （说完一段台词又插入一段思考，再继续说台词），不是只在末尾出现一次，
-                                // 所以 stripTagsForDisplay 内部会先对全文做一次"剥离所有已闭合 thinking 标签"
-                                // 的 replace，这一步在 thinking 标签出现后的每个 token 上都会重新扫描全文，
-                                // 相当于放弃了 H1 修复追求的"绝大多数 token 零正则"最优路径——但仅限于
-                                // 单条消息内确实包含 thinking 标签的情况，消息长度通常在几千字符量级，
-                                // 实测不构成可感知卡顿，暂不做更复杂的增量解析。
-                                // Fix-StreamingPsychLeak：与圆桌路径同一套修复——流式阶段同步剥离
-                                // 圆括号心理描写，避免用户在角色打字过程中持续看到裸露的圆括号原文，
-                                // 说完瞬间才"跳变"成卡片。改用 stripTagsForDisplayWithPsych，
-                                // 每个 token 都会多跑一次圆括号正则（圆括号不像 '[' 那样可以用
-                                // "全文是否含有该字符"做短路优化——中文正文本身就可能含"（"），
-                                // 但消息长度量级同 thinking 标签剥离，实测不构成可感知卡顿。
-                                val fullText = fullReply.toString()
-                                val (displayText, streamingPsych) = ChatTagParser.stripTagsForDisplayWithPsych(fullText)
-                                // P1-3 修复：streamingContent 不再写入 _uiState（此处的双写是高频路径，
-                                // 每个 token 触发一次 _uiState 更新 → ChatScreen 整屏重组）
-                                _streamingContent.value = displayText
-                                _streamingPsych.value = streamingPsych
+                                // Fix-StreamThinking（输出节奏：思考先出，正文+文件收尾一起发）：
+                                // 思考内容不在"一次性合并"范围内——增量解析 [thinking:...]
+                                // （含正在输出、尚未闭合的半截），实时推给流式气泡的
+                                // ThoughtCard 展示；正文与文件卡片仍等收尾一次性提交。
+                                _streamingThinking.value = extractStreamingThinking(fullReply)
                             }
                             is StreamEvent.ToolStarted -> {
                                 // 心迹（Window B 2.2.3）：记录工具调用"已发起"事件，sceneType=chat。
@@ -517,7 +603,9 @@ class ChatMessageOrchestrator(
                                 }
                             }
                             is StreamEvent.ToolDone -> {
-                                _uiState.update { it.copy(streamingHint = null) }
+                                // Task-2：工具完成后恢复通用提示而非清空——避免 ToolDone
+                                // 到流式结束之间的空窗期用户看到无提示的 "…" 以为卡住了
+                                _uiState.update { it.copy(streamingHint = "正在生成回复…") }
                                 // 心迹（Window B 2.2.3）：记录工具调用终态事件，sceneType=chat。
                                 // outcome 取 success/fail；outputRaw 落 content 摘要（Repository 内截断≤300字）。
                                 try {
@@ -578,6 +666,7 @@ class ChatMessageOrchestrator(
                         }
                     }
                     } // withVaultContext
+                    } // withSpeakerContext
                 } catch (e: CancellationException) {
                     // B-1 修复：CancellationException 必须 rethrow，保证结构化并发正确传播。
                     // replyJob?.cancel() 触发取消时协程库通过此异常信号通知协程停止，
@@ -620,7 +709,14 @@ class ChatMessageOrchestrator(
                     presenceEngine.updateMoodFromReply(getCurrentCharacterId(), parsedMood)
                     _uiState.update { it.copy(currentMood = parsedMood) }
                 }
-                if (cleanReply.isNotBlank()) {
+                // Fix-BlankReplyFilesLost（文件生成成功但文件卡片丢失 根因修复）：
+                // 原条件只认 cleanReply.isNotBlank()——模型有时整轮只调工具、不写一字正文
+                // （或被标签剥离后恰好为空），此时生成的文件随整条消息被丢弃，
+                // 用户看到"文件已生成"的日志但对话里没有任何文件卡片。
+                // 放宽为"有正文 或 有文件 或 有表格"任一即落库；content 为空串时
+                // UI 只渲染文件/表格卡片，不画文字气泡（MessageBubble 的 showBubble 判断
+                // 本身就这么处理，无渲染风险）。
+                if (cleanReply.isNotBlank() || pendingExportedFiles.isNotEmpty() || pendingTablePayloadJson != null) {
                     val assistantMsg = MessageEntity(
                         id = replyMsgId,
                         characterId = getCurrentCharacterId(),
@@ -678,13 +774,26 @@ class ChatMessageOrchestrator(
                     // 打字机占位气泡在同一次 _uiState.update 里"一步到位"地互相替换，
                     // 不再有两者同时可见的中间态。finally 块保留 isTyping=false 兜底
                     // （cleanReply 为空等未进入本分支的路径仍需它收尾，重复赋值是幂等的）。
-                    _uiState.update { it.copy(messages = latestMessages, isTyping = false) }
+                    _uiState.update { it.copy(messages = latestMessages, isTyping = false, streamingHint = null) }
                     _streamingContent.value = null
                     _streamingPsych.value = null
+                    _streamingThinking.value = null
                     // P1-10-3 修复：原先两次 applyDelta（onConversationEnd 基础 delta +
                     // HeuristicRelTracker 语义 delta）会产生两条 RELATIONSHIP_CHANGED 事件，
                     // 导致同一轮对话的摩擦系数被重复写入。改为将两组 delta 合并后一次性提交。
                     // ── A-7：单聊场景关系数值随对话积累增长（原 onConversationEnd 逻辑内联）──
+                    //
+                    // 场景一记忆隔离修复·关系值层补漏：446 行已判定的 speakerContext
+                    // 此前只用于记忆写入侧（机制一~四），关系值这条独立链路
+                    // （HeuristicRelTracker.infer 纯文本分析，不读 speakerContext）
+                    // 完全没被覆盖——owner 冒充角色B跟角色A暧昧对话时，"user"对该角色的
+                    // 关系值仍会正常涨跌，是与记忆污染同一根因、但发生在不同层的漏洞。
+                    // NON_OWNER 时整段跳过（不计算 delta、不调用 applyDelta），
+                    // 与 memory_write 的"写入但打标记"不同——这里没有等价的"打标记
+                    // 但不参与数值"中间态，关系值只有"变"与"不变"两种状态，只能跳过。
+                    if (speakerContext.isNonOwner) {
+                        ZLog.w("ChatViewModel", "疑似非 owner 本人对话，本轮跳过关系值计算（不影响记忆/消息落库）")
+                    } else {
                     val msgCountForRelEngine = latestMessages.size
                     val baseDelta = com.zaijian.zhoumuyun.domain.RelationshipDelta(
                         affection = if (msgCountForRelEngine >= 4) 1 else 0,
@@ -714,6 +823,7 @@ class ChatMessageOrchestrator(
                     } catch (e: Throwable) {
                         ZLog.w("ChatViewModel", "applyDelta 失败（不影响主流程）", e)
                     }
+                    } // speakerContext.isNonOwner 跳过分支
 
                     // 记忆写入收窄为 Agent 主动工具调用（memory_write /
                     // narrative_memory_update 等），不再由此自动提取候选。
@@ -740,6 +850,11 @@ class ChatMessageOrchestrator(
                 // 确保即使回复中途异常也不会丢失本次 recap 机会。
                 if (unreportedJob != null) {
                     workflowRepo.markReported(unreportedJob.id)
+                }
+                // 灵活自动化编排（验收缺口修复，§11.10）：链条播报同款延迟标记已读，
+                // 与上方 workflowRecapPatch 同一时机、同一理由。
+                if (unreportedChainRun != null) {
+                    chainRunRepository.markReported(unreportedChainRun.id)
                 }
 
                 // P1-10-1 修复：把所有后置 LLM 分析（评分卡、受孕窗口判定、D5 升阶、D3 didAsk）
@@ -882,12 +997,66 @@ class ChatMessageOrchestrator(
                 // 说明确实没有更新的 job 顶替过自己，重置是安全的；否则跳过，
                 // 交给顶替自己的那个新 job 的 finally 负责收尾。
                 if (getReplyJob() === currentCoroutineContext()[Job]) {
-                    _uiState.update { it.copy(isTyping = false) }
+                    _uiState.update { it.copy(isTyping = false, streamingHint = null) }
                     _streamingContent.value = null
                     _streamingPsych.value = null
+                    _streamingThinking.value = null
                 }
             }
         })
+    }
+
+    /**
+     * Fix-StreamThinking：从流式累积文本中增量提取思考内容。
+     *
+     * 覆盖两种形态：
+     *   1) 已闭合的 [thinking:...] 标签（可能多段，按出现顺序拼接）；
+     *   2) 末尾正在输出、尚未闭合的半截 thinking 内容（流式中途标签必然开在末尾，
+     *      模型闭合前不会产出标签之后的新内容，见 ChatTagParser 同款"锚定末尾"策略）。
+     *
+     * 性能：不含 "[thinking" 前缀时直接短路返回，避免每个 token 都跑正则扫描
+     * 整条累积文本；只有确实出现思考标签的回复才付出正则成本。
+     */
+    private fun extractStreamingThinking(reply: CharSequence): String? {
+        val text = reply.toString()
+        if (!text.contains("[thinking")) return null
+        val closedRegex = Regex("""\[thinking[:：]\s*([^\[\]]*?)\s*]""", RegexOption.DOT_MATCHES_ALL)
+        val matches = closedRegex.findAll(text).toList()
+        val parts = matches.map { it.groupValues[1].trim() }.filter { it.isNotEmpty() }.toMutableList()
+        // 半截：最后一个闭合标签之后（无闭合标签则为全文）存在未闭合的 "[thinking:" 开头
+        val tailStart = (matches.lastOrNull()?.range?.last ?: -1) + 1
+        if (tailStart < text.length) {
+            val tail = text.substring(tailStart)
+            val openIdx = tail.lastIndexOf("[thinking")
+            if (openIdx >= 0) {
+                val afterOpen = tail.substring(openIdx + "[thinking".length)
+                if (afterOpen.startsWith(":") || afterOpen.startsWith("：")) {
+                    val partial = afterOpen.drop(1)
+                    // 半截里若已出现闭合符，说明该段其实已闭合（应已被上面正则覆盖），忽略
+                    if (!partial.contains(']') && partial.isNotBlank()) {
+                        parts.add(partial.trim())
+                    }
+                }
+            }
+        }
+        return parts.joinToString("\n\n").ifBlank { null }
+    }
+
+    /**
+     * 角色忠诚锁定·机制一辅助：解析 JSON 数组字符串为 List<String>。
+     * 与 PromptOrchestrator.parseJsonArrayOrNull 同款写法，供 IdentityGuard 判定时
+     * 从 CharacterIdentityEntity.ownerAliasesJson / characterCallsOwnerJson 构造 OwnerIdentityProfile。
+     */
+    private fun parseJsonArrayOrNull(json: String?): List<String>? {
+        if (json.isNullOrBlank()) return null
+        return try {
+            val arr = org.json.JSONArray(json)
+            (0 until arr.length()).mapNotNull { idx ->
+                arr.optString(idx).takeIf { it.isNotEmpty() }
+            }
+        } catch (_: Throwable) {
+            null
+        }
     }
 }
 

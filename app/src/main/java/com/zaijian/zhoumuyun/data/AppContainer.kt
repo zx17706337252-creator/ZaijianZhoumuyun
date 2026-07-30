@@ -13,6 +13,7 @@ import com.zaijian.zhoumuyun.data.manager.UserConsentIntentJudge
 import com.zaijian.zhoumuyun.data.memory.MemoryEngine
 import com.zaijian.zhoumuyun.data.provider.ProviderManager
 import com.zaijian.zhoumuyun.data.repository.AgentPlanRepository
+import com.zaijian.zhoumuyun.data.repository.AgentStoreRepository
 import com.zaijian.zhoumuyun.data.repository.CharacterGoalRepository
 import com.zaijian.zhoumuyun.data.repository.CharacterStateRepository
 import com.zaijian.zhoumuyun.data.repository.BriefingRepository
@@ -28,6 +29,11 @@ import com.zaijian.zhoumuyun.data.repository.MenstrualCycleRepository
 import com.zaijian.zhoumuyun.data.repository.MessageRepository
 import com.zaijian.zhoumuyun.data.repository.NotificationRepository
 import com.zaijian.zhoumuyun.data.repository.PregnancyRepository
+import com.zaijian.zhoumuyun.data.repository.PrivateChatPairRepository
+import com.zaijian.zhoumuyun.data.repository.PrivateChatMessageRepository
+import com.zaijian.zhoumuyun.data.repository.PrivateChatSessionRepository
+import com.zaijian.zhoumuyun.data.privatechat.PrivateChatEngine
+import com.zaijian.zhoumuyun.data.privatechat.PrivateChatExporter
 import com.zaijian.zhoumuyun.data.repository.ProjectRepository
 import com.zaijian.zhoumuyun.data.repository.RelationshipReadRepository
 import com.zaijian.zhoumuyun.data.repository.RoundtableMessageRepository
@@ -44,6 +50,7 @@ import com.zaijian.zhoumuyun.domain.ProactiveMessageNotifier
 import com.zaijian.zhoumuyun.domain.RelationshipEngine
 import com.zaijian.zhoumuyun.domain.SpecialtyEvolutionEngine
 import com.zaijian.zhoumuyun.util.ZLog
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -460,6 +467,111 @@ class AppContainer private constructor(context: Context) {
     // 不受影响，维持既定的 Domain 层持有 DAO 构造依赖的模式。
     val competitionRoundRepo: CompetitionRoundRepository =
         CompetitionRoundRepository(db.competitionRoundDao(), db.competitionEntryDao())
+
+    // ── 角色间私聊（方案_角色间私聊_v2-5）──────────────────────────
+    // 三张独立表的 Repository，与 RoundtableMessageRepository 同款薄封装模式。
+    val privateChatPairRepo: PrivateChatPairRepository =
+        PrivateChatPairRepository(db.privateChatPairDao())
+    val privateChatMessageRepo: PrivateChatMessageRepository =
+        PrivateChatMessageRepository(db.privateChatMessageDao())
+    val privateChatSessionRepo: PrivateChatSessionRepository =
+        PrivateChatSessionRepository(db.privateChatSessionDao())
+
+    // Agent 结构化存储（方案_Agent结构化存储_最终版）：与上方私聊三 repo 同款薄封装，
+    // 容器唯一持有源，供 ZaijianApp 静态占位注册与 ChatToolRegistrar 角色覆盖注册两处引用。
+    val agentStoreRepo: AgentStoreRepository =
+        AgentStoreRepository(db.agentStoreDao())
+
+    // ── 灵活自动化编排（方案_灵活自动化编排_改造设计方案_v1-5）─────────
+    //
+    // §6 ChainTriggerMatcher + EventBus：事件驱动的自动化链条系统。
+    // chainRunRepository 是链条运行仓库，封装 ChainRunDao/ChainDefinitionDao/PendingEventDao。
+    // eventPublisher 将"写 PendingEventEntity + EventBus.emit()"两步合一（§11.1），
+    // 供业务代码一行调用完成事件发布。
+    // chainTriggerMatcher 在 startChainSystem() 中构造并启动订阅（§6.1：必须挂在
+    // appScope 上，不能挂在 ChatViewModel.viewModelScope 上）。
+    val chainRunRepository: com.zaijian.zhoumuyun.data.repository.ChainRunRepositoryImpl =
+        com.zaijian.zhoumuyun.data.repository.ChainRunRepositoryImpl(
+            chainRunDao = db.chainRunDao(),
+            chainDefinitionDao = db.chainDefinitionDao(),
+            pendingEventDao = db.pendingEventDao(),
+            context = appContext,
+        )
+
+    val eventPublisher: com.zaijian.zhoumuyun.data.agent.EventPublisher =
+        com.zaijian.zhoumuyun.data.agent.EventPublisher(chainRunRepository)
+
+    @Volatile var chainTriggerMatcher: com.zaijian.zhoumuyun.data.agent.ChainTriggerMatcher? = null
+        private set
+
+    /**
+     * §6.1 启动链条触发匹配器：在 App 级 [scope]（appScope）上常驻订阅 EventBus.events。
+     *
+     * **必须在 ZaijianApp.onCreate() 里 appScope 创建之后调用**——AppContainer.init()
+     * 执行时 appScope 尚未创建，无法在此处直接启动订阅。
+     *
+     * 同时执行 §11.1 事件落盘兜底：查所有 processed=false 的 PendingEventEntity，
+     * 逐条重放给 ChainTriggerMatcher，成功后标记 processed=true。
+     *
+     * ChainEngineDeps 当前为 ProductionChainEngineDeps（§11.8 初始版本）：
+     * scheduleResume 已实现（协程延迟），runAction/runCheckTool 待接入 WorkflowEngine。
+     */
+    fun startChainSystem(scope: kotlinx.coroutines.CoroutineScope) {
+        if (chainTriggerMatcher != null) return  // 幂等，防止重复启动
+
+        val engine = com.zaijian.zhoumuyun.data.agent.ChainEngine
+        val deps = com.zaijian.zhoumuyun.data.agent.ProductionChainEngineDeps(
+            scope = scope,
+            chainEngine = engine,
+            repository = chainRunRepository,
+            context = appContext,
+        )
+        val matcher = com.zaijian.zhoumuyun.data.agent.ChainTriggerMatcher(
+            repository = chainRunRepository,
+            chainEngine = engine,
+            deps = deps,
+        )
+        matcher.start(scope)
+        chainTriggerMatcher = matcher
+
+        // §11.1 事件落盘兜底：App 重启时重放未处理事件
+        scope.launch {
+            try {
+                matcher.processPendingEvents()
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                ZLog.e("AppContainer", "processPendingEvents 失败", e)
+            }
+        }
+
+        ZLog.d("AppContainer", "链条触发匹配器已启动")
+    }
+
+    // 私聊核心引擎：构造时直接依赖 daughterCharacterRepo（v2.5 两层硬编码查找，
+    // 不引入 CharacterResolver 抽象层）。providerFn 用 () -> LLMProvider 延迟
+    // 获取当前活跃 Provider（与 fertileWindowConsentJudge 同款写法），避免
+    // AppContainer 初始化时 Provider 尚未装配的问题。
+    val privateChatEngine: PrivateChatEngine = PrivateChatEngine(
+        pairRepo             = privateChatPairRepo,
+        messageRepo          = privateChatMessageRepo,
+        sessionRepo          = privateChatSessionRepo,
+        sessionAndPairDao    = db.privateChatSessionAndPairDao(),
+        memoryRepo           = memoryRepo,
+        identityRepo         = identityRepo,
+        characterStateRepo   = characterStateRepo,
+        daughterCharacterRepo = daughterCharacterRepo,
+        providerFn           = { ProviderManager.instance.activeProvider },
+        appContext            = appContext,
+    )
+
+    // 私聊导出模块：构造时直接依赖 daughterCharacterRepo，与 PrivateChatEngine
+    // 各自持有一份（v2.5 设计上刻意接受的重复，不共享）。
+    val privateChatExporter: PrivateChatExporter = PrivateChatExporter(
+        messageRepo          = privateChatMessageRepo,
+        sessionRepo          = privateChatSessionRepo,
+        daughterCharacterRepo = daughterCharacterRepo,
+    )
 
     // ── 阶段2 S-2：可变但受控的容器扩展 ──────────────────────────────
     //

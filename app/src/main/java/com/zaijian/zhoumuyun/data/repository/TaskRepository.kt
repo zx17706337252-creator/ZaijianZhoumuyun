@@ -1,5 +1,7 @@
 package com.zaijian.zhoumuyun.data.repository
 
+import com.zaijian.zhoumuyun.data.agent.AppEvent
+import com.zaijian.zhoumuyun.data.agent.EventPublisher
 import com.zaijian.zhoumuyun.data.db.AppDatabase
 import com.zaijian.zhoumuyun.data.db.dao.TaskDao
 import com.zaijian.zhoumuyun.data.db.dao.WorldEventDao
@@ -184,6 +186,18 @@ class TaskRepository(
             resultSummary = resultSummary,
             importance  = 3,
         )
+
+        // §6 + §11.1 事件埋点：任务完成事件，供 ChainTriggerMatcher 匹配事件触发型链条。
+        // 任务结果已落库（appendTaskEvent 之后），走 publishPersistent 落盘兜底。
+        EventPublisher.publishPersistent(AppEvent(
+            name = "task_completed",
+            characterId = task.characterId,
+            payload = mapOf(
+                "taskId" to id,
+                "title" to task.title,
+                "resultSummary" to resultSummary,
+            ),
+        ))
     }
 
     // ── 失败任务 ─────────────────────────────────────────────

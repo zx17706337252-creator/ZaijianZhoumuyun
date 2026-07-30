@@ -214,6 +214,12 @@ sealed class AppRoute(val route: String) {
     }
     /** v1.48：统一文件预览编辑页。encodedPath 为 URL 编码的文件路径，
      *  或 "memory" 表示暂存模式（配合 tempKey 查询参数传内存内容）。 */
+    /** 角色间私聊管理面板 */
+    object PrivateChat : AppRoute("private_chat")
+    /** 角色间私聊详情页 */
+    object PrivateChatDetail : AppRoute("private_chat_detail/{pairId}") {
+        fun createRoute(pairId: String) = "private_chat_detail/$pairId"
+    }
     object FilePreview : AppRoute("file_preview/{encodedPath}?tempKey={tempKey}") {
         fun createRoute(filePath: String): String {
             val encoded = android.net.Uri.encode(filePath)
@@ -255,6 +261,7 @@ private val detailRoutes = listOf(
     "judge_profile/",
     "personal_schedule/",
     "file_preview/",
+    "private_chat_detail/",
     "global_schedule",
     "notifications",
     // 注意：learning_goals/ 已在 Phase 27 升级为底部 Tab，
@@ -726,6 +733,12 @@ fun AppNavigation(
                     onNavigateToVault = { charId ->
                         navController.navigateSingle(AppRoute.FileVault.createRoute(charId))
                     },
+                    // 角色间私聊入口：跳转到私聊管理面板（PrivateChatScreen）。
+                    // AppRoute.PrivateChat 路由不带参数（全局配对管理面板，见第218行），
+                    // 与 onNavigateToVault/onNavigateToSchedule 不同，这里不需要 createRoute。
+                    onNavigateToPrivateChat = {
+                        navController.navigateSingle(AppRoute.PrivateChat.route)
+                    },
                     // v1.48：跳转到统一文件预览编辑页
                     onNavigateToFilePreview = { filePath ->
                         navController.navigateSingle(AppRoute.FilePreview.createRoute(filePath))
@@ -1004,6 +1017,31 @@ fun AppNavigation(
                 PersonalScheduleScreen(
                     characterId = charId,
                     onBack      = { navController.popBackStack() },
+                )
+            }
+
+            // ── PrivateChat（角色间私聊管理面板）──────────────────
+            composable(route = AppRoute.PrivateChat.route) {
+                PrivateChatScreen(
+                    onBack = { navController.popBackStack() },
+                    onOpenPair = { pairId ->
+                        navController.navigate(AppRoute.PrivateChatDetail.createRoute(pairId))
+                    },
+                )
+            }
+
+            // ── PrivateChatDetail（角色对详情页）────────────────────
+            composable(
+                route     = AppRoute.PrivateChatDetail.route,
+                arguments = listOf(navArgument("pairId") { this.type = NavType.StringType }),
+            ) { backStackEntry ->
+                val pairId = backStackEntry.arguments?.getString("pairId") ?: run {
+                    RouteParamError("pairId")
+                    return@composable
+                }
+                PrivateChatDetailScreen(
+                    pairId = pairId,
+                    onBack = { navController.popBackStack() },
                 )
             }
         }

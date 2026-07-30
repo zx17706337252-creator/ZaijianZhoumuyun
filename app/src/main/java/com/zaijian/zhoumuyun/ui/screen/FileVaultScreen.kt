@@ -102,6 +102,30 @@ fun FileVaultScreen(
                 title    = "文件库",
                 onBack   = onBack,
                 headerBg = colors.bgBase,
+                actions  = {
+                    // 手动补建历史文件索引（方案 4.2 节）：手动触发，不做自动后台任务；
+                    // 扫描中禁用按钮并换成小号进度指示，避免连点触发重复扫描。
+                    IconButton(
+                        onClick  = { viewModel.reindexAll() },
+                        enabled  = !uiState.isReindexing,
+                        modifier = Modifier.size(36.dp).minimumInteractiveComponentSize(),
+                    ) {
+                        if (uiState.isReindexing) {
+                            CircularProgressIndicator(
+                                modifier    = Modifier.size(18.dp),
+                                color       = colors.accent,
+                                strokeWidth = 2.dp,
+                            )
+                        } else {
+                            Icon(
+                                imageVector        = AppIcons.Refresh,
+                                contentDescription = "补建索引",
+                                tint               = colors.textPrimary,
+                                modifier           = Modifier.size(20.dp),
+                            )
+                        }
+                    }
+                },
             )
 
             Spacer(Modifier.height(Spacing.sm))

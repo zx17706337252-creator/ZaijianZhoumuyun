@@ -25,6 +25,7 @@ import com.zaijian.zhoumuyun.data.provider.chatSyncWithRetry
 import com.zaijian.zhoumuyun.data.repository.AgentPlanRepository
 import com.zaijian.zhoumuyun.data.repository.LearningGoalRepository
 import com.zaijian.zhoumuyun.data.repository.MemoryRepository
+import com.zaijian.zhoumuyun.domain.currentSpeakerContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.util.UUID
@@ -206,6 +207,15 @@ class MemoryWriteTool(
         val now = System.currentTimeMillis()
         val memoryId = UUID.randomUUID().toString()
 
+        // 场景一记忆隔离修复（方案 v1.5 第 4.2 节 isNarrativeOnly，此前建了列但
+        // 从未有代码实际写入 true）：读取本轮协程绑定的 speakerContext——
+        // NON_OWNER 表示 owner 本人正在单聊窗口里冒充第三方（角色 B）撩本角色，
+        // 这轮对话产生的记忆不该被当成"owner 与本角色的正常互动"一样对待。
+        // 不阻断写入（工具调用失败会让 LLM 困惑/重试），而是打标记，交给
+        // MemoryEntity.isNarrativeOnly 文档里说的"读取侧过滤层"处理——与
+        // messages.speakerContext 落库时的处理方式（打标记而非拒绝）保持一致。
+        val isNarrativeOnly = currentSpeakerContext().isNonOwner
+
         try {
             // 写入主表
             val entity = MemoryEntity(
@@ -222,6 +232,7 @@ class MemoryWriteTool(
                 lastAccessedAt = now,
                 scope          = if (isGroup) MemoryScope.GROUP.name else MemoryScope.PERSONAL.name,
                 roundtableId   = roundtableId,
+                isNarrativeOnly = isNarrativeOnly,
             )
             // saveOrMerge：先找同角色同关键词的相似记忆，有则合并，无则新建。
             // FTS 同步由 MemoryRepository.save() / update() 内部处理，无需手动维护。
@@ -230,7 +241,8 @@ class MemoryWriteTool(
             ToolResult(
                 toolName = name,
                 success  = true,
-                content  = "✅ 已记录：「${truncatedContent.take(30)}…」（${domain.name}，重要度 $importance）",
+                content  = "✅ 已记录：「${truncatedContent.take(30)}…」（${domain.name}，重要度 $importance）" +
+                    if (isNarrativeOnly) "（标记为叙事记忆，不计入长期归纳）" else "",
                 userHint = "正在写入记忆…",
             )
         } catch (e: kotlinx.coroutines.CancellationException) {
