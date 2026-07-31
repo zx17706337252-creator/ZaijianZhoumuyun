@@ -6,12 +6,12 @@ plugins {
 
 android {
     namespace = "com.zaijian.zhoumuyun"
-    compileSdk = 34
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "com.zaijian.zhoumuyun"
         minSdk = 26
-        targetSdk = 34
+        targetSdk = 35
         versionCode = 148
         versionName = "1.4.8"
 
@@ -48,7 +48,7 @@ android {
     }
 
     composeOptions {
-        kotlinCompilerExtensionVersion = "1.5.8"
+        kotlinCompilerExtensionVersion = "1.5.11"
     }
 
     packaging {
