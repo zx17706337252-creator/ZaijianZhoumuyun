@@ -2,13 +2,6 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("com.google.devtools.ksp")
-    // A13-1 修复：Firebase 接入——google-services 插件负责读取 google-services.json，
-    // 在编译期将 api_key/project_id 等配置注入到 AndroidManifest 的 <meta-data> 中，
-    // 使 FirebaseApp 在运行时自动初始化。缺少此插件 → FirebaseApp 永不初始化 →
-    // token 永不生成 → onNewToken 永不被回调 → 零条推送送达。
-    // 注意：还需要在 app/ 目录下放置从 Firebase 控制台下载的 google-services.json
-    // （按 applicationId=com.zaijian.zhoumuyun 注册），此文件无法由代码侧生成。
-    id("com.google.gms.google-services")
 }
 
 android {
