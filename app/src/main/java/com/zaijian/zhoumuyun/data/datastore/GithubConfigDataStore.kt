@@ -76,7 +76,9 @@ class GithubConfigDataStore(context: Context) {
     // 底层改为一次性读取 + MutableStateFlow，而非真正响应式的 DataStore.data。
     // 说明：GithubConfig 目前仅在工具调用前 getConfig() 拉取一次，无长期 collect 场景，
     // 该妥协不影响现有调用方行为（详见调用点核查：无处订阅 configFlow 做持续渲染）。
-    val configFlow: Flow<GithubConfig>
+    // A14-1 修复：全仓核查确认除同文件 getConfig() 的 .first() 外无任何外部 .collect
+    // 订阅，改为 private 防止外部误用。getConfig() 是同类内部方法，访问 private 不受影响。
+    private val configFlow: Flow<GithubConfig>
         get() {
             val current = GithubConfig(
                 owner = prefs.getString(KEY_OWNER, null)?.ifBlank { DEFAULT_OWNER } ?: DEFAULT_OWNER,

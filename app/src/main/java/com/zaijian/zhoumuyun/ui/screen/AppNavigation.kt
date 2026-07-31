@@ -220,6 +220,9 @@ sealed class AppRoute(val route: String) {
     object PrivateChatDetail : AppRoute("private_chat_detail/{pairId}") {
         fun createRoute(pairId: String) = "private_chat_detail/$pairId"
     }
+    /** 角色间关系头衔管理页（方案_角色间关系头衔系统_实施方案 三节）。
+     *  无参数，风格对齐 PrivateChat——页面内自带角色选择器，不需要路由传参。 */
+    object CharacterTitleRelations : AppRoute("character_title_relations")
     object FilePreview : AppRoute("file_preview/{encodedPath}?tempKey={tempKey}") {
         fun createRoute(filePath: String): String {
             val encoded = android.net.Uri.encode(filePath)
@@ -677,6 +680,12 @@ fun AppNavigation(
                     onNavigateToCharacter = { id ->
                         navController.navigateSingle(AppRoute.CharacterDetail.createRoute(id))
                     },
+                    // 角色关系头衔管理页入口：AppRoute.CharacterTitleRelations 路由不带参数
+                    // （无参管理面板，见路由定义处），与 onNavigateToCharacter 不同，
+                    // 这里不需要 createRoute，比照 ChatScreen 里 onNavigateToPrivateChat 的写法。
+                    onNavigateToTitleRelations = {
+                        navController.navigateSingle(AppRoute.CharacterTitleRelations.route)
+                    },
                 )
             }
 
@@ -788,10 +797,6 @@ fun AppNavigation(
                     // 1.8：文件库入口
                     onNavigateToFileVault = { charId ->
                         navController.navigateSingle(AppRoute.FileVault.createRoute(charId))
-                    },
-                    // U1 修复：角色详情 → 专长页 → 竞赛页完整链路
-                    onNavigateToCompetition = { domain ->
-                        navController.navigateSingle(AppRoute.Competition.createRoute(domain))
                     },
                     // 精修方案 v1.3 第5.1节：「关联项目」WrapChipGroup 点击跳转项目详情页
                     onNavigateToProjectDetail = { projectId ->
@@ -1041,6 +1046,13 @@ fun AppNavigation(
                 }
                 PrivateChatDetailScreen(
                     pairId = pairId,
+                    onBack = { navController.popBackStack() },
+                )
+            }
+
+            // ── CharacterTitleRelations（角色间关系头衔管理页）──────
+            composable(route = AppRoute.CharacterTitleRelations.route) {
+                CharacterTitleRelationScreen(
                     onBack = { navController.popBackStack() },
                 )
             }

@@ -1,6 +1,5 @@
 package com.zaijian.zhoumuyun.data.agent
 
-import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -41,8 +40,6 @@ class ReminderReceiver : BroadcastReceiver() {
         val reqId       = intent.getIntExtra("reminder_id", 0)
         val characterId = intent.getIntExtra("character_id", -1)
 
-        val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-
         // D-2 fix: 渠道已由 ZaijianApp.setupNotificationChannels() 在 onCreate() 统一创建，此处无需重复注册
 
         val builder = NotificationCompat.Builder(context, CHANNEL_ID)
@@ -70,7 +67,10 @@ class ReminderReceiver : BroadcastReceiver() {
             builder.addAction(android.R.drawable.ic_dialog_info, "查看日程", schedulePendingIntent)
         }
 
-        nm.notify(reqId, builder.build())
+        // C类审查 #47 修复：改用统一的权限检查入口
+        com.zaijian.zhoumuyun.util.NotificationPermissionUtils.safeNotify(
+            context, reqId, builder.build(), "ReminderReceiver",
+        )
     }
 
     companion object {

@@ -18,13 +18,34 @@ interface MessageDao {
     suspend fun getByCharacter(characterId: Int, limit: Int = 100): List<MessageEntity>
 
     /**
+     * C8 #43 收尾：喂给 LLM 的对话历史专用查询，排除 speakerContext=NON_OWNER
+     * 的消息（owner 在本角色窗口假扮第三方期间产生的对话）——避免角色把假扮期间
+     * 说的话当成"主人本人说的"带入后续正常对话联想。与 [getByCharacter] 的区别
+     * 仅多一层 WHERE，UI 展示（ChatSessionDelegate.loadMessages）不走这个方法，
+     * 用户自己发的消息该原样可见，不受此过滤影响。
+     */
+    @Query("SELECT * FROM messages WHERE characterId = :characterId AND speakerContext != 'NON_OWNER' ORDER BY createdAt ASC LIMIT :limit")
+    suspend fun getByCharacterForContext(characterId: Int, limit: Int = 100): List<MessageEntity>
+
+    /**
+     * C8 #43 写入侧收尾：消息落库时 speakerContext 判定还没算出来（假扮识别在
+     * 落库之后才跑），先按默认值 OWNER_DIRECT 落库，判定结果出来后回写这一条。
+     * 只在 NON_OWNER 时才需要调用（OWNER_DIRECT 是默认值，不用额外写）。
+     */
+    @Query("UPDATE messages SET speakerContext = :speakerContext WHERE id = :id")
+    suspend fun updateSpeakerContext(id: String, speakerContext: String)
+
+    /**
      * 获取指定角色最近 [limit] 条消息，按时间倒序返回（最新的在最前）。
      * 与 [getByCharacter] 的区别：后者是 ASC + LIMIT，消息数超过 limit 时拿到的
      * 是最早的记录而非最近的；此方法专门用于"只关心最近聊了什么"的场景
      * （如主动消息 AI 生成需要参考近期话题），调用方需要按时间顺序展示时
      * 自行 reversed()。
+     *
+     * C8 #43：目前唯一调用方（PresenceEngine 主动消息生成）就是喂给 LLM 的场景，
+     * 直接加 speakerContext 过滤，不再另开一份方法。
      */
-    @Query("SELECT * FROM messages WHERE characterId = :characterId ORDER BY createdAt DESC LIMIT :limit")
+    @Query("SELECT * FROM messages WHERE characterId = :characterId AND speakerContext != 'NON_OWNER' ORDER BY createdAt DESC LIMIT :limit")
     suspend fun getRecentByCharacter(characterId: Int, limit: Int = 6): List<MessageEntity>
 
     /** 实时观察指定角色的消息列表（UI 层用） */

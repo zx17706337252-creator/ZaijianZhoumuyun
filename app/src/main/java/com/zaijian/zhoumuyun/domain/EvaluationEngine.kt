@@ -7,6 +7,7 @@ import com.zaijian.zhoumuyun.data.db.entity.EvaluationSessionEntity
 import com.zaijian.zhoumuyun.data.provider.LLMConfig
 import com.zaijian.zhoumuyun.data.provider.LLMMessage
 import com.zaijian.zhoumuyun.data.provider.LLMProvider
+import com.zaijian.zhoumuyun.util.ZLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -211,29 +212,23 @@ class EvaluationEngine(
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Throwable) {
-            // 解析失败时写入兜底分（避免 Session 永久卡在 PENDING）
-            val fallbackScore   = 3.0f
-            val fallbackJson    = JSONObject().apply {
-                put("relevance", fallbackScore)
-                put("depth", fallbackScore)
-                put("style", fallbackScore)
-                put("overall", fallbackScore)
-            }.toString()
-            val fallbackReport  = buildReportText(
-                goalTitle  = goalTitle,
-                relevance  = fallbackScore,
-                depth      = fallbackScore,
-                style      = fallbackScore,
-                overall    = fallbackScore,
-                comment    = "评审结果解析异常，使用默认分",
-            )
-            evaluationSessionDao.markReviewed(
-                sessionId      = sessionId,
-                agentScore     = fallbackScore,
-                agentScoreJson = fallbackJson,
-                agentComment   = "评审结果解析异常",
-                reportText     = fallbackReport,
-            )
+            // C7-#22 修复：LLM 调用或 JSON 解析失败时不再调用 markReviewed 写入兜底假分。
+            // 原逻辑用固定 3.0 分伪装成真实评审结果落库（状态变为 REVIEWED），用户对着假报告
+            // 打分后，这个虚假 compositeScore 会被 DistillationEngine.getHighScoreByGoal
+            // 计入"高分 Session"统计，进而影响蒸馏出的角色人设规则——假评审污染了真实产出。
+            //
+            // 修复后 Session 保持 PENDING 而不进入 SCORED，从而不会被
+            // getHighScoreByGoal（按 status='SCORED' 过滤）纳入蒸馏统计，切断污染链路。
+            //
+            // 注意（不同于本文件其他地方可能给人的印象）：本项目目前没有对 PENDING
+            // Session 的重试或清理机制——EvaluationSessionDao.getOldestPending 全仓
+            // 零调用方，唯一调用点 ChatMessageOrchestrator 对每个 Session 只调用一次
+            // runAgentReview。也就是说这次失败的 Session 会真实地、永久地停在 PENDING，
+            // 用户看不到这次的评审报告卡片，也没有 UI 提示。这是当前约束下能做的最优选择
+            // ——两权相害取其轻：让这一次反馈静默消失，好过让假数据污染角色人设蒸馏结果。
+            // 若未来要恢复"用户仍能看到点什么"的体验，需要新增重试或失败态展示逻辑，
+            // 这超出本次最小修复范围。
+            ZLog.e("EvaluationEngine", "runAgentReview 评审失败，sessionId=$sessionId，Session 停留在 PENDING（无重试/清理机制）", e)
             false
         }
     }

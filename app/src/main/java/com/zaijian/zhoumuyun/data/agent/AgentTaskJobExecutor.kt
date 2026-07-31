@@ -131,8 +131,10 @@ object AgentTaskJobExecutor {
         // P1-10 修复（#6）：全量加载角色对话历史（getByCharacter），长期使用后可达
         // 数千条，headless 工单路径没有截断（ChatMessageOrchestrator 正常路径有）。
         // 添加 takeLast(20) 截断，只保留最近 20 条消息作为上下文。
+        // C8 #43：改用 getByCharacterForContext，与 ChatMessageOrchestrator 主路径
+        // 一致排除假扮期间（speakerContext=NON_OWNER）的消息。
         val MAX_HISTORY = 20
-        val history = messageRepo.getByCharacter(job.characterId).takeLast(MAX_HISTORY).mapNotNull { msg ->
+        val history = messageRepo.getByCharacterForContext(job.characterId).takeLast(MAX_HISTORY).mapNotNull { msg ->
             when (msg.role) {
                 "user", "assistant" -> LLMMessage(role = msg.role, content = msg.content)
                 "system" -> if (msg.content.startsWith("[AGENT_MSG:") ||

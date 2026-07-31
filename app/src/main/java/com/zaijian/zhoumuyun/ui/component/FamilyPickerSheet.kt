@@ -155,6 +155,17 @@ fun FamilyPickerSheet(
                         ?.config?.accentColor
                         ?: colors.accent
 
+                    // 问题38修复：家族链解析过程中有一代数据损坏被跳过时，
+                    // 提示用户当前列表可能不完整，而不是让用户误以为本来就这么短。
+                    if (state.incomplete) {
+                        Text(
+                            text = "部分角色数据加载失败，家族列表可能不完整",
+                            color = colors.accent,
+                            style = type.caption,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                        )
+                    }
+
                     // W5-007 修复：快速连击某一行会在 onDismiss() 真正关闭浮层前
                     // 触发多次 onSelectCharacter，可能导致导航栈多次跳转。用一个
                     // 浮层级别的 isProcessing 标记拦截：一旦有任意一行被选中，

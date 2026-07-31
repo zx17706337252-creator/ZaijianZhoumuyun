@@ -27,4 +27,8 @@ interface PrivateChatSessionDao {
 
     @Query("SELECT * FROM private_chat_sessions WHERE pairId = :pairId ORDER BY startedAt ASC")
     fun observeByPair(pairId: String): Flow<List<PrivateChatSessionEntity>>
+
+    // A10-5 修复：级联删除——按 pairId 删除该配对的所有会话
+    @Query("DELETE FROM private_chat_sessions WHERE pairId = :pairId")
+    suspend fun deleteByPairId(pairId: String)
 }

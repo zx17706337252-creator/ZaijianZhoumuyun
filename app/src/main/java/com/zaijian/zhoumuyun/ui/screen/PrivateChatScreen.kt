@@ -57,6 +57,7 @@ import com.zaijian.zhoumuyun.data.db.entity.PrivateChatPairEntity
 import com.zaijian.zhoumuyun.data.db.entity.PrivateChatSessionEntity
 import com.zaijian.zhoumuyun.data.model.DefaultCharacters
 import com.zaijian.zhoumuyun.ui.component.DetailTopBar
+import com.zaijian.zhoumuyun.ui.theme.Palette
 import com.zaijian.zhoumuyun.ui.theme.Spacing
 import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
 import com.zaijian.zhoumuyun.ui.viewmodel.PrivateChatViewModel
@@ -227,6 +228,12 @@ private fun PairRow(
 
     val nameA = rememberCharacterName(pair.characterIdA, viewModel)
     val nameB = rememberCharacterName(pair.characterIdB, viewModel)
+    // C8 #45：角色自主下线状态（方案 v1.5 6.4 节），此前只有写入路径没有 UI 展示/恢复入口
+    val isDisconnected = pair.characterDisconnectState ==
+        com.zaijian.zhoumuyun.data.privatechat.PrivateChatSessionStatus.DISCONNECTED_BY_CHARACTER.name
+
+    // A10-5 修复：删除配对二次确认 Dialog 状态
+    var showDeleteDialog by remember { mutableStateOf(false) }
 
     Card(
         modifier = Modifier
@@ -257,7 +264,83 @@ private fun PairRow(
                     onCheckedChange = { viewModel.toggleEnabled(pair.pairId, it) },
                 )
             }
+            if (isDisconnected) {
+                Spacer(Modifier.height(Spacing.sm))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(Palette.TaskFailed.copy(alpha = 0.08f))
+                        .padding(horizontal = Spacing.sm, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "角色已下线，暂不会再回复",
+                        style = type.caption,
+                        color = Palette.TaskFailed,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(
+                        onClick = { viewModel.resetDisconnect(pair.pairId) },
+                        colors = ButtonDefaults.textButtonColors(contentColor = Palette.TaskFailed),
+                    ) {
+                        Text("恢复", style = type.caption)
+                    }
+                }
+            }
+            // A10-5 修复：删除配对入口
+            Spacer(Modifier.height(Spacing.xs))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+            ) {
+                TextButton(
+                    onClick = { showDeleteDialog = true },
+                    colors = ButtonDefaults.textButtonColors(contentColor = colors.textSecondary),
+                    contentPadding = PaddingValues(horizontal = Spacing.sm, vertical = 0.dp),
+                ) {
+                    Text("删除配对", style = type.caption)
+                }
+            }
         }
+    }
+
+    // A10-5 修复：删除配对二次确认
+    if (showDeleteDialog) {
+        AlertDialog(
+            onDismissRequest = { showDeleteDialog = false },
+            containerColor = if (colors.isDark) colors.bgElevated else colors.bgCard,
+            tonalElevation = 0.dp,
+            title = {
+                Text("删除角色对", style = type.cardTitle, color = colors.textPrimary)
+            },
+            text = {
+                Text(
+                    text = "确定删除「$nameA × $nameB」的私聊配对？\n所有私聊消息和会话记录将一并删除，此操作不可撤销。",
+                    style = type.body,
+                    color = colors.textSecondary,
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showDeleteDialog = false
+                        viewModel.deletePair(pair.pairId)
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Palette.TaskFailed,
+                        contentColor = colors.bgBase,
+                    ),
+                ) {
+                    Text("删除")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteDialog = false }) {
+                    Text("取消", color = colors.textSecondary)
+                }
+            },
+        )
     }
 }
 
@@ -422,15 +505,26 @@ fun PrivateChatDetailScreen(
 
     var showTriggerDialog by remember { mutableStateOf(false) }
 
-    // 参数编辑字段：随 pair 变化（加载完成 / 保存后）重新初始化
-    var maxTurns by remember(pair) {
-        mutableStateOf(pair?.maxTurnsPerSession?.toString() ?: "")
-    }
-    var maxSessions by remember(pair) {
-        mutableStateOf(pair?.maxSessionsPerDay?.toString() ?: "")
-    }
-    var cooldown by remember(pair) {
-        mutableStateOf(pair?.cooldownMinutes?.toString() ?: "")
+    // 参数编辑字段：仅按 pairId 锁定（切换到不同配对时才重新初始化）。
+    // 此前用整个 pair（data class）作 key：后台 PrivateChatWorker 完成会话时会写
+    // sessionsUsedToday/lastSessionAt/characterDisconnectState，Room Flow 重发导致
+    // pair 结构变化 → remember(pair) re-key → 三个草稿被静默重置为 DB 值，用户正在
+    // 输入但未点“保存参数”的内容会丢失（B7 审查报告 序号1）。
+    // 改为 remember(pairId)，并用 paramsInitialized 标志位保证：只在该 pairId 下
+    // 第一次拿到非空 pair 时用 DB 值填充一次草稿，此后 pair 再变化不会覆盖用户输入；
+    // 只有用户主动点“保存参数”才会把草稿写回 DB。
+    var maxTurns by remember(pairId) { mutableStateOf("") }
+    var maxSessions by remember(pairId) { mutableStateOf("") }
+    var cooldown by remember(pairId) { mutableStateOf("") }
+    var paramsInitialized by remember(pairId) { mutableStateOf(false) }
+
+    LaunchedEffect(pairId, pair != null) {
+        if (!paramsInitialized && pair != null) {
+            maxTurns = pair.maxTurnsPerSession.toString()
+            maxSessions = pair.maxSessionsPerDay.toString()
+            cooldown = pair.cooldownMinutes.toString()
+            paramsInitialized = true
+        }
     }
 
     val sessionMap = remember(sessions) { sessions.associateBy { it.sessionId } }

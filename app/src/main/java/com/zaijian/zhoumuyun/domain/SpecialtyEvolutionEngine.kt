@@ -298,19 +298,37 @@ class SpecialtyEvolutionEngine(
      * 将若干阶段摘要并入现有 styleNotes，整段重写（不是追加）。
      * 这是用户要求"留下精华"的核心执行点——见方案第5.5节完整 Prompt 设计。
      *
-     * ⚠️ 架构红线（方案 v1.5 第 4.3 节·soulNote 输入源锁定）：
+     * ⚠️ 架构红线（方案 v1.5 第 4.3 节·soulNote 输入源锁定，Window0 仲裁 #4 已评审并落实）：
      * styleNotes 是 CharacterIdentity.soulNote 的唯一晋升输入源（经
      * IdentityPromotionEvaluator），而 soulNote 是角色人格本能层。本函数的输入
-     * stageDigests 必须只来自 DailyPracticeWorker（每日自动练习产出），**绝不能**
-     * 让 ChatMessageOrchestrator / PrivateChatEngine / RoundtableMessageOrchestrator
-     * 产生的对话内容（无论 speakerContext 是否为 NON_OWNER）直接或间接流入此处。
-     * 若未来需要让 DailyPracticeWorker 参考近期对话历史，必须先按
-     * speakerContext == NON_OWNER 过滤，并重新评审本红线是否仍然成立。
+     * stageDigests 只允许来自 DailyPracticeWorker（每日自动练习产出）一类的
+     * 非对话内容源。已确认当前全部调用方（DistillationTrigger、
+     * CandidatePromotionChecker、CompetitionEngine.mergeJudgeStandardObservations）
+     * 均只操作 PracticeRecordEntity / StageDigestEntity / 裁判反馈摘要，
+     * 不涉及聊天消息表，不带 speakerContext，链路已与用户对话物理隔离。
+     *
+     * 本红线不再是"待评审"的警示注释，而是强制机制：[sourceIsDialogueContent]
+     * 显式声明输入源性质，默认 false（非对话内容，向后兼容现有调用方）。
+     * 若未来任何调用方需要让 stageDigests 携带 ChatMessageOrchestrator /
+     * PrivateChatEngine / RoundtableMessageOrchestrator 产生的对话内容，
+     * 必须显式传 sourceIsDialogueContent = true 并同时提供
+     * dialogueSpeakerContextAllNonOwner = true（证明已按 speakerContext ==
+     * NON_OWNER 过滤），否则本函数直接抛异常拒绝执行，不静默放行。
      */
     suspend fun mergeStageDigestsIntoProfile(
         currentStyleNotes: String,
         stageDigests: List<String>,
+        sourceIsDialogueContent: Boolean = false,
+        dialogueSpeakerContextAllNonOwner: Boolean = false,
     ): MergeResult = withContext(Dispatchers.IO) {
+        // 强制机制：一旦调用方声明输入源是对话内容，必须同时证明已完成
+        // speakerContext == NON_OWNER 过滤，否则视为违反架构红线，直接拒绝。
+        require(!sourceIsDialogueContent || dialogueSpeakerContextAllNonOwner) {
+            "架构红线违反：mergeStageDigestsIntoProfile 的 stageDigests 声明为对话内容" +
+                "（sourceIsDialogueContent=true），但未证明已按 speakerContext == NON_OWNER" +
+                "过滤（dialogueSpeakerContextAllNonOwner=false）。soulNote 输入源不允许未经" +
+                "过滤的 owner 直接对话内容流入，见方案 v1.5 第 4.3 节 / Window0 仲裁 #4。"
+        }
         val systemPrompt = """
             请输出更新后的完整风格说明书，要求：
             1. 这不是"追加"，是重写整段说明书。已有内容如果仍然成立，需要保留其要点

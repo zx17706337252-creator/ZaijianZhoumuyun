@@ -3,7 +3,6 @@ package com.zaijian.zhoumuyun.data.agent
 import android.content.Context
 import android.content.Intent
 import androidx.core.app.NotificationCompat
-import androidx.core.app.NotificationManagerCompat
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.zaijian.zhoumuyun.MainActivity
@@ -65,6 +64,17 @@ class PregnancySettlementWorker(
         } catch (e: Throwable) {
             ZLog.w("PregnancySettlementWorker", "doWork failed", e)
             // 不重试：下一个 12h 周期 / 下次进入聊天页会自然再检查一次
+            //
+            // C7#25 核实结论（未采纳审查报告"角色怀孕状态可能卡住，需写
+            // settlementFailed 标记触发补偿"的建议）：报告没有查全全部触发
+            // 路径。settleAndRecord() 实际有三条独立入口共用同一把
+            // settlementMutex——本 Worker 的 12h 周期、ZaijianApp.onCreate()
+            // 的一次性检查、以及 ChatSessionDelegate（ChatViewModel 的一部分）
+            // 每次切换角色都会调用的 runImmediateCheck()。也就是说用户只要
+            // 打开任意一个角色的聊天页，就会立刻重新触发一次结算检查，不需要
+            // 等到 12 小时后的下一个 Worker 周期——不存在"永久卡住直到下次
+            // 周期"的风险，加标记位/补偿机制是在为一个已经被其他路径覆盖的
+            // 场景做重复保护。
         }
         return Result.success()
     }
@@ -197,7 +207,6 @@ class PregnancySettlementWorker(
             records: List<BirthRecord>,
             daughterRepo: DaughterCharacterRepository,
         ) {
-            val nm = NotificationManagerCompat.from(context)
             // 修复（第4窗口审查报告问题7）：原硬编码起始值 3000 + 自增，仅在单次调用内保证批内不冲突；
             // 若本 Worker 跨批次多次触发，每次都从 3000 重新起跳，可能与前一批次残留的通知 ID 撞车。
             // 改为与项目内 CiCdPipelineWorker/WorkflowJobWorker 一致的做法：基于当前时间戳生成 ID，
@@ -244,7 +253,10 @@ class PregnancySettlementWorker(
                         .setContentIntent(pi)
                         .build()
 
-                    nm.notify(notifId, notification)
+                    // C类审查 #47 修复：改用统一的权限检查入口
+                    com.zaijian.zhoumuyun.util.NotificationPermissionUtils.safeNotify(
+                        context, notifId, notification, "PregnancySettlementWorker",
+                    )
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e
                 } catch (e: Throwable) {

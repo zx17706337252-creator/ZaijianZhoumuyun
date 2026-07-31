@@ -18,6 +18,7 @@ import com.zaijian.zhoumuyun.data.provider.LLMMessage
 import com.zaijian.zhoumuyun.data.provider.LLMProvider
 import com.zaijian.zhoumuyun.data.provider.chatSyncWithRetry
 import com.zaijian.zhoumuyun.data.repository.CharacterStateRepository
+import com.zaijian.zhoumuyun.data.repository.CharacterTitleRelationRepository
 import com.zaijian.zhoumuyun.data.repository.DaughterCharacterRepository
 import com.zaijian.zhoumuyun.data.repository.IdentityRepository
 import com.zaijian.zhoumuyun.data.repository.MemoryRepository
@@ -26,6 +27,7 @@ import com.zaijian.zhoumuyun.data.repository.PrivateChatPairRepository
 import com.zaijian.zhoumuyun.data.repository.PrivateChatSessionRepository
 import com.zaijian.zhoumuyun.domain.SpeakerContext
 import com.zaijian.zhoumuyun.domain.SpecialtyEvolutionConfig
+import com.zaijian.zhoumuyun.util.ZLog
 import java.util.UUID
 
 /**
@@ -63,7 +65,11 @@ data class ReplyOutcome(
  * 或达到轮数上限，不重新入队 Worker、不等待 delay。
  *
  * 构造函数说明（v2.5 确认的设计）：
- * - 不注入 RelationshipEngine（2.1 节确认私聊与关系值体系双向隔离）
+ * - 不注入 RelationshipEngine（2.1 节确认私聊与关系值体系双向隔离）。
+ *   头衔系统（下方 titleRelationRepo）不违反此隔离——头衔是静态身份设定
+ *   （"姐妹""女仆"这类关系认定文本），不是会随对话浮动的数值（信任/亲密度等），
+ *   与"双向隔离"要隔的是关系值体系，二者不冲突，经与用户确认：只接头衔文本，
+ *   不接 RelationshipEngine 数值快照。
  * - daughterCharacterRepo 直接持有，resolveCharacterConfig() 用两层硬编码查找
  *   （DefaultCharacters → daughterCharacterRepo.getCharacterConfig()），不引入
  *   CharacterResolver 抽象层（v2.4 曾引入，v2.5 撤销，见 4.0 节说明）
@@ -83,6 +89,7 @@ class PrivateChatEngine(
     private val identityRepo: IdentityRepository,
     private val characterStateRepo: CharacterStateRepository,
     private val daughterCharacterRepo: DaughterCharacterRepository,
+    private val titleRelationRepo: CharacterTitleRelationRepository,
     private val providerFn: () -> LLMProvider?,
     private val appContext: Context,
 ) {
@@ -166,10 +173,17 @@ class PrivateChatEngine(
                 val speakerNow = otherOf(currentSpeaker)
                 // 6.3 施压检测：对"上一条发给 speakerNow 的消息"做独立分类（不复用机制一，
                 // 判断维度不同）。命中 +1、未命中清零。
+                // A10-2 修复：classifyPressure 返回 Boolean?，null 表示 LLM 调用失败。
+                // 失败时保持上一值（prev），不再静默清零——否则 LLM 持续失败时
+                // pressureCount 恒为 0，6.3 拒绝反应永不触发。
                 val pressureCount = if (lastMessageContent != null) {
                     val isPressure = ReplyGuard.detectPressure(lastMessageContent!!) { classifyPressure(it) }
                     val prev = pressureToward[speakerNow] ?: 0
-                    val newCount = if (isPressure) prev + 1 else 0
+                    val newCount = when (isPressure) {
+                        true  -> prev + 1
+                        false -> 0
+                        null  -> prev   // A10-2：调用失败，保持上一值
+                    }
                     pressureToward[speakerNow] = newCount
                     newCount
                 } else 0
@@ -349,6 +363,20 @@ class PrivateChatEngine(
         val coreMemories = memoryRepo.getCoreMemories(speakerId)
         val characterState = characterStateRepo.getState(speakerId)
 
+        // 头衔系统接入点1（方案_角色间关系头衔系统_实施方案 四节）：
+        // 查 speaker 对 listener 的头衔认定，注入 interCharRelBlock 槽位。
+        // 头衔为空（未认定）时显式声明"关系不明确"，不能不提——这是旧 bug
+        // （PromptOrchestrator 内部对空 interCharRelBlock 的默认措辞会让模型
+        // 自行脑补亲密关系，实测偏向默认成恋人）的根因，必须显式声明未知状态。
+        // 注：只接头衔文本，不接 RelationshipEngine 数值快照（2.1 节双向隔离，见类注释）。
+        val interCharTitle = titleRelationRepo.getTitle(speakerId, listenerId)
+        val interCharRelBlock = if (!interCharTitle.isNullOrBlank()) {
+            "【你与对方的关系】对方是「${listener.name}」，你认她做「${interCharTitle}」，请按这层关系的分寸对待她。"
+        } else {
+            "【你与对方的关系】对方是「${listener.name}」，你们还没有明确的关系认定，" +
+                "以陌生/初识的分寸对待，不要预设亲密关系（不是恋人，不是家人）。"
+        }
+
         // 6.2 第零级短路：会话类型为角色间私聊，speakerContext 恒为 NON_OWNER（不经机制一检测）
         val speakerContext = SpeakerContext.NON_OWNER
         // 6.3 本轮 prompt 版本：施压达阈值 → 拒绝反应；否则正常代入（机制三）
@@ -362,7 +390,7 @@ class PrivateChatEngine(
                 coreMemories         = coreMemories,
                 relevantMemories     = emptyList(),
                 relationshipSnapshot = "",
-                interCharRelBlock    = "",
+                interCharRelBlock    = interCharRelBlock,
                 groupContextBlock    = "",
                 agentPlanBlock       = "",
                 ruleLayerBlock       = "",
@@ -410,15 +438,18 @@ class PrivateChatEngine(
         var candidate = provider.chatSyncWithRetry(history, systemPrompt, config)
         var usedFallback = false
 
+        // A10-2/A11-8 修复：checkBoundaryBreach 返回 Boolean?，null 表示 LLM 调用失败。
+        // fail-closed：null 视同越界（true 分支），因为边界检测的 false negative
+        // 会导致不当内容直接展示给用户，不可逆。
         val firstBreach = ReplyGuard.checkBoundaryBreach(candidate) { classifyBoundaryBreach(it) }
-        if (firstBreach) {
+        if (firstBreach != false) {
             // 重生成一次：拒绝反应轮沿用拒绝反应 prompt；正常轮注入"上次越界了这次收住"提示
             //（爬升阈值未到不该触发角色主动拒绝，只是这一句单独写过头了，收一下即可）
             val retryPrompt = if (isRefusalRound) systemPrompt
             else systemPrompt + "\n\n【生成约束】上一次尝试越界了，这次要收住，不要描写实质性亲密行为或归属转移宣告。"
             candidate = provider.chatSyncWithRetry(history, retryPrompt, config)
             val secondBreach = ReplyGuard.checkBoundaryBreach(candidate) { classifyBoundaryBreach(it) }
-            if (secondBreach) {
+            if (secondBreach != false) {
                 // 重试仍命中 → 固定兜底模板，不再调 LLM，不第三次重试（5.2 节）
                 candidate = ReplyGuard.fallbackTemplate(speaker.name)
                 usedFallback = true
@@ -450,10 +481,15 @@ class PrivateChatEngine(
 
     // ── 机制五/6.3 分类调用（单轮 LLM 分类，沿用 chatSyncWithRetry）──────────
 
-    /** 6.3 施压类内容检测：判断消息是否属试探/追求/情感或身体施压 */
-    private suspend fun classifyPressure(message: String): Boolean {
+    /** 6.3 施压类内容检测：判断消息是否属试探/追求/情感或身体施压。
+     *  A10-2 修复：返回类型改为 Boolean?，null 表示 LLM 调用失败（不再静默降级为 false）。
+     *  调用方据此保持上一值而非清零（见 detectPressure 调用处）。 */
+    private suspend fun classifyPressure(message: String): Boolean? {
         return runCatching {
-            val provider = providerFn() ?: return false
+            val provider = providerFn() ?: run {
+                ZLog.w("PrivateChatEngine", "classifyPressure: provider 未初始化，返回 null")
+                return null
+            }
             val sys = "判断这条消息是否属于对亲密关系的试探、追求、或情感/身体上的施压" +
                 "（包括但不限于表白、暧昧邀约、身体接触描写、情感绑架式言辞）。只返回 true 或 false。"
             val resp = provider.chatSyncWithRetry(
@@ -461,21 +497,39 @@ class PrivateChatEngine(
                 LLMConfig(model = "", maxTokens = 10, temperature = 0.0f, stream = false),
             )
             resp.trim().startsWith("true", ignoreCase = true)
-        }.getOrDefault(false)
+        }.getOrElse { e ->
+            // A10-2 修复：失败时不再静默返回 false（fail-open），改为 log 告警 + 返回 null
+            ZLog.w("PrivateChatEngine", "classifyPressure: LLM 分类调用失败，返回 null（调用方将保持上一值）", e)
+            null
+        }
     }
 
-    /** 5.2 越界检测：判断候选回复是否描写实质性亲密行为或归属转移宣告 */
-    private suspend fun classifyBoundaryBreach(reply: String): Boolean {
+    /**
+     * 5.2 越界检测：判断候选回复是否描写实质性亲密行为或归属转移宣告
+     *
+     * C10#52 修复：判定 prompt 改为引用 [ReplyGuard.BOUNDARY_BREACH_CLASSIFIER_PROMPT]，
+     * 不再本地硬编码——与 ChatMessageOrchestrator 主聊天路径共享同一份判定标准。
+     *
+     * A10-2/A11-8 修复：返回类型改为 Boolean?，null 表示 LLM 调用失败（不再静默降级为 false）。
+     * 调用方采用 fail-closed 策略——null 视同越界，丢弃重生成/兜底模板。
+     */
+    private suspend fun classifyBoundaryBreach(reply: String): Boolean? {
         return runCatching {
-            val provider = providerFn() ?: return false
-            val sys = "这段回复是否描写了角色与非owner对象发生了实质性亲密行为" +
-                "（接吻、身体接触升级等），或做出了等同于归属转移的宣告？只返回 true 或 false。"
+            val provider = providerFn() ?: run {
+                ZLog.w("PrivateChatEngine", "classifyBoundaryBreach: provider 未初始化，返回 null")
+                return null
+            }
             val resp = provider.chatSyncWithRetry(
-                listOf(LLMMessage("user", reply)), sys,
+                listOf(LLMMessage("user", reply)), ReplyGuard.BOUNDARY_BREACH_CLASSIFIER_PROMPT,
                 LLMConfig(model = "", maxTokens = 10, temperature = 0.0f, stream = false),
             )
             resp.trim().startsWith("true", ignoreCase = true)
-        }.getOrDefault(false)
+        }.getOrElse { e ->
+            // A10-2/A11-8 修复：失败时不再静默返回 false（fail-open），改为 log 告警 + 返回 null。
+            // 调用方将 null 视同越界（fail-closed），确保无法判断时不放过潜在越界内容。
+            ZLog.w("PrivateChatEngine", "classifyBoundaryBreach: LLM 分类调用失败，返回 null（调用方将按 fail-closed 处理）", e)
+            null
+        }
     }
 
     // ── 辅助方法 ──────────────────────────────────────────────

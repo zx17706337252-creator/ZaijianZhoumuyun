@@ -1,6 +1,7 @@
 package com.zaijian.zhoumuyun.data.provider
 
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 
 // ─────────────────────────────────────────────────────────────
@@ -151,9 +152,9 @@ class LLMHttpException(
 // ─────────────────────────────────────────────────────────────
 
 /**
- * LLMProvider 的指数退避重试扩展函数（S3 修复 / P1-03 修复）。
+ * LLMProvider 同步调用的指数退避重试扩展函数（S3 修复 / P1-03 修复）。
  * 遇到 429 限流或 5xx 瞬时错误时，自动重试一次，成本极低。
- * 主流式调用（chat）不适合重试（打字机效果会重置），仅供 chatSync 场景使用。
+ * 流式调用请使用 [chatStreamWithRetry]（支持"零输出时安全重试"）。
  *
  * (S-6) 从 OpenAICompatProvider.kt 迁至此处：本函数是 LLMProvider 接口的通用扩展，
  * 与具体实现类 OpenAICompatProvider 无关，理应与接口定义放在一起。
@@ -192,4 +193,77 @@ suspend fun LLMProvider.chatSyncWithRetry(
         }
     }
     throw lastError ?: IllegalStateException("chatSyncWithRetry: unreachable")
+}
+
+// ─────────────────────────────────────────────────────────────
+//  Streaming retry extension (B5-Fix5)
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * LLMProvider 流式调用的指数退避重试扩展函数（B5-Fix5）。
+ *
+ * **核心设计：零输出时安全重试。** 流式调用的难点在于——如果打字机已经开始输出
+ * （用户已经看到部分文字），重试会导致文字从头来一遍，体验极差。因此本函数
+ * 的重试条件比 [chatSyncWithRetry] 多一层约束：**仅在尚未 emit 任何
+ * [ChatStreamItem.TextDelta] 时才重试**。
+ *
+ * 具体行为：
+ *   - 流开始前连接失败（DNS/超时/TLS/429/5xx）→ **重试**（用户还没看到任何输出）
+ *   - 流传输中途断网/超时 → **不重试**（用户已看到部分文字，重试会重复）
+ *   - HTTP 4xx（401/403/400 等不可重试错误）→ **立即抛出**（与 chatSyncWithRetry 一致）
+ *   - 流正常完成 → 返回
+ *
+ * 退避策略与 [chatSyncWithRetry] 一致：指数退避 1s, 2s, 4s...，
+ * 429/5xx 重试，4xx 立即抛出。默认 2 次尝试。
+ *
+ * 实现要点：使用 `flow {}` 包装 [chatStream] 的返回值，在 `collect` 内部
+ * 跟踪 `anyDeltaEmitted` 标志。`collect` 抛异常时检查此标志决定是否重试。
+ * 每次重试会重新调用 `chatStream()` 创建新的 HTTP 连接——上一次的连接已由
+ * `OpenAICompatProvider.awaitClose` 在 collect 取消时正确断开。
+ *
+ * **已确认接入的调用点**（全 3 处，均位于 `ToolCallInterceptor`）：
+ *   - 快速路径（注册表为空时透传）
+ *   - 主循环 Phase 1（流式接收 + 工具标签解析）
+ *   - 末轮兜底（maxRounds 达到后的第二套 Phase 1）
+ */
+fun LLMProvider.chatStreamWithRetry(
+    messages: List<LLMMessage>,
+    systemPrompt: String,
+    config: LLMConfig,
+    maxAttempts: Int = 2,
+): Flow<ChatStreamItem> = flow {
+    if (maxAttempts <= 0) throw IllegalArgumentException("maxAttempts must be > 0")
+    var lastError: Throwable? = null
+    repeat(maxAttempts) { attempt ->
+        var anyDeltaEmitted = false
+        try {
+            chatStream(messages, systemPrompt, config).collect { item ->
+                if (item is ChatStreamItem.TextDelta) {
+                    anyDeltaEmitted = true
+                }
+                emit(item)
+            }
+            // collect 正常结束 → 流完成，退出重试循环
+            return@flow
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e  // 不吞 CancellationException
+        } catch (e: LLMHttpException) {
+            // P1-03 一致策略：不可重试的 HTTP 错误（4xx 除 429）立即抛出
+            if (!e.isRetryable) throw e
+            lastError = e
+            // 已输出过文字 → 不重试（打字机已开始，重试会重复）
+            if (anyDeltaEmitted) throw e
+            if (attempt < maxAttempts - 1) {
+                kotlinx.coroutines.delay(1000L * (1L shl attempt))
+            }
+        } catch (e: Throwable) {
+            lastError = e
+            // 已输出过文字 → 不重试
+            if (anyDeltaEmitted) throw e
+            if (attempt < maxAttempts - 1) {
+                kotlinx.coroutines.delay(1000L * (1L shl attempt))
+            }
+        }
+    }
+    throw lastError ?: IllegalStateException("chatStreamWithRetry: unreachable")
 }

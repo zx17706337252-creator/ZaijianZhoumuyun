@@ -240,6 +240,17 @@ class SpecialtyProfileRepository(
         // U-3 修复：parseCandidateObservations 损坏时抛 CandidatePoolCorruptedException；
         // catch 后记录日志（含完整原始 JSON，可从 logcat 恢复），以空列表继续执行。
         // 不在此处单独写 DB——后续 updateCandidateObservations 统一写入空列表，避免双写。
+        //
+        // 复查说明（C7-#29 审查意见未采纳）：审查报告认为这里"清空后写回"会
+        // 不可逆销毁历史候选观察数据，建议改为跳过写入。经核实，这个清空-继续策略
+        // 是本项目既有且被明确依赖的设计契约：DailyPracticeWorker.updateCandidatePool
+        // 和 CompetitionRoundManager 的赢家反哺逻辑都会在外层预先 catch 同一个
+        // CandidatePoolCorruptedException，并且注释明确写"以空池继续、本次观察当全新
+        // 候选写入，不会丢失本次观察本身"——如果这里改为跳过写入，会让这两处上游的
+        // "保留当次观察"这个前提落空，且它们各自又会因为同一份损坏 JSON 再次触发
+        // 同一异常、重复记录日志。候选池只是每日修炼累积的观察计数缓存（可自愈：
+        // 未转正的特征会在后续修炼中重新被观察到），不是唯一权威数据源，清零只是让
+        // 转正进度倒退，不是真正意义上的数据丢失，保留原有行为。
         val list = try {
             parseCandidateObservations(profile.candidateObservationsJson)
         } catch (e: CandidatePoolCorruptedException) {
@@ -271,7 +282,7 @@ class SpecialtyProfileRepository(
     /** 候选特征转正后，从候选池移除（已并入 styleNotes，不再需要继续计数观察） */
     suspend fun removeCandidateObservation(profileId: String, trait: String) = getCandidateMutex(profileId).withLock {
         val profile = specialtyProfileDao.getById(profileId) ?: return@withLock
-        // U-3 修复：同 recordCandidateObservation
+        // U-3 修复：同 recordCandidateObservation（见上方复查说明，C7-#29 未采纳）
         val list = try {
             parseCandidateObservations(profile.candidateObservationsJson)
         } catch (e: CandidatePoolCorruptedException) {

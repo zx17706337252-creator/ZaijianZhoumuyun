@@ -85,8 +85,8 @@ fun NotificationAttentionSection(
     }
 }
 
-// 复用 BriefingAttentionSection.kt 已有的四种文案格式，原样照抄，
-// 不重新措辞——设计稿明确这四句是"钉死"的，保持公馆语言语气一致。
+// 复用 BriefingAttentionSection.kt 已有的文案格式，原样照抄，
+// 不重新措辞——设计稿明确这些句子是"钉死"的，保持公馆语言语气一致。
 private fun attentionItemText(
     item: BriefingAttentionItem,
     daughterNameMap: Map<String, String>,
@@ -97,6 +97,12 @@ private fun attentionItemText(
         "${item.character.name}：还没有联系过"
     is BriefingAttentionItem.Pregnancy ->
         "${item.character.name}：怀孕中，记得多关心"
+    // A6-1 修复: 排卵期/经期文案与 BriefingAttentionSection 保持一致，
+    // 通知中心与简报页两处展示口径统一。
+    is BriefingAttentionItem.FertileAttention ->
+        "${item.characterName}：排卵期中，留意易孕窗口"
+    is BriefingAttentionItem.MenstrualAttention ->
+        "${item.characterName}：经期中，记得多关心"
     is BriefingAttentionItem.Tension -> {
         val fromName = characterNameById(item.fromId, daughterNameMap)
         val toName = characterNameById(item.toId, daughterNameMap)

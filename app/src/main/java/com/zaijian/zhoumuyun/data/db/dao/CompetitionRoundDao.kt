@@ -47,6 +47,11 @@ interface CompetitionRoundDao {
     @Query("UPDATE competition_rounds SET status = 'COMPLETED', completedAt = :completedAt WHERE id = :id")
     suspend fun markCompleted(id: String, completedAt: Long = System.currentTimeMillis())
 
+    // A8-1 修复: 标记裁判圆桌播报是否被跳过（裁判无圆桌历史时由
+    // CompetitionRoundManager.postJudgeResultToRoundtable 置 true）。
+    @Query("UPDATE competition_rounds SET judgeRoundtableBroadcastSkipped = :skipped WHERE id = :id")
+    suspend fun updateJudgeRoundtableBroadcastSkipped(id: String, skipped: Boolean)
+
     @Query("DELETE FROM competition_rounds WHERE id = :id")
     suspend fun deleteById(id: String)
 

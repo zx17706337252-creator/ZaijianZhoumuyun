@@ -55,6 +55,13 @@ data class MemoryUiItem(
     val domainColorArgb: Long = 0xFF9E9E9EL,
     /** v1.1：创建时间戳，供 coreMemories 按 createdAt 倒序分区展示 */
     val createdAt: Long = 0L,
+    /**
+     * C8#44 UI 闭环：对应 MemoryEntity.isNarrativeOnly——假扮身份识别期间
+     * （speakerContext == NON_OWNER）产生的记忆。管理页有意展示这类记忆
+     * （见 MemoryDao.observeAll 注释），但用户需要能分辨"这条是叙事记忆，
+     * 不是角色与 owner 的正常互动记忆"，否则容易误以为角色记忆错乱/串号。
+     */
+    val isNarrativeOnly: Boolean = false,
 )
 
 enum class MemoryFilter {
@@ -111,6 +118,10 @@ class MemoryViewModel(application: Application) : AndroidViewModel(application) 
     // v1.1 呈现层补充：复用 IdentityViewModel 同款取法（IdentityViewModel:95），
     // 拿 soulNote/narrativeMemory/userImpression 三个 blob 字段。不新建 Repository。
     private val identityRepo = AppContainer.instance.identityRepo
+
+    // A9-5 修复：导出记忆存档时追加关系数值板块。
+    // 复用 AppContainer 共享实例（同 repo/identityRepo 写法）。
+    private val relationshipEngine = AppContainer.instance.relationshipEngine
 
     private val _characterId = MutableStateFlow(-1)
     private val _filter      = MutableStateFlow(MemoryFilter.ALL)
@@ -312,10 +323,15 @@ class MemoryViewModel(application: Application) : AndroidViewModel(application) 
                 val ts = TimeFormatUtils.formatExportStamp(now)
                 val displayTs = TimeFormatUtils.formatDateTimeMinute(now)
 
+                // C8#44 UI 闭环：导出文件是用户会保存/分享出去的文本，标记口径
+                // 需要和屏幕展示（MemoryRow/CoreAnchorsSection 的"叙事记忆"标签）
+                // 保持一致，否则会出现"App 里能看出来、导出后看不出来"的不一致。
                 val coreLines = if (state.coreMemories.isEmpty()) {
                     "（暂无）"
                 } else {
-                    state.coreMemories.joinToString("\n") { "- ${it.dateLabel} ${it.content}" }
+                    state.coreMemories.joinToString("\n") {
+                        "- ${it.dateLabel} ${it.content}" + if (it.isNarrativeOnly) "（叙事记忆）" else ""
+                    }
                 }
 
                 // 其他记忆上限 50 条，避免文档过长（补充文档 §4.2）
@@ -324,8 +340,33 @@ class MemoryViewModel(application: Application) : AndroidViewModel(application) 
                     "（暂无）"
                 } else {
                     state.items.take(otherLimit).joinToString("\n") {
-                        "- [${it.domainLabel.ifEmpty { "其他" }}] ${it.dateLabel} ${it.content}"
+                        "- [${it.domainLabel.ifEmpty { "其他" }}] ${it.dateLabel} ${it.content}" +
+                            if (it.isNarrativeOnly) "（叙事记忆）" else ""
                     } + if (state.items.size > otherLimit) "\n…（共 ${state.items.size} 条，已截断至前 $otherLimit 条）" else ""
+                }
+
+                // A9-5 修复：追加关系数值板块。
+                // owner 侧约定固定传字符串 "user"（见 ChatMessageOrchestrator.kt:921），
+                // getOrCreate 若无记录会创建默认值（信任50/尊重50/好感50…），不会 NPE。
+                val rel = relationshipEngine.getOrCreate("user", cid.toString())
+                val stageLabel = when (runCatching {
+                    com.zaijian.zhoumuyun.data.db.entity.RelationshipStage.valueOf(rel.stage)
+                }.getOrDefault(com.zaijian.zhoumuyun.data.db.entity.RelationshipStage.STRANGER)) {
+                    com.zaijian.zhoumuyun.data.db.entity.RelationshipStage.STRANGER  -> "陌生"
+                    com.zaijian.zhoumuyun.data.db.entity.RelationshipStage.FAMILIAR  -> "熟悉"
+                    com.zaijian.zhoumuyun.data.db.entity.RelationshipStage.TRUSTED   -> "信任"
+                    com.zaijian.zhoumuyun.data.db.entity.RelationshipStage.IMPORTANT -> "重要"
+                    com.zaijian.zhoumuyun.data.db.entity.RelationshipStage.CORE      -> "核心"
+                }
+                val relationshipLines = buildString {
+                    appendLine("- 关系阶段：$stageLabel")
+                    appendLine("- 信任：${rel.trust}/100")
+                    appendLine("- 尊重：${rel.respect}/100")
+                    appendLine("- 好感：${rel.affection}/100")
+                    appendLine("- 好奇：${rel.curiosity}/100")
+                    appendLine("- 依赖：${rel.dependence}/100")
+                    appendLine("- 冲突：${rel.conflict}/100")
+                    appendLine("- 压抑：${rel.suppression}/100")
                 }
 
                 val safeName = characterName.ifBlank { "角色" }
@@ -342,6 +383,9 @@ class MemoryViewModel(application: Application) : AndroidViewModel(application) 
                     appendLine()
                     appendLine("## 她的自我认知")
                     appendLine(state.soulNote.ifBlank { "（尚未建立）" })
+                    appendLine()
+                    appendLine("## 关系数值")
+                    appendLine(relationshipLines)
                     appendLine()
                     appendLine("## 重大事件锚点（${state.coreMemories.size} 条）")
                     appendLine(coreLines)
@@ -453,6 +497,11 @@ class MemoryViewModel(application: Application) : AndroidViewModel(application) 
             MemoryFilter.EMOTION     -> items.filter { it.domain == com.zaijian.zhoumuyun.data.db.entity.MemoryDomain.PERSONAL.name }
         }
 
+    // C8#44 UI 闭环补做：observeAll() 有意不过滤 isNarrativeOnly（见
+    // MemoryDao.observeAll 注释），用户能看到假扮场景产生的叙事记忆本身是对的；
+    // 现在 toUiItem() 把 isNarrativeOnly 映射到 MemoryUiItem 展示字段，
+    // 由 CharacterDetailMemory.kt 的 MemoryRow 渲染一个中性标签，
+    // 使用户能分辨"这条是假扮场景产生的叙事记忆"，避免误判角色记忆串号。
     private fun MemoryEntity.toUiItem(): MemoryUiItem {
         val isImportant = importance >= 4 || isCore
         val aboutSelf   = domain == MemoryDomain.PERSONAL.name
@@ -470,18 +519,23 @@ class MemoryViewModel(application: Application) : AndroidViewModel(application) 
         }
 
         // Phase 30 方案三：维度标签 + 色条颜色
+        // B4审查报告【序号3】修复：INFERENCE（角色隐性推测记忆）已在 PromptOrchestrator
+        // 中被实际读取并注入 prompt，但此处两个 when 此前遗漏该分支，落入 else 导致
+        // 空标签+灰色条，与其他域不一致。补齐独立标签与色值。
         val domainLabel = when (domain) {
-            com.zaijian.zhoumuyun.data.db.entity.MemoryDomain.WORK.name     -> "工作"
-            com.zaijian.zhoumuyun.data.db.entity.MemoryDomain.PERSONAL.name -> "情感"
-            com.zaijian.zhoumuyun.data.db.entity.MemoryDomain.WORLD.name    -> "世界"
-            com.zaijian.zhoumuyun.data.db.entity.MemoryDomain.RULE.name     -> "规则"
+            com.zaijian.zhoumuyun.data.db.entity.MemoryDomain.WORK.name      -> "工作"
+            com.zaijian.zhoumuyun.data.db.entity.MemoryDomain.PERSONAL.name  -> "情感"
+            com.zaijian.zhoumuyun.data.db.entity.MemoryDomain.WORLD.name     -> "世界"
+            com.zaijian.zhoumuyun.data.db.entity.MemoryDomain.RULE.name      -> "规则"
+            com.zaijian.zhoumuyun.data.db.entity.MemoryDomain.INFERENCE.name -> "推测"
             else -> ""
         }
         val domainColorArgb = when (domain) {
-            com.zaijian.zhoumuyun.data.db.entity.MemoryDomain.WORK.name     -> 0xFF5B9BD5L  // 蓝（由 accentColor 在 UI 层覆盖）
-            com.zaijian.zhoumuyun.data.db.entity.MemoryDomain.PERSONAL.name -> 0xFFC89AA3L  // 暖粉
-            com.zaijian.zhoumuyun.data.db.entity.MemoryDomain.WORLD.name    -> 0xFF9CC2AEL  // 绿
-            com.zaijian.zhoumuyun.data.db.entity.MemoryDomain.RULE.name     -> 0xFFB0A0C8L  // 淡紫
+            com.zaijian.zhoumuyun.data.db.entity.MemoryDomain.WORK.name      -> 0xFF5B9BD5L  // 蓝（由 accentColor 在 UI 层覆盖）
+            com.zaijian.zhoumuyun.data.db.entity.MemoryDomain.PERSONAL.name  -> 0xFFC89AA3L  // 暖粉
+            com.zaijian.zhoumuyun.data.db.entity.MemoryDomain.WORLD.name     -> 0xFF9CC2AEL  // 绿
+            com.zaijian.zhoumuyun.data.db.entity.MemoryDomain.RULE.name      -> 0xFFB0A0C8L  // 淡紫
+            com.zaijian.zhoumuyun.data.db.entity.MemoryDomain.INFERENCE.name -> 0xFFD4B896L  // 沙金，呼应"猜测"的不确定基调
             else -> 0xFF9E9E9EL
         }
 
@@ -498,6 +552,7 @@ class MemoryViewModel(application: Application) : AndroidViewModel(application) 
             domainLabel     = domainLabel,
             domainColorArgb = domainColorArgb,
             createdAt       = createdAt,
+            isNarrativeOnly = isNarrativeOnly,
         )
     }
 }

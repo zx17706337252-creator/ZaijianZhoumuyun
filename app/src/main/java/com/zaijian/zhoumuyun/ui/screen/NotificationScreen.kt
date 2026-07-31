@@ -159,6 +159,11 @@ private fun routeAttentionItemClick(
         is BriefingAttentionItem.NoContact -> onNavigateToChat(item.character.id)
         is BriefingAttentionItem.NeverContacted -> onNavigateToChat(item.character.id)
         is BriefingAttentionItem.Pregnancy -> onNavigateToChat(item.character.id)
+        // A6-1 修复: 排卵期/经期与 Pregnancy 同属角色级"关心状态"，点击跳聊天页
+        // （进去看看角色本身）。这两类只持 characterId，无完整 CharacterConfig，
+        // 直接用 item.characterId。
+        is BriefingAttentionItem.FertileAttention -> onNavigateToChat(item.characterId)
+        is BriefingAttentionItem.MenstrualAttention -> onNavigateToChat(item.characterId)
         is BriefingAttentionItem.Tension -> {
             item.fromId.toIntOrNull()?.let(onNavigateToCharacterRelationTab)
         }

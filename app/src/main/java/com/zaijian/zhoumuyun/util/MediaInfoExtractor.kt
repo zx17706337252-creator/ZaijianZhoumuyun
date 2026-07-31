@@ -1,8 +1,9 @@
 package com.zaijian.zhoumuyun.util
 
 import android.graphics.Bitmap
+import android.media.MediaExtractor
+import android.media.MediaFormat
 import android.media.MediaMetadataRetriever
-import android.os.Build
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -30,8 +31,8 @@ object MediaInfoExtractor {
      * @param height      视频高度（像素）
      * @param bitrate     比特率（bps）
      * @param mimeType    容器 / 整体 MIME 类型（如 "video/mp4"）
-     * @param videoCodec  视频编码 MIME（如 "video/avc"，API 30+ 可提取）
-     * @param audioCodec  音频编码 MIME（如 "audio/mp4a-latm"，API 30+ 可提取）
+     * @param videoCodec  视频轨道编码 MIME（如 "video/avc"，经 MediaExtractor 逐轨道读取）
+     * @param audioCodec  音频轨道编码 MIME（如 "audio/mp4a-latm"，经 MediaExtractor 逐轨道读取）
      * @param title       标题
      * @param artist      艺术家
      * @param album       专辑
@@ -70,8 +71,8 @@ object MediaInfoExtractor {
                     height     = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull(),
                     bitrate    = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITRATE)?.toLongOrNull(),
                     mimeType   = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_MIMETYPE),
-                    videoCodec = extractCodec(retriever, isVideo = true),
-                    audioCodec = extractCodec(retriever, isVideo = false),
+                    videoCodec = extractTrackCodec(filePath, isVideo = true),
+                    audioCodec = extractTrackCodec(filePath, isVideo = false),
                     title      = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE),
                     artist     = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST),
                     album      = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUM),
@@ -120,20 +121,32 @@ object MediaInfoExtractor {
     // ─────────────────────────────────────────────────────────────
 
     /**
-     * 视频 / 音频编码 MIME 提取。
+     * 视频 / 音频轨道编码 MIME 提取。
      *
-     * 独立的编码 MIME key（[MediaMetadataRetriever.METADATA_KEY_VIDEO_CODEC_MIME_TYPE] /
-     * [MediaMetadataRetriever.METADATA_KEY_AUDIO_CODEC_MIME_TYPE]）自 API 30 (R) 起
-     * 才有，低版本无此 key——做版本守卫返回 null，不崩溃。
+     * 注：MediaMetadataRetriever 并没有分开的 METADATA_KEY_VIDEO_CODEC_MIME_TYPE /
+     * METADATA_KEY_AUDIO_CODEC_MIME_TYPE 这两个 key（任何 API 级别都没有——不是
+     * @IntDef 注解遮蔽导致 Kotlin 解析不到，是这两个常量在 Android SDK 里根本不
+     * 存在，AOSP 源码和官方文档都查不到）。逐轨道的具体编码（H.264/HEVC/AAC 等）
+     * 要用 [MediaExtractor] 遍历轨道读 [MediaFormat.KEY_MIME] 才能拿到，
+     * 这里用独立的 MediaExtractor 实例做（与 retriever 分开管理生命周期，
+     * 避免 native 资源交叉持有），同样 try-finally 保证 release。
      */
-    private fun extractCodec(retriever: MediaMetadataRetriever, isVideo: Boolean): String? {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
-        val key = if (isVideo) {
-            MediaMetadataRetriever.METADATA_KEY_VIDEO_CODEC_MIME_TYPE
-        } else {
-            MediaMetadataRetriever.METADATA_KEY_AUDIO_CODEC_MIME_TYPE
+    private fun extractTrackCodec(filePath: String, isVideo: Boolean): String? {
+        val extractor = MediaExtractor()
+        return try {
+            extractor.setDataSource(filePath)
+            for (i in 0 until extractor.trackCount) {
+                val format = extractor.getTrackFormat(i)
+                val mime = format.getString(MediaFormat.KEY_MIME) ?: continue
+                val matches = if (isVideo) mime.startsWith("video/") else mime.startsWith("audio/")
+                if (matches) return mime
+            }
+            null
+        } catch (e: Exception) {
+            null
+        } finally {
+            extractor.release()
         }
-        return retriever.extractMetadata(key)
     }
 
     /**

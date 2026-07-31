@@ -3,6 +3,7 @@ package com.zaijian.zhoumuyun.data.agent
 import com.zaijian.zhoumuyun.data.provider.chatSyncWithRetry
 import android.content.Context
 import com.zaijian.zhoumuyun.util.ZLog
+import androidx.core.app.NotificationCompat
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.zaijian.zhoumuyun.data.db.AppDatabase
@@ -48,6 +49,20 @@ class DailyPracticeWorker(
     private companion object {
         const val PRACTICE_EXPORT_DIR = "specialty_practices"
         val UNSAFE_CHARS = Regex("[/\\\\:*?\"<>|]")
+
+        // A5-4 修复：Provider 为空时"连续跳过 N 次后提醒"机制的配置。
+        // 计数与每日触发时间共用同一份 SharedPreferences（specialty_evolution_prefs，
+        // 见 readConfiguredTime()），key 为 daily_practice_skip_count。
+        // 阈值 3 为实现选择（见文件末尾 A5-4 说明），后续可在此处统一调整。
+        const val PREFS_NAME = "specialty_evolution_prefs"
+        const val KEY_SKIP_COUNT = "daily_practice_skip_count"
+        const val SKIP_NOTIFY_THRESHOLD = 3
+        const val NOTIF_ID_SKIP_PROMPT = 77021
+
+        // A5-4 修复：跳过提醒系统通知渠道，与其余 Worker 同款在
+        // ZaijianApp.setupNotificationChannels() 统一注册（见该处补充）。
+        const val CHANNEL_ID = "daily_practice"
+        const val CHANNEL_NAME = "每日修炼"
     }
 
     override suspend fun doWork(): Result {
@@ -65,9 +80,25 @@ class DailyPracticeWorker(
             val db = AppDatabase.getInstance(applicationContext)
             val provider = ProviderManager.instance.activeProvider
             if (provider == null) {
-                // 用户未配置 API Key，本次静默跳过（与 EvaluationEngine/DistillationEngine
-                // 在 ChatViewModel 里的 by lazy 可空写法同样的"优雅跳过"原则）
+                // A5-4 修复：原此处直接 return Result.success() 静默跳过，连续多日
+                // 无任何提示，用户可能长期不知道每日修炼因未配置 API Key 而一直没在跑。
+                // 改为累计跳过次数，达到阈值（SKIP_NOTIFY_THRESHOLD）时通过系统通知
+                // （NotificationPermissionUtils.safeNotify）+ 通知中心
+                // （NotificationRepository.recordAppNotice）提醒用户配置 Provider，
+                // 并重置计数（下一轮重新累计，即每跳过阈值次提醒一次，不刷屏）。
+                // 计数 / 通知本身用独立 try-catch 包裹，失败不影响 doWork 主流程
+                // （即便提醒没发出去，本次仍按原语义 return Result.success() 跳过，
+                // finally 块照常 scheduleNext 保证次日继续，链路不断）。
+                handleProviderMissing()
                 return Result.success()
+            }
+            // A5-4 修复：Provider 可用，重置此前可能累积的跳过计数。重置失败
+            // 不应阻断当天修炼，单独 try-catch 吞掉（最坏情况是计数未清零，
+            // 下次提醒阈值提前触发一次，无数据正确性影响）。
+            try {
+                resetSkipCount()
+            } catch (e: Throwable) {
+                ZLog.w("DailyPracticeWorker", "重置跳过计数失败", e)
             }
             val engine = SpecialtyEvolutionEngine(provider)
             // 窗口02结论5修复：原先在此处独立 new 一份 SpecialtyProfileRepository，
@@ -106,8 +137,24 @@ class DailyPracticeWorker(
         } catch (e: Throwable) {
             ZLog.w("DailyPracticeWorker", "doWork failed", e)
             // 不重试，下一天自然会再跑
+            //
+            // C7#24 核实结论（未采纳审查报告"区分瞬时/永久故障走 Result.retry()"
+            // 的建议）：这里的 retry 建议与本文件既有设计直接冲突——finally 块
+            // 无条件调用 scheduleNext(hour, minute) 把下一次触发锁定在"次日同一
+            // 固定时刻"，这是刻意设计（避免同一天内因异常重试导致重复修炼，
+            // 见类头部注释第30-31行）。若在这里加 Result.retry()，WorkManager
+            // 会按退避策略在几分钟到几小时内重新拉起本 Worker，与 scheduleNext
+            // 已经排好的次日闹钟并行触发，可能导致同一天修炼两次。保持
+            // Result.success() + 下一天固定时刻重跑，是唯一不产生该副作用的选择。
         } finally {
-            // 无条件重新调度，即使上面发生异常也不能让每日链路断掉
+            // 无条件重新调度，即使上面发生异常也不能让每日链路断掉。
+            //
+            // C9#49 修复后说明：这里不再是"唯一"调度点——PracticeAlarmReceiver.onReceive
+            // 现在会在广播到达的第一时间就调用 scheduleNext（不等 Worker 是否被系统启动），
+            // 覆盖设备离线导致 doWork 迟迟不执行的边缘 case。此处的 finally 调用作为
+            // 第二重保险保留：一旦 doWork 真正跑起来，用它读到的 hour/minute（可能来自
+            // 用户设置，而 Receiver 那次用的是默认值）重新对齐一次触发时刻，不会冲突
+            // ——两次调度指向同一 requestCode 的 PendingIntent，后一次覆盖前一次即可。
             DailyPracticeScheduler.scheduleNext(applicationContext, hour, minute)
         }
         return Result.success()
@@ -121,6 +168,98 @@ class DailyPracticeWorker(
         val hour = prefs.getInt("daily_practice_hour", DailyPracticeScheduler.DEFAULT_HOUR)
         val minute = prefs.getInt("daily_practice_minute", DailyPracticeScheduler.DEFAULT_MINUTE)
         return hour to minute
+    }
+
+    // ─────────────────────────────────────────────────────────
+    //  A5-4 修复：Provider 为空时"连续跳过 N 次后提醒"
+    // ─────────────────────────────────────────────────────────
+    //
+    // 实现说明（报告点名本条需要设计决策，这里给出具体选择）：
+    //   - 计数存储：SharedPreferences（specialty_evolution_prefs，与每日触发时间
+    //     同一份文件），key = daily_practice_skip_count。新增 Room 表来存一个
+    //     整数计数器属过度设计，SharedPreferences 足够。
+    //   - 提醒阈值：SKIP_NOTIFY_THRESHOLD = 3（实现选择，见类头 companion 注释）。
+    //   - 提醒形式：①系统通知（NotificationPermissionUtils.safeNotify，与
+    //     CiCdPipelineWorker/PregnancySettlementWorker 同款 NotificationCompat +
+    //     已注册渠道）；②应用内通知（NotificationRepository.recordAppNotice，
+    //     写入通知中心数据层）。两者并存：系统通知即时可见，应用内通知留档
+    //     便于在通知中心回看。
+    //   - 提醒后重置计数：每跳过阈值次提醒一次，避免每日刷屏。
+    //   - Provider 恢复可用时计数清零（见 doWork() 调用处 resetSkipCount()）。
+    private fun skipCountPrefs() =
+        applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
+    /** 跳过计数 +1 并返回累加后的值。 */
+    private fun incrementSkipCount(): Int {
+        val prefs = skipCountPrefs()
+        val next = prefs.getInt(KEY_SKIP_COUNT, 0) + 1
+        prefs.edit().putInt(KEY_SKIP_COUNT, next).apply()
+        return next
+    }
+
+    /** 计数清零（Provider 可用，或达到阈值提醒之后调用）。 */
+    private fun resetSkipCount() {
+        skipCountPrefs().edit().putInt(KEY_SKIP_COUNT, 0).apply()
+    }
+
+    /**
+     * Provider 缺失时的处理：累计跳过次数，达到阈值则提醒并重置。
+     * 整体用 try-catch 兜底，任何环节异常都不影响 doWork 的早退语义
+     * （仍 return Result.success()，finally 照常调度次日）。
+     */
+    private suspend fun handleProviderMissing() {
+        try {
+            val skipCount = incrementSkipCount()
+            if (skipCount >= SKIP_NOTIFY_THRESHOLD) {
+                sendSkipPromptNotification(skipCount)
+                writeSkipPromptToNotificationCenter(skipCount)
+                resetSkipCount()
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            ZLog.w("DailyPracticeWorker", "处理 Provider 缺失提醒失败", e)
+        }
+    }
+
+    /**
+     * 发送"连续跳过"系统通知，复用已注册的 daily_practice 渠道。
+     * notificationId 固定（NOTIF_ID_SKIP_PROMPT），同一提醒多次触发时
+     * 后一条覆盖前一条，不在通知栏堆积。
+     */
+    private fun sendSkipPromptNotification(skipCount: Int) {
+        val title = "每日修炼已连续跳过 $skipCount 次"
+        val text = "角色每日修炼需要 API Key，已连续 $skipCount 次因未配置 Provider 而跳过。" +
+            "请前往设置页配置 Provider，配置完成后次日将自动恢复修炼。"
+        val notif = NotificationCompat.Builder(applicationContext, CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setAutoCancel(true)
+            .build()
+        // C类审查 #47 同款：统一走权限检查入口，避免 Android 13+ 权限被拒时静默失败。
+        com.zaijian.zhoumuyun.util.NotificationPermissionUtils.safeNotify(
+            applicationContext, NOTIF_ID_SKIP_PROMPT, notif, "DailyPracticeWorker",
+        )
+    }
+
+    /**
+     * 把跳过提醒写入通知中心数据层（NotificationRepository），作为应用内
+     * 通知留档。写入失败仅打日志，不影响系统通知是否已发出。
+     */
+    private suspend fun writeSkipPromptToNotificationCenter(skipCount: Int) {
+        try {
+            val title = "每日修炼已连续跳过 $skipCount 次"
+            val content = "角色每日修炼需要 API Key，已连续 $skipCount 次因未配置 Provider 而跳过。" +
+                "请前往设置页配置 Provider，配置完成后次日将自动恢复修炼。"
+            com.zaijian.zhoumuyun.data.AppContainer.instance.notificationRepo
+                .recordAppNotice(applicationContext, title, content)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            ZLog.w("DailyPracticeWorker", "写入跳过提醒到通知中心失败", e)
+        }
     }
 
     // ─────────────────────────────────────────────────────────

@@ -171,7 +171,31 @@ class DaughterCharacterRepository(
         daughterCharacterId: Int,
     ): com.zaijian.zhoumuyun.data.model.CharacterConfig? {
         val entity = dao.getByDaughterCharacterId(daughterCharacterId) ?: return null
-        return entity.toDaughterCharacterData().toCharacterConfig(daughterCharacterId)
+        val daughterData = entity.toDaughterCharacterData()
+
+        // A7b-2 修复：三代角色（母亲是 1000+ 号二代女儿）的 motherCharacterId
+        // 不在 DefaultCharacters（只含 1-9 号原生角色）中，toCharacterConfig
+        // 内部 DefaultCharacters.firstOrNull 查不到会回退灰色。这里递归查询
+        // 母亲的 CharacterConfig，取出 accentColor 传入，让三代角色继承母亲
+        // （二代女儿）的派生色系，而非回退灰色。家族传承封顶三代，递归最多
+        // 一层（三代→二代→原生），不会无限递归。
+        val motherAccent = if (daughterData.motherCharacterId >= 1000) {
+            try {
+                getCharacterConfig(daughterData.motherCharacterId)?.accentColor
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                ZLog.w("DaughterCharacterRepo", "递归查询母亲 accentColor 失败 (motherId=${daughterData.motherCharacterId})，将回退灰色", e)
+                null
+            }
+        } else {
+            null  // 母亲是 1-9 号原生角色，toCharacterConfig 内部 DefaultCharacters 查找即可
+        }
+
+        return daughterData.toCharacterConfig(
+            daughterCharacterId,
+            motherAccentColor = motherAccent,
+        )
     }
 
     /**
@@ -208,6 +232,20 @@ class DaughterCharacterRepository(
     )
 
     /**
+     * 问题38修复：getFamilyChain 的返回结果，附带 parseFailed 标志。
+     *
+     * 之前 gen2/gen3 任一层解析失败时直接 return 已收集到的部分 entries，
+     * 与"该代确实没有后代"走的是完全相同的返回路径——调用方（UI）无法
+     * 区分"孙女不存在"和"孙女数据解析失败被跳过"，家族页可能悄悄缺一代
+     * 却没有任何提示。parseFailed=true 时，entries 仍是尽力收集到的部分结果，
+     * 只是额外告知调用方"这次结果可能不完整，建议提示用户"。
+     */
+    data class FamilyChainResult(
+        val entries: List<DaughterChainEntry>,
+        val parseFailed: Boolean = false,
+    )
+
+    /**
      * 查询以 [firstGenCharacterId] 为起点的完整后代链（最多两层，固定不递归）。
      *
      * 返回有序列表：[第二代 DaughterChainEntry, 第三代 DaughterChainEntry（如有）]
@@ -223,44 +261,53 @@ class DaughterCharacterRepository(
      */
     suspend fun getFamilyChain(
         firstGenCharacterId: Int,
-    ): List<DaughterChainEntry> {
+    ): FamilyChainResult {
         val result = mutableListOf<DaughterChainEntry>()
 
         // ── 第二代 ──────────────────────────────────────────────
         val gen2Entity = dao.getAllWithMotherId(firstGenCharacterId).firstOrNull()
-            ?: return result   // 没有女儿，直接返回空列表
+            ?: return FamilyChainResult(result)   // 没有女儿，直接返回空列表（非解析失败）
 
         val gen2CharacterId = gen2Entity.daughterCharacterId
-            ?: return result   // 注册尚未完成，暂不纳入
+            ?: return FamilyChainResult(result)   // 注册尚未完成，暂不纳入（非解析失败）
 
         val gen2Config = try {
             gen2Entity.toDaughterCharacterData().toCharacterConfig(gen2CharacterId)
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Throwable) {
-            ZLog.w("DaughterCharacterRepo", "gen2 parse failed, skip", e)
-            return result
+            // 问题38修复：升级为 error（数据损坏，不是可忽略的 warn），
+            // 且返回时置位 parseFailed=true，与"没有女儿"区分开。
+            ZLog.e("DaughterCharacterRepo", "gen2 parse failed, skip", e)
+            return FamilyChainResult(result, parseFailed = true)
         }
         result.add(DaughterChainEntry(gen2Config, gen2Entity.kinshipTerm))
 
         // ── 第三代 ──────────────────────────────────────────────
         val gen3Entity = dao.getAllWithMotherId(gen2CharacterId).firstOrNull()
-            ?: return result   // 没有孙女，到此为止
+            ?: return FamilyChainResult(result)   // 没有孙女，到此为止（非解析失败）
 
         val gen3CharacterId = gen3Entity.daughterCharacterId
-            ?: return result   // 注册尚未完成
+            ?: return FamilyChainResult(result)   // 注册尚未完成（非解析失败）
 
         val gen3Config = try {
-            gen3Entity.toDaughterCharacterData().toCharacterConfig(gen3CharacterId)
+            // A7b-2 修复：三代角色的母亲是二代女儿（gen2CharacterId >= 1000），
+            // toCharacterConfig 内部 DefaultCharacters 查不到，会回退灰色。
+            // 这里直接传入已计算好的 gen2Config.accentColor 作为母亲主题色，
+            // 无需递归查询——gen2Config 在上方已完整解析。
+            gen3Entity.toDaughterCharacterData().toCharacterConfig(
+                gen3CharacterId,
+                motherAccentColor = gen2Config.accentColor,
+            )
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Throwable) {
-            ZLog.w("DaughterCharacterRepo", "gen3 parse failed, skip", e)
-            return result
+            ZLog.e("DaughterCharacterRepo", "gen3 parse failed, skip", e)
+            return FamilyChainResult(result, parseFailed = true)
         }
         result.add(DaughterChainEntry(gen3Config, gen3Entity.kinshipTerm))
 
-        return result
+        return FamilyChainResult(result)
     }
 
     // ── B 类卡点修复：供 WorldSimulation 后台遍历使用 ─────────────
@@ -307,7 +354,25 @@ class DaughterCharacterRepository(
     fun observeCharacterConfig(daughterCharacterId: Int): Flow<CharacterConfig?> =
         dao.observeByDaughterCharacterId(daughterCharacterId)
             .map { entity ->
-                entity?.toDaughterCharacterData()?.toCharacterConfig(daughterCharacterId)
+                if (entity == null) return@map null
+                val daughterData = entity.toDaughterCharacterData()
+                // A7b-2 修复：与 getCharacterConfig 同款递归查找母亲 accentColor，
+                // 三代角色（母亲是 1000+ 号二代女儿）不再回退灰色。
+                val motherAccent = if (daughterData.motherCharacterId >= 1000) {
+                    try {
+                        getCharacterConfig(daughterData.motherCharacterId)?.accentColor
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (e: Throwable) {
+                        null
+                    }
+                } else {
+                    null
+                }
+                daughterData.toCharacterConfig(
+                    daughterCharacterId,
+                    motherAccentColor = motherAccent,
+                )
             }
             .catch { e ->
                 // 批次3 3-4修复：原 .catch 只吞 DaughterDataException 发 null，

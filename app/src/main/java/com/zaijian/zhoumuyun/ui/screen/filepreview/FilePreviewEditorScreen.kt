@@ -85,7 +85,18 @@ fun FilePreviewEditorScreen(
     }
 
     // ── Snackbar 处理 ─────────────────────────────────────────
-    LaunchedEffect(uiState) {
+    // 此前以整个 uiState（sealed class）作 LaunchedEffect key：Loaded→Saved→Loaded、
+    // xlsx 切 sheet（同为 Loaded 但 content 不同实例）、导出等任意状态切换都会让
+    // uiState 结构变化，导致 effect 反复重启（B7 审查报告 序号3）。当前因 when 仅对
+    // Saved/Error 分支生效、其余 else->{} 故无用户可见故障，但仍属重复触发反模式，
+    // 收窄为仅在 Saved/Error 的瞬时消息内容变化时才重启；其余状态统一归并为同一个
+    // key（"none"），不会再触发/打断 effect。
+    val snackbarEffectKey = when (val s = uiState) {
+        is FilePreviewViewModel.UiState.Saved -> "saved:${s.message}"
+        is FilePreviewViewModel.UiState.Error -> "error:${s.message}"
+        else -> "none"
+    }
+    LaunchedEffect(snackbarEffectKey) {
         when (val s = uiState) {
             is FilePreviewViewModel.UiState.Saved -> {
                 snackbarHostState.showSnackbar(s.message)
@@ -100,7 +111,9 @@ fun FilePreviewEditorScreen(
     }
 
     // ── 提取文件名 ─────────────────────────────────────────────
-    val fileName = remember(encodedPath, tempKey, uiState) {
+    // fileName 只依赖 encodedPath，与 uiState 无关；此前把 uiState 也塞进 key 会导致
+    // 每次状态切换都重算一次（B7 审查报告 序号3），现移除。
+    val fileName = remember(encodedPath, tempKey) {
         when {
             encodedPath == "memory" -> "预览"
             else -> runCatching {

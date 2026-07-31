@@ -306,7 +306,7 @@ class ProjectRepository(
      * 注：如果项目已集成 pdfbox-android，可直接 PDDocument.load(inputStream)
      * 提取文本，无需 OCR。此处提供双路径实现。
      */
-    private fun parsePdf(context: Context, inputStream: InputStream): String {
+    private suspend fun parsePdf(context: Context, inputStream: InputStream): String {
         return com.zaijian.zhoumuyun.util.PdfExtractor.extractText(context, inputStream)
     }
 

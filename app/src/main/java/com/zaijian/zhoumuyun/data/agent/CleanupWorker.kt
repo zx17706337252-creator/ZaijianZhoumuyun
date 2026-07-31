@@ -18,6 +18,9 @@ import com.zaijian.zhoumuyun.util.ZLog
  * 清理策略参数：
  * - world_events：删除 90 天前 + 每 domain 保留最近 500 条
  * - messages：删除 180 天前 + 每角色保留最近 2000 条
+ * - pending_events：A1-3 修复，删除 30 天前的已处理记录（§11.1 落盘兜底表，
+ *   processed=true 后不再有任何用途，原先 deleteProcessedBefore 定义了但全仓
+ *   零调用，表随使用时间无限增长）
  *
  * 与 PregnancySettlementWorker 同一模式：CoroutineWorker + 临时拼装最小依赖，
  * 不走 Hilt。清理操作是幂等的，重复执行无副作用。
@@ -41,6 +44,8 @@ class CleanupWorker(
         private const val MESSAGE_RETENTION_DAYS = 180L
         /** messages 每角色保留条数 */
         private const val MESSAGE_KEEP_PER_CHARACTER = 2000
+        /** pending_events 已处理记录保留天数（30天，兜底窗口远短于业务表） */
+        private const val PENDING_EVENT_RETENTION_DAYS = 30L
     }
 
     override suspend fun doWork(): Result {
@@ -66,6 +71,16 @@ class CleanupWorker(
                 TAG,
                 "messages 清理完成：时间裁剪删除 ${msgsDeletedByTime} 条（>${MESSAGE_RETENTION_DAYS}天），" +
                     "角色裁剪删除 ${msgsDeletedByChar} 条（每角色保留 ${MESSAGE_KEEP_PER_CHARACTER} 条）",
+            )
+
+            // ── pending_events 清理（A1-3 修复）──
+            // 只删 processed=true 且超过保留期的记录，processed=false 的记录
+            // 不受影响（仍需保留供重启后 processPendingEvents 重放）。
+            val pendingCutoff = now - PENDING_EVENT_RETENTION_DAYS * 86_400_000L
+            db.pendingEventDao().deleteProcessedBefore(pendingCutoff)
+            ZLog.i(
+                TAG,
+                "pending_events 清理完成：已删除 ${PENDING_EVENT_RETENTION_DAYS} 天前的已处理记录",
             )
 
             Result.success()

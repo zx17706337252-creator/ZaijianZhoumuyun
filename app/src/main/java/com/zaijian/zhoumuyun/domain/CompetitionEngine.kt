@@ -4,6 +4,7 @@ import com.zaijian.zhoumuyun.data.provider.chatSyncWithRetry
 import com.zaijian.zhoumuyun.data.provider.LLMConfig
 import com.zaijian.zhoumuyun.data.provider.LLMMessage
 import com.zaijian.zhoumuyun.data.provider.LLMProvider
+import com.zaijian.zhoumuyun.util.ZLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -239,6 +240,7 @@ class CompetitionEngine(
         // 触发 runJudging 的失败回退（P0-2）。按人数动态放大，封顶避免单次请求过大。
         val judgeMaxTokens = (600 + 500 * n).coerceIn(1500, 6000)
 
+        var rawResponseForLog: String? = null
         return try {
             val response = provider.chatSyncWithRetry(
                 messages = listOf(LLMMessage("user", userPrompt)),
@@ -250,6 +252,7 @@ class CompetitionEngine(
                     stream = false,
                 ),
             )
+            rawResponseForLog = response
 
             val obj = JSONObject(extractJson(response))
             val verdictsArray: JSONArray = obj.optJSONArray("verdicts") ?: JSONArray()
@@ -290,9 +293,12 @@ class CompetitionEngine(
             )
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
-        } catch (_: Throwable) {
-            // 解析失败时返回空结果，调用方按"漏评"处理（首次调用会走补评，
-            // 补评失败则最终由 judgeRound 的默认值兜底）
+        } catch (e: Throwable) {
+            // B3审查序号4修复：原为 catch (_: Throwable) 无日志，LLM 输出格式系统性
+            // 偏差时所有评分静默失败且无法排查。补日志记录原始响应（截断避免日志过长）
+            // 和异常堆栈。rawResponseForLog 为 null 说明连 LLM 请求本身都失败了
+            // （chatSyncWithRetry 抛出），非 null 则说明是 JSON 解析/字段提取阶段出错。
+            ZLog.e("CompetitionEngine", "judgeSubset解析失败，judgeName=$judgeName, domain=$domain, rawResponse=${rawResponseForLog?.take(500)}", e)
             JudgeRoundResult(emptyList(), "", false)
         }
     }
@@ -333,6 +339,7 @@ class CompetitionEngine(
 
         val userPrompt = "我这次的参赛作品：\n${ownContent.take(1500)}"
 
+        var rawResponseForLog: String? = null
         try {
             val response = provider.chatSyncWithRetry(
                 messages = listOf(LLMMessage("user", userPrompt)),
@@ -344,6 +351,7 @@ class CompetitionEngine(
                     stream = false,
                 ),
             )
+            rawResponseForLog = response
             val obj = JSONObject(extractJson(response))
             SelfEvalResult(
                 selfScore = obj.optInt("score", 50).coerceIn(0, 100),
@@ -352,7 +360,11 @@ class CompetitionEngine(
             )
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
-        } catch (_: Throwable) {
+        } catch (e: Throwable) {
+            // B3审查序号5修复：原为 catch (_: Throwable) 无日志，默认50分的
+            // SelfEvalResult 若被不检查 success 字段的调用方使用会静默污染数据。
+            // 补日志记录原始响应，便于确认是格式偏差还是请求本身失败。
+            ZLog.e("CompetitionEngine", "selfEvaluateEntry解析失败，characterName=$characterName, domain=$domain, rawResponse=${rawResponseForLog?.take(500)}", e)
             SelfEvalResult(50, "（自评解析失败）", false)
         }
     }

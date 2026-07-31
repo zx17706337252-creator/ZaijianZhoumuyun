@@ -6,6 +6,7 @@ import com.zaijian.zhoumuyun.data.provider.LLMConfig
 import com.zaijian.zhoumuyun.data.provider.LLMMessage
 import com.zaijian.zhoumuyun.data.provider.LLMProvider
 import com.zaijian.zhoumuyun.data.provider.chatSyncWithRetry
+import com.zaijian.zhoumuyun.data.provider.chatStreamWithRetry
 import com.zaijian.zhoumuyun.data.repository.AgentActivityRepository
 import com.zaijian.zhoumuyun.util.ZLog
 import kotlinx.coroutines.CancellationException
@@ -396,7 +397,8 @@ object ToolCallInterceptor {
         // parser 构造开销，可接受。
         if (AgentToolRegistry.allNames().isEmpty()) {
             // P0-5: 使用 chatStream() 保持一致，但快速路径不关心 finish_reason
-            provider.chatStream(messages, systemPrompt, config).collect { item ->
+            // B5-Fix5: 改用 chatStreamWithRetry，对流开始前的连接失败/429/5xx 自动重试
+            provider.chatStreamWithRetry(messages, systemPrompt, config).collect { item ->
                 if (item is ChatStreamItem.TextDelta) send(StreamEvent.TextDelta(item.text))
             }
             return@channelFlow
@@ -504,7 +506,8 @@ object ToolCallInterceptor {
             // 表示有未闭合的 <tool: 标签。两个信号任一为真即判定本轮被截断。
             var truncatedThisRound = false
             try {
-                provider.chatStream(currentMessages, systemPrompt, config).collect { item ->
+                // B5-Fix5: 改用 chatStreamWithRetry，对流开始前的连接失败/429/5xx 自动重试
+                provider.chatStreamWithRetry(currentMessages, systemPrompt, config).collect { item ->
                     when (item) {
                         is ChatStreamItem.TextDelta -> {
                             val result = parser.feed(item.text)
@@ -669,6 +672,14 @@ object ToolCallInterceptor {
                                 params   = mapOf("path" to filePath),
                                 hint     = "⚠ AI 未主动读取，系统自动读取文件…",
                             ))
+                            // C7#28 修复：原先无论下面 try 块的结果如何（读取失败/异常），
+                            // 循环末尾发送的 StreamEvent.ToolDone 都硬编码 success=true，
+                            // Agent 可见性 UI（心迹面板/工具调用展示）会永久显示"成功"，
+                            // 即便这个文件其实没读到。改为记录真实结果，随 ToolDone 一起发出。
+                            // 注意：喂给 LLM 的 fallbackContent（下方）本身已经正确携带了
+                            // 每个文件的实际内容或失败占位文案，这里改的只是 UI 可见性信号，
+                            // 不影响 LLM 侧已经拿到的准确信息。
+                            var readSucceeded = false
                             try {
                                 val readResult = fileReadTool.execute(mapOf(
                                     "path"  to filePath,
@@ -676,6 +687,7 @@ object ToolCallInterceptor {
                                 ))
                                 if (readResult.success && readResult.content.isNotEmpty()) {
                                     fallbackParts.add(readResult.content)
+                                    readSucceeded = true
                                     com.zaijian.zhoumuyun.util.AgentLog.info(
                                         "FileReadLock", "兜底读取成功：$filePath（${readResult.content.length} 字符）",
                                     )
@@ -698,8 +710,8 @@ object ToolCallInterceptor {
                             send(StreamEvent.ToolDone(
                                 com.zaijian.zhoumuyun.data.agent.ToolResult(
                                     toolName = "file_read",
-                                    success  = true,
-                                    content  = "（系统自动读取，AI 未主动调用工具）",
+                                    success  = readSucceeded,
+                                    content  = if (readSucceeded) "（系统自动读取，AI 未主动调用工具）" else "（系统自动读取失败，AI 未主动调用工具）",
                                 ),
                             ))
                         }
@@ -1088,7 +1100,8 @@ object ToolCallInterceptor {
             try {
                 val parser = ToolParser()
                 // P0-5: 使用 chatStream() 保持一致
-                provider.chatStream(currentMessages, systemPrompt, config).collect { item ->
+                // B5-Fix5: 改用 chatStreamWithRetry，对流开始前的连接失败/429/5xx 自动重试
+                provider.chatStreamWithRetry(currentMessages, systemPrompt, config).collect { item ->
                     if (item is ChatStreamItem.TextDelta) {
                         val result = parser.feed(item.text)
                         tailPendingCalls.addAll(result.detectedCalls)

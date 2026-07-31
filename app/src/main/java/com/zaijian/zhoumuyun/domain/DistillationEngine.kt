@@ -11,6 +11,7 @@ import com.zaijian.zhoumuyun.data.db.entity.MemoryEntity
 import com.zaijian.zhoumuyun.data.provider.LLMConfig
 import com.zaijian.zhoumuyun.data.provider.LLMMessage
 import com.zaijian.zhoumuyun.data.provider.LLMProvider
+import com.zaijian.zhoumuyun.util.ZLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import androidx.room.withTransaction
@@ -277,6 +278,7 @@ class DistillationEngine(
             append("请从以上评语中归纳 2–4 条共同的行为规律，作为可复用的能力规则：")
         }
 
+        var rawResponseForLog: String? = null
         return try {
             val response = provider.chatSyncWithRetry(
                 messages     = listOf(LLMMessage("user", userPrompt)),
@@ -288,6 +290,7 @@ class DistillationEngine(
                     stream      = false,
                 ),
             )
+            rawResponseForLog = response
             response.lines()
                 .map { it.trim() }
                 .filter { it.isNotEmpty() && it.length >= 5 }  // 过滤过短的无效行
@@ -295,7 +298,11 @@ class DistillationEngine(
                 .map { if (it.length > MAX_RULE_CHARS) it.take(MAX_RULE_CHARS) else it }
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
-        } catch (_: Throwable) {
+        } catch (e: Throwable) {
+            // B3审查序号6修复：原为 catch (_: Throwable) { emptyList() } 无日志，
+            // 蒸馏产出零条规则时角色专长演进会静默停滞且无法排查。
+            // 补日志记录原始响应，便于确认是格式偏差还是请求本身失败。
+            ZLog.e("DistillationEngine", "runDistillLlm解析失败，goalTitle=$goalTitle, rawResponse=${rawResponseForLog?.take(500)}", e)
             emptyList()
         }
     }

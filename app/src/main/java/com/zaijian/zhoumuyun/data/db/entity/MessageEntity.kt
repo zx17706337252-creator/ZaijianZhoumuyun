@@ -83,9 +83,14 @@ data class MessageEntity(
     val psychText: String? = null,
 
     // ── v75→v76 新增：角色忠诚锁定·speakerContext 标记（方案 v1.5 第 4.2 节）─────
-    // 机制一产出的身份判定结果，随消息落库。供机制四状态隔离过滤层使用：
-    // NON_OWNER 来源的消息产生的记忆打 isNarrativeOnly=true、关系 delta 路由到
-    // 独立第三方桶，不写入/换算到 owner 归属相关数值。默认 OWNER_DIRECT，向后兼容
+    // 机制一产出的身份判定结果，随消息落库（C8 #43 收尾前落库时机滞后于判定结果，
+    // 现改为判定出来后回写，见 ChatMessageOrchestrator/MessageDao.updateSpeakerContext）。
+    // 供机制四状态隔离过滤层使用：NON_OWNER 来源的消息产生的记忆打
+    // isNarrativeOnly=true、关系 delta 路由到独立第三方桶，不写入/换算到 owner
+    // 归属相关数值；同时 MessageDao.getByCharacterForContext /
+    // getRecentByCharacter 读取喂给 LLM 的历史时排除 NON_OWNER 消息，避免角色把
+    // 假扮期间说的话当成"主人本人说的"带入后续联想（UI 展示不受影响，仍走
+    // observeByCharacter，用户自己发的消息原样可见）。默认 OWNER_DIRECT，向后兼容
     //（存量消息及未显式标记的调用方一律视为 owner 直接对话，行为不变）。
     val speakerContext: String = "OWNER_DIRECT",
 )

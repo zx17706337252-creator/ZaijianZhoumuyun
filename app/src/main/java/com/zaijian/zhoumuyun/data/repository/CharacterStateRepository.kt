@@ -67,6 +67,14 @@ class CharacterStateRepository(
         // §6 EventBus 埋点：角色状态更新事件，供 ChainTriggerMatcher 匹配事件触发型链条
         // §11.1：心情值已写入 Room，走 publishPersistent 先落盘再 EventBus.emit()，
         // 防止 App 被杀期间事件丢失。
+        //
+        // C4#13 触发范围说明（方案B落地后更新）：本方法此前唯一调用方是
+        // PregnancyTriggerManager（孕期判定链路各分支，约 7 处调用点）。现在
+        // ChatMessageOrchestrator 也会在解析出聊天回复末尾 [mood:情绪词:强度] 标记
+        // 时调用本方法（仅限普通角色 characterId<1000，见该处调用点注释），
+        // "角色心情因聊天内容变化"这件事已经打通，state_updated 事件会因为
+        // 普通对话（COMPANION 模式）真实发布。圆桌（Roundtable）路径的 mood 标记
+        // 目前仍只写 PresenceEngine 缓存、不落这张表，不在本次改动范围内。
         EventPublisher.publishPersistent(AppEvent(
             name = "state_updated",
             characterId = characterId,

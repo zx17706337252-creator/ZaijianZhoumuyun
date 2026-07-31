@@ -6,6 +6,7 @@ import androidx.work.WorkerParameters
 import com.zaijian.zhoumuyun.data.db.AppDatabase
 import com.zaijian.zhoumuyun.data.db.entity.FileIndexEntity
 import com.zaijian.zhoumuyun.util.PdfExtractor
+import com.zaijian.zhoumuyun.util.ZLog
 import java.io.File
 
 /**
@@ -57,7 +58,16 @@ class FileIndexWorker(
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Throwable) {
-            // 索引失败不阻塞调用方，返回 success 避免无限重试
+            // C7 #36（已复核，有意设计，非需修复问题——审查报告v2 结论：
+            // "可接受的设计选择"）：索引失败时返回 Result.success() 而非
+            // retry/failure，是刻意选择。理由：文件搜索索引不是关键路径——
+            // 一个文件没建上索引，用户仍能正常打开/使用该文件，只是搜索时
+            // 少收录这一条，不会导致数据丢失或功能崩溃，不值得为它引入
+            // WorkManager 重试机制（重试对偶发的解析失败大概率无意义，
+            // 反而可能造成资源浪费）。
+            // 此 catch 仅打日志留痕，供后续排查"为什么某文件搜不到"，
+            // 不改变 Result.success() 的既有行为。
+            ZLog.w("FileIndexWorker", "文件索引失败，跳过（不影响文件本身使用）: ${inputData.getString(KEY_FILE_PATH)}", e)
             Result.success()
         }
     }

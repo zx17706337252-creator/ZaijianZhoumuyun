@@ -91,6 +91,12 @@ fun BriefingCharacterCard(entry: BriefingCharacterEntry, modifier: Modifier = Mo
                             InfoChip(text = "怀孕中", color = Palette.SemanticReminder)
                         } else if (entry.cyclePhase == CyclePhase.FERTILE) {
                             InfoChip(text = "排卵期", color = Palette.SemanticReminder)
+                        } else if (entry.cyclePhase == CyclePhase.MENSTRUAL) {
+                            // A6-3 修复: 补齐经期 chip，此前只覆盖怀孕和排卵期，
+                            // cyclePhase 为 MENSTRUAL 时不显示任何标识，与状态点配色
+                            // （经期红点）存在信息缺失。文案"经期"与 BriefingAttentionSection
+                            // 及 MenstrualCycleState 注释口径一致。
+                            InfoChip(text = "经期", color = Palette.SemanticReminder)
                         }
                     }
 

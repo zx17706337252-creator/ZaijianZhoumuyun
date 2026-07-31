@@ -15,7 +15,6 @@ import com.zaijian.zhoumuyun.data.repository.RoundtableMessageRepository
 import com.zaijian.zhoumuyun.domain.MoodType
 import com.zaijian.zhoumuyun.domain.PresenceEngine
 import com.zaijian.zhoumuyun.domain.RelationshipEngine
-import com.zaijian.zhoumuyun.data.memory.MemoryEngine
 import com.zaijian.zhoumuyun.domain.scheduler.ScheduleContext
 import com.zaijian.zhoumuyun.domain.scheduler.SpeakIntent
 import com.zaijian.zhoumuyun.domain.scheduler.SpeakPlan
@@ -57,7 +56,9 @@ class RoundtableMessageOrchestrator(
     private val relationshipEngine: RelationshipEngine,
     private val presenceEngine: PresenceEngine,
     private val eventRepo: EventRepository,
-    private val memoryEngine: MemoryEngine,
+    // A8-3 修复：memoryEngine 参数为历史遗留死代码，全文件零调用。
+    // 圆桌群记忆走 AgentCoreTools 的 Agent 主动工具调用路径（roundtableId 显式传参），
+    // 与此构造参数无关。已删除。
     private val isInterruptedRef: () -> Boolean,
     private val isInterruptedSetter: (Boolean) -> Unit,
     private val getCurrentRoundtableId: () -> String?,
@@ -537,9 +538,19 @@ $digest
                         // 续轮用固定追问 prompt
                         val continuePrompt = "请结合前面各位的发言，继续完善方案，争取形成共识。"
 
+                        // A9-6 修复：续轮开始前重新查询关系矩阵。onRoundtableRoundEnd
+                        // 在每轮结束后写入了新的 jealousy/tension，续轮复用 baseCtx
+                        // 中的旧快照会导致调度读到上一轮写入前的旧值。同时覆盖
+                        // continueCtx.relationships 和 executeRound 的 relationshipMatrix
+                        // 参数，两处必须同步刷新，否则只改一处不会生效。
+                        val freshMatrix = withContext(Dispatchers.IO) {
+                            relationshipEngine.getInterCharacterMatrix(memberIds)
+                        }
+
                         val continueCtx = baseCtx.copy(
                             userMessage       = continuePrompt,
                             lastRoundSpeakers = _uiState.value.lastRoundSpeakers,
+                            relationships     = freshMatrix,
                         )
                         // 续轮调度应遵循用户选择的 scheduleMode，与初始轮（schedulePlans）
                         // 一致，而非固定走全体@逻辑。
@@ -552,7 +563,7 @@ $digest
                             userMessage        = continuePrompt,
                             turnIdx            = currentTurnIdx,
                             memberIds          = memberIds,
-                            relationshipMatrix = relationshipMatrix,
+                            relationshipMatrix = freshMatrix,
                             provider           = provider,
                             generateBotReply   = generateBotReply,
                         )

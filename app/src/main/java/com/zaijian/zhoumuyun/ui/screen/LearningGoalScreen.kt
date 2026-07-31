@@ -152,6 +152,14 @@ fun LearningGoalScreen(
             val allExpanded = uiState.goals.isNotEmpty() &&
                 uiState.goals.all { it.id in uiState.expandedRulePanels }
             val topBarActions: @Composable RowScope.() -> Unit = {
+                // [C2#6 修复] 跳转到当前选中角色的聊天页
+                IconButton(onClick = { onNavigateToChat(selectedCharacterId) }) {
+                    Icon(
+                        imageVector        = AppIcons.PrivateChat,
+                        contentDescription = "去聊天",
+                        tint               = colors.textSecondary,
+                    )
+                }
                 // 目标数量徽章
                 if (activeCount > 0) {
                     Box(

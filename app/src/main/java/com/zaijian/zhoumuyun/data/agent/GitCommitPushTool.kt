@@ -183,7 +183,7 @@ class GitCommitPushTool(
      * 每个文件 PUT 前先 GET 当前 sha（若文件已存在）。
      * 返回本次 commit SHA。
      */
-    private fun pushFiles(
+    private suspend fun pushFiles(
         config: com.zaijian.zhoumuyun.data.datastore.GithubConfig,
         branch: String,
         message: String,
@@ -216,40 +216,58 @@ class GitCommitPushTool(
                 }
             }.toString()
 
-            val conn = (URL(putUrl).openConnection() as HttpURLConnection).apply {
-                requestMethod = "PUT"
-                connectTimeout = 15_000
-                readTimeout    = 15_000
-                setRequestProperty("Accept",              "application/vnd.github+json")
-                setRequestProperty("Authorization",       "Bearer ${config.token}")
-                setRequestProperty("Content-Type",         "application/json")
-                setRequestProperty("X-GitHub-Api-Version", "2022-11-28")
-                doOutput = true
-            }
-
+            // B5-Fix6: 接入 githubHttpRetry，对 429/5xx 和网络异常自动指数退避重试。
+            // 重试粒度为单个文件的单次 HTTP 调用（而非整批），避免对已成功文件重复提交。
             try {
-                OutputStreamWriter(conn.outputStream).use { it.write(body) }
-                val code = conn.responseCode
-                if (code !in 200..201) {
-                    val errorBody = try {
-                        conn.errorStream?.bufferedReader()?.use { it.readText() }?.take(200)
-                    } catch (_: Throwable) { null }
-                    throw RuntimeException("PUT ${file.path} 返回 $code: ${errorBody ?: conn.responseMessage}")
+                githubHttpRetry(
+                    onRetry = { attempt, e ->
+                        com.zaijian.zhoumuyun.util.ZLog.w(
+                            "GitCommitPush",
+                            "PUT 文件第 $attempt 次重试（${file.path}，HTTP ${e.statusCode}）：${e.responseBody.take(100)}",
+                        )
+                    },
+                ) {
+                    val conn = (URL(putUrl).openConnection() as HttpURLConnection).apply {
+                        requestMethod = "PUT"
+                        connectTimeout = 15_000
+                        readTimeout    = 15_000
+                        setRequestProperty("Accept",              "application/vnd.github+json")
+                        setRequestProperty("Authorization",       "Bearer ${config.token}")
+                        setRequestProperty("Content-Type",         "application/json")
+                        setRequestProperty("X-GitHub-Api-Version", "2022-11-28")
+                        doOutput = true
+                    }
+
+                    try {
+                        OutputStreamWriter(conn.outputStream).use { it.write(body) }
+                        val code = conn.responseCode
+                        if (code !in 200..201) {
+                            val errorBody = try {
+                                conn.errorStream?.bufferedReader()?.use { it.readText() }?.take(200)
+                            } catch (_: Throwable) { null }
+                            // 429/5xx → isRetryable=true 由 helper 自动重试；
+                            // 4xx（除 429）→ isRetryable=false 立即向上抛出
+                            throw GithubHttpException(
+                                statusCode = code,
+                                responseBody = "PUT ${file.path} 返回 $code: ${errorBody ?: conn.responseMessage}",
+                            )
+                        }
+                        val resp = conn.inputStream.bufferedReader().use { it.readText() }
+                        val commit = JSONObject(resp).optJSONObject("commit")
+                        latestCommitSha = commit?.optString("sha")
+                        succeededPaths += file.path
+                    } finally {
+                        conn.disconnect()
+                    }
                 }
-                val resp = conn.inputStream.bufferedReader().use { it.readText() }
-                val commit = JSONObject(resp).optJSONObject("commit")
-                latestCommitSha = commit?.optString("sha")
-                succeededPaths += file.path
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Throwable) {
-                // 该文件失败前面的文件已经各自成功提交（每个文件是一次独立 commit），
+                // 重试耗尽或不可重试错误：该文件失败，前面已成功提交的文件各自是独立 commit，
                 // 不是"这次提交全部回滚"，把已成功的路径带出去，避免调用方误判为
                 // "整体失败、可以整批重试"而对已成功文件重复提交。
                 com.zaijian.zhoumuyun.util.ZLog.w("GitCommitPush", "PUT 文件失败：${file.path}", e)
                 throw PartialCommitException(succeededPaths.toList(), file.path, latestCommitSha, e)
-            } finally {
-                conn.disconnect()
             }
         }
 
@@ -258,31 +276,63 @@ class GitCommitPushTool(
 
     /**
      * GET /repos/{owner}/{repo}/contents/{path}?ref={branch}
-     * 文件存在返回 sha，不存在返回 null。
+     * 文件存在返回 sha，文件确实不存在（404）返回 null。
+     *
+     * B5 审查修复（问题3）：原实现对任何非 200 响应码（500/403/429 等）都当成
+     * "文件不存在"返回 null，导致 pushFiles 以无 sha 模式 PUT 一个实际存在的文件，
+     * GitHub 拒绝并返回 422，最终错误信息显示"PUT 返回 422"而不是真实原因
+     * （获取 sha 时网络/接口出错），误导排查方向。现在只把 404 当作"不存在"，
+     * 其余非 200 状态码改为抛出异常，交由 pushFiles 现有的 catch 块包装成
+     * PartialCommitException，错误信息里会带上真实的 HTTP 状态码和响应内容。
+     * （真正的网络异常如超时/DNS 失败本来就没有被这里的 try 块吞掉，会正常抛出，
+     * 不受本次改动影响。）
      */
-    private fun getFileSha(
+    private suspend fun getFileSha(
         config: com.zaijian.zhoumuyun.data.datastore.GithubConfig,
         path: String,
         branch: String,
     ): String? {
         val url = "$API_BASE/repos/${config.owner}/${config.repo}/contents/${encodeGithubPath(path)}?ref=${Uri.encode(branch)}"
-        val conn = (URL(url).openConnection() as HttpURLConnection).apply {
-            requestMethod = "GET"
-            connectTimeout = 8_000
-            readTimeout    = 8_000
-            setRequestProperty("Accept",              "application/vnd.github+json")
-            setRequestProperty("Authorization",       "Bearer ${config.token}")
-            setRequestProperty("X-GitHub-Api-Version", "2022-11-28")
-        }
 
-        return try {
-            if (conn.responseCode == 404) return null
-            if (conn.responseCode != 200) return null
-            val json = conn.inputStream.bufferedReader().use { it.readText() }
-            val obj = JSONObject(json)
-            if (obj.isNull("sha")) null else obj.optString("sha")
-        } finally {
-            conn.disconnect()
+        // B5-Fix6: 接入 githubHttpRetry，对 429/5xx 和网络异常自动重试。
+        // 404 表示文件不存在（语义正确，非错误），直接返回 null 不进入重试逻辑。
+        return githubHttpRetry(
+            onRetry = { attempt, e ->
+                com.zaijian.zhoumuyun.util.ZLog.w(
+                    "GitCommitPush",
+                    "获取文件 sha 第 $attempt 次重试（$path，HTTP ${e.statusCode}）：${e.responseBody.take(100)}",
+                )
+            },
+        ) {
+            val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 8_000
+                readTimeout    = 8_000
+                setRequestProperty("Accept",              "application/vnd.github+json")
+                setRequestProperty("Authorization",       "Bearer ${config.token}")
+                setRequestProperty("X-GitHub-Api-Version", "2022-11-28")
+            }
+
+            try {
+                val code = conn.responseCode
+                if (code == 404) return@githubHttpRetry null // 文件不存在，语义正常
+                if (code != 200) {
+                    val errorBody = try {
+                        conn.errorStream?.bufferedReader()?.use { it.readText() }?.take(200)
+                    } catch (_: Throwable) { null }
+                    // 429/5xx → isRetryable=true 由 helper 自动重试；
+                    // 4xx（除 429）→ isRetryable=false 立即向上抛出
+                    throw GithubHttpException(
+                        statusCode = code,
+                        responseBody = "获取文件 sha 失败（GET $path 返回 $code）: ${errorBody ?: conn.responseMessage}",
+                    )
+                }
+                val json = conn.inputStream.bufferedReader().use { it.readText() }
+                val obj = JSONObject(json)
+                if (obj.isNull("sha")) null else obj.optString("sha")
+            } finally {
+                conn.disconnect()
+            }
         }
     }
 

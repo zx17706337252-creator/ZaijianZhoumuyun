@@ -1,6 +1,5 @@
 package com.zaijian.zhoumuyun.data.agent
 
-import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
@@ -43,6 +42,14 @@ class BuildApkDownloadTool(
         const val MAX_DOWNLOAD_BYTES = 200L * 1024 * 1024  // 200MB
     }
 
+    // B5 审查修复（问题4）：原 downloadArtifact/downloadZip 对任何非成功 HTTP 响应码
+    // （包括 500 服务器错误、403、429 限流等）一律返回 null，与"编译确实没有产出
+    // artifact"（正常情况，200 OK 但 artifacts 数组为空）在 execute() 里被合并成
+    // 同一句"未找到可下载的 APK artifact，或编译尚未完成"，用户看到误导性提示，
+    // 也不知道该不该重试。用专门异常类型携带真实 HTTP 状态码，execute() 据此
+    // 与"真正无产物"的 null 分支区分开，给出建议重试的提示。
+    private class ArtifactHttpException(val code: Int, message: String) : Exception(message)
+
     override suspend fun execute(params: Map<String, String>): ToolResult =
         withContext(Dispatchers.IO) {
             val config = githubConfigStore.getConfig()
@@ -78,6 +85,20 @@ class BuildApkDownloadTool(
                         userHint = "下载失败",
                     )
                 }
+            } catch (e: ArtifactHttpException) {
+                // B5 审查修复（问题4）：与上面"真正无产物"的 null 分支区分开——
+                // 这里是 GitHub API 返回了明确的错误状态码（网络抖动/限流/服务端错误
+                // 等），不代表编译没有产出，提示用户重试而不是"未找到 artifact"。
+                com.zaijian.zhoumuyun.util.AgentLog.error(
+                    "BuildApkDownloadTool", "下载 APK 遇到接口错误：${e.message}", e,
+                )
+                ToolResult(
+                    toolName = name,
+                    success  = false,
+                    content  = "",
+                    error    = "获取编译产物时遇到接口错误（HTTP ${e.code}），可能是网络问题或 GitHub 限流，建议稍后重试。",
+                    userHint = "下载失败，请重试",
+                )
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Throwable) {
@@ -102,7 +123,15 @@ class BuildApkDownloadTool(
 
         val artifactInfo: Pair<String, String>?
         try {
-            if (conn.responseCode != 200) return null
+            val code = conn.responseCode
+            if (code != 200) {
+                // 非 200：GitHub API 本身出错（限流/鉴权/服务端异常等），不是
+                // "编译没有产物"，抛专用异常让 execute() 区分处理。
+                val errorBody = try {
+                    conn.errorStream?.bufferedReader()?.use { it.readText() }?.take(200)
+                } catch (_: Throwable) { null }
+                throw ArtifactHttpException(code, "获取 artifact 列表失败（HTTP $code）：${errorBody ?: conn.responseMessage}")
+            }
             val json = conn.inputStream.bufferedReader().use { it.readText() }
             val artifacts = JSONObject(json).optJSONArray("artifacts") ?: return null
             if (artifacts.length() == 0) return null
@@ -147,7 +176,15 @@ class BuildApkDownloadTool(
         }
 
         return try {
-            if (conn.responseCode !in 200..399) return null
+            val code = conn.responseCode
+            if (code !in 200..399) {
+                // 同上：压缩包下载本身失败（限流/鉴权/服务端异常/网络问题等），
+                // 不是"没有产物"，抛专用异常让 execute() 区分处理。
+                val errorBody = try {
+                    conn.errorStream?.bufferedReader()?.use { it.readText() }?.take(200)
+                } catch (_: Throwable) { null }
+                throw ArtifactHttpException(code, "下载 APK 压缩包失败（HTTP $code）：${errorBody ?: conn.responseMessage}")
+            }
             val tempZip = File(context.cacheDir, "apk_download_${System.currentTimeMillis()}.zip")
             // P2 修复：下载无大小限制。原实现用 input.copyTo(output) 一路写到底，
             // 异常/被篡改的 artifact（或重定向到超大文件）可能把磁盘写满或导致 OOM。
@@ -230,8 +267,6 @@ class BuildApkDownloadTool(
         // 异常/NotificationManager 异常等把一次成功的下载拖成失败 ToolResult。
         // 包一层 try-catch，失败仅记日志，execute() 仍按 success=true 返回。
         try {
-            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-
             // S3问题7修复：渠道创建已收敛至 ZaijianApp.setupNotificationChannels()
             // 此处不再自行创建，直接使用已注册的渠道
 
@@ -266,7 +301,10 @@ class BuildApkDownloadTool(
                 .setContentIntent(pendingIntent)
                 .build()
 
-            nm.notify(NOTIFICATION_ID, notif)
+            // C类审查 #47 修复：改用统一的权限检查入口
+            com.zaijian.zhoumuyun.util.NotificationPermissionUtils.safeNotify(
+                context, NOTIFICATION_ID, notif, "BuildApkDownloadTool",
+            )
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Throwable) {

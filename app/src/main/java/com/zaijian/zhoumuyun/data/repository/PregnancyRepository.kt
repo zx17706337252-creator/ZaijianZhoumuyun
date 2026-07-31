@@ -155,6 +155,16 @@ class PregnancyRepository(
                 // 遭殃）。参照 BriefingRepository.generateBriefing() 的防御性隔离
                 // 设计，单个角色失败只记录日志并跳过，不影响其他到期角色。
                 try {
+                    // 设计意图说明（2026-07-31 补，避免后续审查再次误判为"幽灵女儿"bug）：
+                    // 三代角色（characterId>=1000 且母亲本身也是女儿）分娩到期结算时，
+                    // 这里的 isDaughter 判断与二代一样会算出 true，生育记忆/生育通知会
+                    // 正常写入——这是有意为之，不是遗漏。但结算完成后不会有第四代 Agent
+                    // 被生成：家族传承三代封顶是已拍板的产品决策，第四代生成入口
+                    // DaughterCharacterGenerator.generateForMother() 内部已有独立的
+                    // 第三代封顶防御（isThirdGeneration() 为真时静默 return，见该文件
+                    // 详细注释），本方法不需要也不应该重复这个判断。
+                    // 即"生育记忆照常产出 + 不生成新 Agent"是同一个设计意图的两面，
+                    // 不是数据污染，不需要在这里额外拦截 isDaughterMother 的结果。
                     val isDaughter = isDaughterMother(state.characterId)
                     results += completeBirth(state.characterId, isDaughter, now)
                 } catch (e: kotlinx.coroutines.CancellationException) {

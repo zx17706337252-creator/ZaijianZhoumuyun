@@ -146,9 +146,9 @@ class DaughterCharacterGenerator(
         // 此前"不生成第四代"这条规则只在调用方（ChatViewModel）的各个触发点
         // 用 daughterRepo.isThirdGeneration() 分别判断后才决定要不要调 
         // generateForMother()——即只有"外部守门"，生成器自身对"我是否正在
-        // 被要求生成第四代"一无所知。ChatViewModel.retryDaughterGeneration()
-        // （用户手动重试入口）此前就完全没有做这个判断，直接从
-        // _uiState.value.character 取当前角色后调用本方法，如果当前角色恰好
+        // 被要求生成第四代"一无所知。用户手动重试入口（ChatMessageOrchestrator
+        // 内 PregnancyPromptDelegate.runPostReplyAnalysis 的 onTriggerD4Generation 回调）
+        // 此前就完全没有做这个判断，直接从当前角色后调用本方法，如果当前角色恰好
         // 是第三代女儿且此前生成失败过，重试会尝试为第三代生成第四代。
         //
         // 这里补上生成器内部的最后一道防线：仅当传入的 motherConfig 本身也是

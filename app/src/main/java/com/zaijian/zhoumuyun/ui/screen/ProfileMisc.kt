@@ -155,6 +155,8 @@ internal fun NotificationSection(
     notifyMessages:          Boolean,
     notifyTaskDone:          Boolean,
     proactiveEnabled:        Boolean,
+    systemNotificationsEnabled: Boolean,
+    onOpenSystemNotificationSettings: () -> Unit,
     onNotifyMessagesChange:  (Boolean) -> Unit,
     onNotifyTaskDoneChange:  (Boolean) -> Unit,
     onProactiveEnabledChange:(Boolean) -> Unit,
@@ -177,6 +179,43 @@ internal fun NotificationSection(
         Column(
             modifier = Modifier.fillMaxWidth(),
         ) {
+            // C类审查 #46/#48 修复：系统级 POST_NOTIFICATIONS 权限被拒绝时，
+            // 下面的开关即使显示"开"也不会真的收到任何通知（Android 13+ notify()
+            // 静默 no-op）。这里的提示条让用户能看到"为什么设置开着却收不到通知"，
+            // 而不是像原来那样开关状态和实际效果完全脱节、无从排查。
+            if (!systemNotificationsEnabled) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = Spacing.md, vertical = Spacing.sm)
+                        .clickable(onClick = onOpenSystemNotificationSettings),
+                    verticalAlignment     = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text  = "系统通知权限未开启",
+                            style = type.body.copy(fontWeight = FontWeight.Medium),
+                            color = Palette.SemanticWarning,
+                        )
+                        Text(
+                            text  = "下面的开关不会生效，需要先在系统设置里允许通知",
+                            style = type.caption,
+                            color = colors.textSecondary,
+                        )
+                    }
+                    Text(
+                        text  = "去设置",
+                        style = type.body,
+                        color = colors.accent,
+                    )
+                }
+                HorizontalDivider(
+                    modifier  = Modifier.padding(start = Spacing.md),
+                    thickness = 0.5.dp,
+                    color     = colors.border,
+                )
+            }
             // 消息通知
             Row(
                 modifier = Modifier
@@ -258,6 +297,66 @@ internal fun NotificationSection(
                 )
             }
         }
+        }
+    }
+}
+
+
+// ─────────────────────────────────────────────────────────────
+//  PregnancySettingsSection — 怀孕功能总开关（C3#9 修复）
+//
+//  p5_trigger_enabled 此前读写两端全仓为零，DataStore 字段完全是摆设。
+//  P5 = 怀孕自动触发判定链路代号（叙事解锁 + 伴侣同意 + 周期判定，见
+//  PregnancyTriggerManager），本开关现已接入该链路的两个上游入口
+//  （checkTrigger/shouldEvaluateFertileWindowConsent）作为总门禁：
+//  关闭后角色不会再自动触发新的怀孕，已怀孕角色的孕期进程不受影响。
+// ─────────────────────────────────────────────────────────────
+
+@Composable
+internal fun PregnancySettingsSection(
+    p5TriggerEnabled: Boolean,
+    onP5TriggerEnabledChange: (Boolean) -> Unit,
+) {
+    val colors = ZaijianTheme.colors
+    val type   = ZaijianTheme.typography
+
+    Column(modifier = Modifier.padding(horizontal = Spacing.screenHorizontal)) {
+        Text(
+            text     = "孕育系统",
+            style    = type.label.copy(fontWeight = FontWeight.Medium),
+            color    = colors.textSecondary,
+            modifier = Modifier.padding(start = Spacing.xs, bottom = Spacing.xs),
+        )
+        WorldCard(
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = Spacing.md, vertical = 10.dp),
+                verticalAlignment     = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(text = "怀孕功能", style = type.body, color = colors.textPrimary)
+                    Text(
+                        text  = "关闭后角色不会自动触发新的怀孕，已怀孕角色不受影响",
+                        style = type.caption,
+                        color = colors.textSecondary,
+                    )
+                }
+                Switch(
+                    checked         = p5TriggerEnabled,
+                    onCheckedChange = onP5TriggerEnabledChange,
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor       = Palette.White,
+                        checkedTrackColor       = colors.accent,
+                        uncheckedThumbColor     = colors.textDisabled,
+                        uncheckedTrackColor     = colors.bgElevated,
+                        uncheckedBorderColor    = colors.border,
+                    ),
+                )
+            }
         }
     }
 }

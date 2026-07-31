@@ -236,6 +236,33 @@ object AgentToolRegistry {
 
     private val tools = java.util.concurrent.ConcurrentHashMap<String, AgentTool>()
 
+    // A2-2/A4-4 修复：ZaijianApp.registerAgentTools() 在 Dispatchers.Default 协程
+    // 异步执行，注册期间 get() 对尚未注册的工具名返回 null。BootReceiver/WorkManager
+    // 触发的后台路径（不经过 ChatViewModel.init）可能在注册完成前就调用 get()，
+    // 原先无任何等待/重试机制，直接把"还没注册完"当成"工具不存在"处理。
+    // 用 CompletableDeferred 提供一次性完成信号：registerAgentTools() 结束时调用
+    // [markReady]，后台路径调用 [awaitReady] 可选择性地等待（带超时兜底，避免
+    // 注册协程本身失败挂起时无限等待）。
+    private val readyDeferred = kotlinx.coroutines.CompletableDeferred<Unit>()
+
+    /**
+     * 标记应用级工具注册已完成（无论成功还是部分失败都应调用，避免调用方永久等待）。
+     * 幂等：重复调用无副作用。
+     */
+    fun markReady() {
+        if (!readyDeferred.isCompleted) readyDeferred.complete(Unit)
+    }
+
+    /**
+     * 供后台（非聊天页）路径在调用 [get] 前等待注册完成。
+     * @param timeoutMs 超时兜底（默认 10 秒），超时后直接返回，不无限阻塞——
+     *                  注册协程本身若异常终止未调用 [markReady]，不能让后台任务卡死。
+     */
+    suspend fun awaitReady(timeoutMs: Long = 10_000L) {
+        if (readyDeferred.isCompleted) return
+        kotlinx.coroutines.withTimeoutOrNull(timeoutMs) { readyDeferred.await() }
+    }
+
     /**
      * 注册工具。重复注册同名工具会覆盖旧实现（热更新友好）。
      */

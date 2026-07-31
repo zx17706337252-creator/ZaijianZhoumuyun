@@ -91,7 +91,19 @@ class MainActivity : ComponentActivity() {
             val context = LocalContext.current
             val notificationPermissionLauncher = rememberLauncherForActivityResult(
                 contract = ActivityResultContracts.RequestPermission(),
-            ) { /* 用户同意或拒绝都不阻塞主流程；拒绝时静默退化为无通知 */ }
+            ) { isGranted ->
+                // A13-3 修复：原回调为空实现，用户拒绝通知权限后无任何可感知提示。
+                // safeNotify() 已统一处理发送侧权限检查（跳过+日志），但用户侧仍需
+                // 一次性可感知提示。采用 Toast（零改造成本，无需跨 MainActivity/
+                // AppNavigation 做 SnackbarHostState 状态提升）。
+                if (!isGranted) {
+                    android.widget.Toast.makeText(
+                        context,
+                        "通知权限未开启，部分消息提醒将无法显示。可在系统设置中开启",
+                        android.widget.Toast.LENGTH_LONG,
+                    ).show()
+                }
+            }
 
             LaunchedEffect(Unit) {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {

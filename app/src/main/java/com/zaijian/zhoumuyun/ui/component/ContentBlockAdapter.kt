@@ -57,9 +57,13 @@ object ContentBlockAdapter {
     }
 
     private fun AgentActivityTimelineItem.toWorkflowStep(): ContentBlock.WorkflowStep {
+        // B4审查报告【序号4】修复：原先缺 Outcome.TIMEOUT 分支，落入 else 显示为
+        // WorkflowStepStatus.PENDING（"执行中"）。WorkflowStepStatus 无独立 TIMEOUT
+        // 值，与 toToolCall:47 对齐，归入 FAIL，避免超时被静默显示成仍在执行。
         val status = when (outcome) {
             AgentActivityRepository.Outcome.SUCCESS -> ContentBlock.WorkflowStepStatus.SUCCESS
             AgentActivityRepository.Outcome.FAIL -> ContentBlock.WorkflowStepStatus.FAIL
+            AgentActivityRepository.Outcome.TIMEOUT -> ContentBlock.WorkflowStepStatus.FAIL
             null -> ContentBlock.WorkflowStepStatus.PENDING
             else -> ContentBlock.WorkflowStepStatus.PENDING
         }
@@ -74,9 +78,12 @@ object ContentBlockAdapter {
     private fun AgentActivityTimelineItem.toSkillActivity(
         actionType: ContentBlock.SkillActionType,
     ): ContentBlock.SkillActivity {
+        // B4审查报告【序号5】修复：同序号4，补 TIMEOUT 分支，避免 Window C 接入
+        // 技能事件后超时被静默显示为"进行中"。
         val status = when (outcome) {
             AgentActivityRepository.Outcome.SUCCESS -> ContentBlock.SkillActivityStatus.SUCCESS
             AgentActivityRepository.Outcome.FAIL -> ContentBlock.SkillActivityStatus.FAIL
+            AgentActivityRepository.Outcome.TIMEOUT -> ContentBlock.SkillActivityStatus.FAIL
             null -> ContentBlock.SkillActivityStatus.PENDING
             else -> ContentBlock.SkillActivityStatus.PENDING
         }

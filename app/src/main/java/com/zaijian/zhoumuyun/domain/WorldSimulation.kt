@@ -126,9 +126,6 @@ class WorldSimulation(
         else null
     }
 
-    // Trust 衰减累积器（每 2h +0.0028，满 1 触发整数 -1）
-    private val trustDecayAccumulator = ConcurrentHashMap<Int, Double>()
-
     // S2问题6修复：Tier1 已刷新过的角色 ID，避免 runProjectDrivenBehavior 重复刷新
     private val refreshedInTier1 = mutableSetOf<Int>()
 
@@ -171,6 +168,18 @@ class WorldSimulation(
         // 不会并发访问同一角色的 Presence 缓存，避免冗余计算。
         private val tier1Mutex = Mutex()
 
+        // B1审查序号1修复：trustDecayAccumulator 原为实例级 ConcurrentHashMap，
+        // 前台常驻 WorldSimulation 实例（ZaijianApp.start()→restoreTrustAccumulator()
+        // 载入）与 ProactiveMessageWorker 每次 doWork 新建的实例各持有独立空 Map——
+        // Worker 直接调 runProactiveCheckForCharacters()，从不触达 start()/restore，
+        // 其 runTier3 恒在空累加器上计算，saveTrustAccumulator() 把 DataStore 整键
+        // 覆写成极小值，前台下次冷启动 restore 到的也是这个被钉死的小值，永远到不了
+        // 1.0 触发阈值，"每30天-1"的信任衰减在纯后台场景下基本永不生效。改为
+        // companion object 级别，与 tier1/2/3Mutex 同级，前台+Worker 共用同一份
+        // 内存累加器（ConcurrentHashMap 本身线程安全，多实例并发 compute 不需要
+        // 额外加锁；写盘仍在各自的 tier3Mutex.withLock 内串行）。
+        private val trustDecayAccumulator = ConcurrentHashMap<Int, Double>()
+
     // S2问题3修复：Trust 衰减按时间差一次性计算，不受轮次上限影响
     // 30 天离线 ≈ 360 轮 Tier3，若轮次上限为 20 则衰减仅 0.056（实际应 ≈ 1.0）
     // 单次 applyTrustDecayByElapsed 直接基于时间差计算，绕过轮次上限
@@ -201,13 +210,34 @@ class WorldSimulation(
         ZLog.d(TAG, "runProactiveCheckForCharacters: start")
         refreshedInTier1.clear() // S2问题6修复：每次检查前清空跟踪集
         runTier1()
-        runTier2()
+        // 问题40修复：saveTimestamp 只应在对应 Tier 成功跑完后才调用。
+        // 之前无条件调用，若 runTier2()/runTier3() 异常，catch 吞掉后
+        // 仍然照常推进时间戳，等于把"这一轮其实没跑成功"标记成"已完成"，
+        // compensateOffline() 下次启动时会因为看到"较新"的时间戳而误判
+        // 这段时间已经处理过，永久漏跑该补的轮次。
+        val tier2Succeeded = try {
+            runTier2()
+            true
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            ZLog.w(TAG, "Tier2 error (runProactiveCheck)", e)
+            false
+        }
         // 批次1 1-1修复：Worker 路径跑完 Tier2/Tier3 必须保存时间戳，否则回前台
         // compensateOffline() 会把 Worker 已执行的轮次重新算一遍（重复衰减关系维度）。
         // 与前台常驻循环（start() 第232/242行）的 saveTimestamp 范式对齐。
-        saveTimestamp(KEY_LAST_TIER2)
-        runTier3()
-        saveTimestamp(KEY_LAST_TIER3)
+        if (tier2Succeeded) saveTimestamp(KEY_LAST_TIER2)
+        val tier3Succeeded = try {
+            runTier3()
+            true
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            ZLog.w(TAG, "Tier3 error (runProactiveCheck)", e)
+            false
+        }
+        if (tier3Succeeded) saveTimestamp(KEY_LAST_TIER3)
         ZLog.d(TAG, "runProactiveCheckForCharacters: done")
     }
 
@@ -238,8 +268,16 @@ class WorldSimulation(
             delay(startupDelayMs + 2_000L)
             ZLog.d(TAG, "Tier 2 loop started")
             while (true) {
-                try { runTier2() } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Throwable) { ZLog.w(TAG, "Tier2 error", e) }
-                saveTimestamp(KEY_LAST_TIER2)
+                // 问题40修复：saveTimestamp 移入 try 块内、仅成功路径执行，
+                // 与 runProactiveCheckForCharacters() 的处理方式保持一致。
+                try {
+                    runTier2()
+                    saveTimestamp(KEY_LAST_TIER2)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    ZLog.w(TAG, "Tier2 error", e)
+                }
                 delay(TIER2_INTERVAL_MS)
             }
         }
@@ -248,8 +286,15 @@ class WorldSimulation(
             delay(startupDelayMs + 5_000L)
             ZLog.d(TAG, "Tier 3 loop started")
             while (true) {
-                try { runTier3() } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Throwable) { ZLog.w(TAG, "Tier3 error", e) }
-                saveTimestamp(KEY_LAST_TIER3)
+                // 问题40修复：同 Tier2，saveTimestamp 仅在成功路径执行。
+                try {
+                    runTier3()
+                    saveTimestamp(KEY_LAST_TIER3)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    ZLog.w(TAG, "Tier3 error", e)
+                }
                 delay(TIER3_INTERVAL_MS)
             }
         }

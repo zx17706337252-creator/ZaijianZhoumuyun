@@ -33,7 +33,10 @@ import kotlinx.coroutines.launch
 
 sealed class FamilyListUiState {
     object Loading : FamilyListUiState()
-    data class Ready(val members: List<FamilyMember>) : FamilyListUiState()
+    // 问题38修复：新增 incomplete（默认 false，不影响既有调用点），
+    // true 时表示家族链解析过程中有一代数据损坏被跳过，UI 可据此提示
+    // "部分角色数据加载失败"，而不是让用户误以为家族链本来就这么短。
+    data class Ready(val members: List<FamilyMember>, val incomplete: Boolean = false) : FamilyListUiState()
     data class Error(val message: String) : FamilyListUiState()
 }
 
@@ -87,19 +90,24 @@ class FamilyListViewModel(application: Application) : AndroidViewModel(applicati
                     ?.let { mother.copy(avatarUrl = it) }
                     ?: mother
 
-                val descendants = daughterRepo.getFamilyChain(firstGenCharacterId)
+                val chainResult = daughterRepo.getFamilyChain(firstGenCharacterId)
 
                 val members = mutableListOf<FamilyMember>()
                 members.add(FamilyMember(config = motherWithAvatar, generation = 1))
-                descendants.forEachIndexed { index, entry ->
+                chainResult.entries.forEachIndexed { index, entry ->
                     members.add(FamilyMember(
                         config     = entry.config,
                         generation = index + 2,
                         gender     = entry.gender,
                     ))
                 }
+                // 问题38修复：parseFailed 时不阻断展示（已有的部分成员仍然有意义），
+                // 但要让 UI 能提示用户"部分角色数据加载失败"，而不是让缺代悄悄发生。
+                if (chainResult.parseFailed) {
+                    ZLog.e("FamilyListViewModel", "家族链部分解析失败，firstGenCharacterId=$firstGenCharacterId")
+                }
 
-                _uiState.value = FamilyListUiState.Ready(members)
+                _uiState.value = FamilyListUiState.Ready(members, incomplete = chainResult.parseFailed)
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Throwable) {

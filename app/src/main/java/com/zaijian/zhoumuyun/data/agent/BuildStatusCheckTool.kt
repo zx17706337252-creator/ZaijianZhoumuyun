@@ -81,34 +81,54 @@ class BuildStatusCheckTool(
         } catch (_: Throwable) { null }
     }
 
-    private fun queryRunStatus(
+    private suspend fun queryRunStatus(
         config: com.zaijian.zhoumuyun.data.datastore.GithubConfig,
         runId: String,
     ): BuildStatus {
         val url = "$API_BASE/repos/${config.owner}/${config.repo}/actions/runs/${Uri.encode(runId)}"
 
-        val conn = (URL(url).openConnection() as HttpURLConnection).apply {
-            requestMethod = "GET"
-            connectTimeout = 10_000
-            readTimeout    = 10_000
-            setRequestProperty("Accept",              "application/vnd.github+json")
-            setRequestProperty("Authorization",       "Bearer ${config.token}")
-            setRequestProperty("X-GitHub-Api-Version", "2022-11-28")
-        }
-
-        return try {
-            if (conn.responseCode != 200) {
-                throw RuntimeException("HTTP ${conn.responseCode}")
+        // B5-Fix6: 接入 githubHttpRetry，对 429/5xx 和网络异常自动指数退避重试；
+        // 4xx（除 429）属不可重试错误，立即抛出不浪费重试预算。
+        return githubHttpRetry(
+            onRetry = { attempt, e ->
+                com.zaijian.zhoumuyun.util.ZLog.w(
+                    "BuildStatusCheck",
+                    "GitHub API 第 $attempt 次重试（HTTP ${e.statusCode}）：${e.responseBody.take(100)}",
+                )
+            },
+        ) {
+            val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 10_000
+                readTimeout    = 10_000
+                setRequestProperty("Accept",              "application/vnd.github+json")
+                setRequestProperty("Authorization",       "Bearer ${config.token}")
+                setRequestProperty("X-GitHub-Api-Version", "2022-11-28")
             }
-            val json = conn.inputStream.bufferedReader().use { it.readText() }
-            val obj = JSONObject(json)
-            BuildStatus(
-                status      = obj.optString("status", "unknown"),
-                conclusion  = if (obj.isNull("conclusion")) null else obj.optString("conclusion"),
-                htmlUrl     = obj.optString("html_url", ""),
-            )
-        } finally {
-            conn.disconnect()
+
+            try {
+                val code = conn.responseCode
+                if (code != 200) {
+                    val errorBody = try {
+                        conn.errorStream?.bufferedReader()?.use { it.readText() }?.take(200)
+                    } catch (_: Throwable) { null }
+                    // 429/5xx → isRetryable=true 由 helper 自动重试；
+                    // 4xx（除 429）→ isRetryable=false 立即向上抛出
+                    throw GithubHttpException(
+                        statusCode = code,
+                        responseBody = errorBody ?: conn.responseMessage,
+                    )
+                }
+                val json = conn.inputStream.bufferedReader().use { it.readText() }
+                val obj = JSONObject(json)
+                BuildStatus(
+                    status      = obj.optString("status", "unknown"),
+                    conclusion  = if (obj.isNull("conclusion")) null else obj.optString("conclusion"),
+                    htmlUrl     = obj.optString("html_url", ""),
+                )
+            } finally {
+                conn.disconnect()
+            }
         }
     }
 }

@@ -10,6 +10,7 @@ import com.zaijian.zhoumuyun.data.db.entity.MemoryFtsEntity
 import com.zaijian.zhoumuyun.data.db.entity.MemoryScope
 import com.zaijian.zhoumuyun.data.db.entity.MemoryTagEntity
 import com.zaijian.zhoumuyun.util.ChineseTokenizer
+import com.zaijian.zhoumuyun.util.ZLog
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -309,6 +310,10 @@ class MemoryRepository(
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Throwable) {
+            // 问题37修复：不再静默吞掉，打 error 日志留痕。返回类型仍保持
+            // emptyList()（避免改动波及全部调用方），但至少能通过日志区分
+            // "数据库异常导致0召回" 和 "确实没有匹配的记忆"。
+            ZLog.e("MemoryRepository", "searchGroupRelevant 主路径FTS检索失败，roundtableId=$roundtableId", e)
             emptyList()
         }
         val scored = primaryResults
@@ -325,6 +330,7 @@ class MemoryRepository(
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Throwable) {
+            ZLog.e("MemoryRepository", "searchGroupRelevant fallback FTS检索失败，roundtableId=$roundtableId", e)
             emptyList()
         }
         return fallbackResults
@@ -612,6 +618,8 @@ class MemoryRepository(
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Throwable) {
+                // 问题37修复：同上，补 error 日志区分"查询失败"与"确实无匹配"。
+                ZLog.e("MemoryRepository", "L2 tag精确匹配失败，characterId=$characterId", e)
                 emptyList()
             }
         } else emptyList()
@@ -628,6 +636,7 @@ class MemoryRepository(
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Throwable) {
+                ZLog.e("MemoryRepository", "L1 FTS4检索失败，characterId=$characterId", e)
                 emptyList()
             }
         } else emptyList()
@@ -641,7 +650,13 @@ class MemoryRepository(
                     memoryDao.getById(result.memoryId)
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e
-                } catch (e: Throwable) { null }
+                } catch (e: Throwable) {
+                    // B3审查序号7修复：原无日志，被 mapNotNull 过滤后该条记忆静默
+                    // 消失，角色表现为"忘记"本应知道的事却无任何错误提示。
+                    // 补日志与同文件639行FTS catch的规范保持一致。
+                    ZLog.e("MemoryRepository", "getById失败，memoryId=${result.memoryId}", e)
+                    null
+                }
             }
         } else emptyList()
 

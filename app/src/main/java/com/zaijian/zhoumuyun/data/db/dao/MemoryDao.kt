@@ -93,17 +93,29 @@ abstract class MemoryDao {
      *
      * 排序：importance DESC 优先——isCore 锚点收紧为"稀疏、慎重"后，应优先
      * 注入最重要的几条，而非最近更新的几条（buildMemoryBlock 注入时 take(5)）。
+     *
+     * C8#44 修复：加 isNarrativeOnly = 0 过滤。此查询是"永远注入 Prompt"的
+     * core memory 通道（ChatMessageOrchestrator/PrivateChatEngine/
+     * RoundtableBotReplyGenerator/RoundtableIdleManager 均直接调用），
+     * 此前无过滤会把假扮身份识别期间产生的叙事记忆（owner 冒充 XX 撩本角色时
+     * 写入、isNarrativeOnly=true）当成"owner 与本角色的正常互动核心记忆"
+     * 一并注入，污染角色对 owner 关系的认知。GROUP scope 记忆不受影响——
+     * speakerContext 机制未在圆桌路径接入（见 IdentityGuard.kt 头部注释），
+     * GROUP scope 记忆结构上不会被打 isNarrativeOnly=true。
      */
     @Query("""
         SELECT * FROM memories
         WHERE characterId = :characterId AND isCore = 1 AND scope = 'PERSONAL'
+          AND isNarrativeOnly = 0
         ORDER BY importance DESC, updatedAt DESC
     """)
     abstract suspend fun getCoreMemories(characterId: Int): List<MemoryEntity>
 
+    /** C8#44 修复：同 [getCoreMemories]，加 isNarrativeOnly = 0 过滤保持一致。 */
     @Query("""
         SELECT * FROM memories
         WHERE characterId = :characterId AND isCore = 1 AND scope = 'PERSONAL'
+          AND isNarrativeOnly = 0
         ORDER BY importance DESC, updatedAt DESC
     """)
     abstract fun observeCoreMemories(characterId: Int): Flow<List<MemoryEntity>>
@@ -114,10 +126,16 @@ abstract class MemoryDao {
      * W3-5 修复：加 scope = 'PERSONAL' 过滤。此查询供 Prompt 分域注入使用，
      * 混入 GROUP scope 记忆会导致私聊 Prompt 里出现圆桌讨论内容，属逻辑错误
      * （不只是 UI 展示层面的困惑）。
+     *
+     * C8#44 修复：加 isNarrativeOnly = 0 过滤。调用方包括 CharacterPreviewViewModel
+     * （人设预览直接展示给用户）、DataVisTools 的 SelfReflectTool（读 WORK 记忆喂给
+     * LLM 生成自我反思）、AgentMetaTools 的 rule review（读 RULE 记忆），三处都属于
+     * "把记忆内容当真实历史处理"的场景，不应包含假扮身份识别期间产生的叙事记忆。
      */
     @Query("""
         SELECT * FROM memories
         WHERE characterId = :characterId AND domain = :domain AND scope = 'PERSONAL'
+          AND isNarrativeOnly = 0
         ORDER BY importance DESC, lastAccessedAt DESC
         LIMIT :limit
     """)
@@ -128,6 +146,12 @@ abstract class MemoryDao {
     /**
      * W3-5 修复：加 scope = 'PERSONAL' 过滤，避免圆桌群记忆混入私聊角色的
      * 记忆列表展示，导致用户看到"串号"的记忆（不知道这条记忆从哪来的）。
+     *
+     * C8#44 说明（有意不加 isNarrativeOnly 过滤）：这是记忆管理页
+     * （MemoryViewModel，见其注释"总是观察全量，在 ViewModel 里过滤"）的数据源，
+     * 用户对自己写下的全部记忆（含假扮场景产生的叙事记忆）应保留完整可见性和
+     * 删除权，不应该被悄悄隐藏。与 getCoreMemories/getByDomain/searchByFts
+     * 这类"喂给 Prompt/LLM"的查询是两种不同的读取场景，过滤诉求不同。
      */
     @Query("""
         SELECT * FROM memories
@@ -167,6 +191,10 @@ abstract class MemoryDao {
      * 调用方需将查询词用 "*" 包裹以支持前缀匹配（如 "永恒*"）。
      *
      * 待办3：个人全文检索限定 scope=PERSONAL，避免群记忆被单人对话搜出。
+     *
+     * C8#44 修复：加 isNarrativeOnly = 0 过滤。此查询是 MemoryQueryTool（LLM 可
+     * 主动调用的 memory_query 工具）和一般记忆检索的共同入口，结果会原样喂回
+     * LLM 上下文，同样不应包含假扮身份识别期间产生的叙事记忆。
      */
     @Query("""
         SELECT m.* FROM memories m
@@ -174,6 +202,7 @@ abstract class MemoryDao {
         WHERE fts.memories_fts MATCH :query
           AND m.characterId = :characterId
           AND m.scope = 'PERSONAL'
+          AND m.isNarrativeOnly = 0
         ORDER BY m.importance DESC, m.lastAccessedAt DESC
         LIMIT :limit
     """)

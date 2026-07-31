@@ -54,4 +54,9 @@ interface PrivateChatPairDao {
     // 角色忠诚锁定·角色自主下线状态（方案 v1.5 第 6.4 节）
     @Query("UPDATE private_chat_pairs SET characterDisconnectState = :state WHERE pairId = :pairId")
     suspend fun updateCharacterDisconnectState(pairId: String, state: String)
+
+    // A10-5 修复：私聊配对删除——仅删 pairs 表记录，
+    // 消息/会话表的级联删除由 ViewModel 层 withTransaction 统一处理。
+    @Query("DELETE FROM private_chat_pairs WHERE pairId = :pairId")
+    suspend fun deleteByPairId(pairId: String)
 }

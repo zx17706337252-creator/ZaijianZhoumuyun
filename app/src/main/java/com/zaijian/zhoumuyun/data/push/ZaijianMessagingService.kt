@@ -92,12 +92,14 @@ class ZaijianMessagingService : FirebaseMessagingService() {
         msgScope.launch(msgHandler) {
             // 阶段2 S-2 遗留补项：此前直接访问 ZaijianApp.sharedPresenceEngine（可空，
             // 显式 null 检查处理冷启动竞态）。改为 AppContainer.instance.presenceEngine——
-            // 二者在 ZaijianApp.onCreate() 内被赋值为同一实例，运行时行为不变，但
-            // AppContainer.instance 是 !! 非空断言（AppContainer.init() 未执行时会直接
-            // 崩溃而非返回 null），因此这里用 runCatching 包裹以保留原有的冷启动兜底
-            // 行为——真正的竞态窗口发生在极早期冷启动、onCreate() 尚未跑完时收到 FCM
-            // 消息，此时应降级到系统通知而不是让消息处理协程崩溃。
-            val engine = runCatching { AppContainer.instance.presenceEngine }.getOrNull()
+            // 二者在 ZaijianApp.onCreate() 内被赋值为同一实例，运行时行为不变。
+            // B3审查序号13修复：原先用 runCatching 包裹 AppContainer.instance（!! 断言）
+            // 来保留冷启动兜底，但这会连带吞掉 presenceEngine getter 内部任何其他异常，
+            // 掩盖真实 bug。改用 instanceOrNull()——语义精确到"只在真的未初始化时才
+            // 降级"，其他异常不再被静默吞掉。真正的竞态窗口发生在极早期冷启动、
+            // onCreate() 尚未跑完时收到 FCM 消息，此时应降级到系统通知而不是让消息
+            // 处理协程崩溃。
+            val engine = AppContainer.instanceOrNull()?.presenceEngine
             if (engine == null) {
                 ZLog.w(TAG, "AppContainer not yet initialized (cold-start race), falling back to system notification")
                 showFallbackNotification(characterId, characterName, jobTitle, summary)
@@ -143,13 +145,6 @@ class ZaijianMessagingService : FirebaseMessagingService() {
     }
 
     private fun showFallbackNotification(characterId: Int, characterName: String, jobTitle: String, summary: String) {
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-            val granted = checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
-            if (granted != android.content.pm.PackageManager.PERMISSION_GRANTED) {
-                ZLog.w(TAG, "POST_NOTIFICATIONS permission not granted, skipping fallback notification")
-                return
-            }
-        }
         // S3问题4修复：冷启动时 setupNotificationChannels() 可能尚未执行，
         // 在此兜底创建 task_result 渠道（createNotificationChannel 对已存在的渠道是幂等的）
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
@@ -184,8 +179,12 @@ class ZaijianMessagingService : FirebaseMessagingService() {
             .setAutoCancel(true)
             .setContentIntent(pendingIntent)
             .build()
-        val manager = getSystemService(android.app.NotificationManager::class.java)
-        manager?.notify(jobTitle.hashCode(), notification)
+        // C类审查 #47 修复：统一改用 NotificationPermissionUtils.safeNotify，
+        // 与全仓其余通知发送点保持一致（原本这里已有权限检查，现改为调用统一入口，
+        // 便于以后只维护一处权限判定逻辑）
+        com.zaijian.zhoumuyun.util.NotificationPermissionUtils.safeNotify(
+            this, jobTitle.hashCode(), notification, TAG,
+        )
     }
 
     // ── 内部工具 ──────────────────────────────────────────────

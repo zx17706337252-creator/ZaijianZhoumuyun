@@ -110,6 +110,15 @@ class ProactiveMessageWorker(
             ZLog.w("ProactiveMsgWorker", "doWork failed", e)
             // 不重试：下一个周期的 PeriodicWorkRequest 自然会再跑一次，
             // 不需要走 WorkManager 的退避重试机制（这不是一次性必达任务）。
+            //
+            // C7#23 核实结论（未采纳审查报告"区分瞬时/永久故障走 Result.retry()"
+            // 的建议）：本 Worker 只在 App 不在前台/进程被杀时才有实际意义——
+            // App 前台运行时，ZaijianApp 常驻的 WorldSimulation 三档循环
+            // （Tier1/2/3 各自独立 try-catch）本身就在做同样的主动消息判断，
+            // 不依赖这个 Worker。90 分钟周期内某一次唤醒失败，属于"这次没跑、
+            // 下次周期自然重跑"的可接受范围，加 retry 只会更快重试同一个大概率
+            // 还会失败的异常（多数是 DB/网络类瞬时故障，退避几秒后重试意义有限），
+            // 不改变"不是必达任务"的本质。保持 Result.success()。
             Result.success()
         }
     }

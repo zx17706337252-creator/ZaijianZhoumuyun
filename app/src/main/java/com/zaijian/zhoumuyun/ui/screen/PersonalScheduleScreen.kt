@@ -917,9 +917,12 @@ private fun ProjectSelectorField(
 }
 
 /**
- * 项目状态色点。按 status 字符串比较（字段存的是 "ACTIVE"/"PAUSED" 字符串）：
+ * 项目状态色点。按 status 字符串比较（字段存的是 "ACTIVE"/"PAUSED"/"COMPLETED"/"ARCHIVED" 字符串）：
  * - "ACTIVE" → accentColor 实心圆点 ●
  * - "PAUSED" → textDisabled 实心圆点 ●（视觉上比 ACTIVE 弱）
+ * - "COMPLETED" → SemanticSafe 绿色实心圆点 ●（B4审查报告【序号6】修复：原落入 else
+ *   与 PAUSED 同色，已完成项目在视觉上等同"暂停"）
+ * - "ARCHIVED" → textSecondary 实心圆点 ●（比 PAUSED 的 textDisabled 更浅一档，与其区分）
  * - 其他/未知 → textDisabled（保守降级）
  */
 @Composable
@@ -928,6 +931,8 @@ private fun ProjectStatusDot(status: String, accentColor: Color) {
     val dotColor = when (status) {
         "ACTIVE" -> accentColor
         "PAUSED" -> colors.textDisabled
+        "COMPLETED" -> Palette.SemanticSafe
+        "ARCHIVED" -> colors.textSecondary
         else -> colors.textDisabled
     }
     Box(

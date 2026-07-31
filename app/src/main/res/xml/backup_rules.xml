@@ -1,10 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
     审查项 3.10 配套规则（Android 11 及以下 / API 30-，minSdk=26 需要覆盖此区间）：
-    与 data_extraction_rules.xml 排除同样的两个加密凭证文件，理由见该文件注释。
+    与 data_extraction_rules.xml 排除同样的三个加密凭证文件，理由见该文件注释。
     此文件对 API 31+ 设备会被忽略（由 dataExtractionRules 属性接管）。
+    B6 审查报告 序号1：此前遗漏 zaijian_api_keys.xml（ProviderManager 存储 LLM API Key
+    的 EncryptedSharedPreferences 文件），已补齐。
 -->
 <full-backup-content>
     <exclude domain="sharedpref" path="zaijian_github_config.xml"/>
     <exclude domain="sharedpref" path="zaijian_email_account.xml"/>
+    <exclude domain="sharedpref" path="zaijian_api_keys.xml"/>
 </full-backup-content>

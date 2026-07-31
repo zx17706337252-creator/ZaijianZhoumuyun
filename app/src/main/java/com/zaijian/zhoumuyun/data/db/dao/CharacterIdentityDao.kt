@@ -43,6 +43,13 @@ abstract class CharacterIdentityDao {
                 soulNoteBackup        = existing?.soulNoteBackup        ?: identity.soulNoteBackup,
                 narrativeMemoryBackup = existing?.narrativeMemoryBackup ?: identity.narrativeMemoryBackup,
                 userImpressionBackup  = existing?.userImpressionBackup  ?: identity.userImpressionBackup,
+                // C6+C8-#17 修复：这两个字段此前未在 copy() 合并列表中，IdentityViewModel.save()
+                // 构造的 Entity 未传入它们（默认 "[]"），导致 Migration 从 userRoleLabelPrivate
+                // 回填的 characterCallsOwnerJson 在用户首次保存资料后被覆写为 "[]"，
+                // IdentityGuard 的自称/称呼异常检测从此失效。补齐与其他列相同的保留逻辑：
+                // existing 有值时保留旧值，否则用新传入值（新建角色场景）。
+                ownerAliasesJson        = existing?.ownerAliasesJson        ?: identity.ownerAliasesJson,
+                characterCallsOwnerJson = existing?.characterCallsOwnerJson ?: identity.characterCallsOwnerJson,
             )
         )
     }

@@ -355,6 +355,10 @@ object WorkflowEngine {
         // 不读这个 key 的工具（如 web_search）传了也不影响。
         val paramsWithCharId = decision.call.params + mapOf("__character_id" to characterId.toString())
 
+        // A2-2/A4-4 修复：WorkflowJobWorker 同样是可能早于 registerAgentTools()
+        // 完成就被 WorkManager 冷启动触发的后台路径，同 ScheduledJobWorker 一样
+        // 先等待注册就绪信号（带超时兜底），避免时序窗口内误判工具不存在。
+        AgentToolRegistry.awaitReady()
         val tool = AgentToolRegistry.get(toolName)
 
         val result = if (tool == null) {

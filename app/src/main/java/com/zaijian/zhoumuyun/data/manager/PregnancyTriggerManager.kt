@@ -18,9 +18,11 @@ import com.zaijian.zhoumuyun.data.provider.LLMMessage
 import com.zaijian.zhoumuyun.data.repository.CharacterStateRepository
 import com.zaijian.zhoumuyun.data.repository.MenstrualCycleRepository
 import com.zaijian.zhoumuyun.data.repository.PregnancyRepository
+import com.zaijian.zhoumuyun.data.datastore.PregnancyPressureDataStore
 import com.zaijian.zhoumuyun.util.ZLog
 import com.zaijian.zhoumuyun.util.NegationUtils
 import androidx.room.withTransaction
+import kotlinx.coroutines.flow.first
 import kotlin.math.min
 
 // ─────────────────────────────────────────────────────────────
@@ -90,7 +92,15 @@ class PregnancyTriggerManager(
     // 的降级路径结果一致，PregnancyViewModel/RoundtableViewModel 均未传，
     // 行为与本次修复前完全一致，不受影响）。
     private val consentJudge: UserConsentIntentJudge? = null,
+    // C3#9 修复：怀孕功能总开关（p5_trigger_enabled）。可空向后兼容——
+    // 未传时视为开关始终开启（与此前无门禁的行为完全一致）。
+    private val pressureDataStore: PregnancyPressureDataStore? = null,
 ) {
+
+    // C3#9：门禁检查，默认 true（开关默认开启，未设置过 DataStore 时
+    // 与"此前无门禁"的行为一致）。
+    private suspend fun isP5Enabled(): Boolean =
+        pressureDataStore?.p5TriggerEnabledFlow?.first() ?: true
 
     // ── 累积副作用数值 ────────────────────────────────────────
     private val REJECT_DESIRE_INCR     = 6
@@ -161,6 +171,7 @@ class PregnancyTriggerManager(
     )
 
     suspend fun checkTrigger(characterId: Int, text: String): TriggerInfo {
+        if (!isP5Enabled()) return TriggerInfo(triggered = false)
         if (!isDaughterMother(characterId)) return TriggerInfo(triggered = false)
         val keywords = CharacterTriggerKeywords[characterId] ?: return TriggerInfo(triggered = false)
         // S3问题4修复（与S2问题3/4同源）：contains() 子串匹配对"不想要孩子"
@@ -230,6 +241,7 @@ class PregnancyTriggerManager(
      * 对 1-6 号始终返回 false。
      */
     suspend fun shouldEvaluateFertileWindowConsent(characterId: Int): Boolean {
+        if (!isP5Enabled()) return false
         if (characterId < 1000) return false
         val relEngine = relationshipEngine ?: return false
 

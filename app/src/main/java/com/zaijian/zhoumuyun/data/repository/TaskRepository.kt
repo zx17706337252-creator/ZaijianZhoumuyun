@@ -231,6 +231,19 @@ class TaskRepository(
             resultSummary = errorSummary,
             importance  = 2,
         )
+
+        // C4#12 修复：与 completeTask 对称补齐 EventBus 埋点，供 ChainTriggerMatcher
+        // 匹配"任务失败"触发型链条。任务结果已落库（appendTaskEvent 之后），
+        // 走 publishPersistent 落盘兜底。
+        EventPublisher.publishPersistent(AppEvent(
+            name = "task_failed",
+            characterId = task.characterId,
+            payload = mapOf(
+                "taskId" to id,
+                "title" to task.title,
+                "errorSummary" to errorSummary,
+            ),
+        ))
     }
 
     // ── 取消任务 ─────────────────────────────────────────────
@@ -259,6 +272,17 @@ class TaskRepository(
             resultSummary = null,
             importance    = 1,
         )
+
+        // C4#12 修复：与 completeTask/failTask 对称补齐 EventBus 埋点，供
+        // ChainTriggerMatcher 匹配"任务取消"触发型链条。
+        EventPublisher.publishPersistent(AppEvent(
+            name = "task_cancelled",
+            characterId = task.characterId,
+            payload = mapOf(
+                "taskId" to id,
+                "title" to task.title,
+            ),
+        ))
     }
 
     // ── 更新进度 ─────────────────────────────────────────────

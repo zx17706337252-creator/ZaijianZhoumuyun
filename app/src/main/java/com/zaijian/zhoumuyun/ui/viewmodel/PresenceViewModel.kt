@@ -373,8 +373,14 @@ class PresenceViewModel(application: Application) : AndroidViewModel(application
             try {
                 val map = mutableMapOf<Int, List<Int>>()
                 DefaultCharacters.forEach { char ->
-                    val descendants = daughterRepo.getFamilyChain(char.id)
-                    map[char.id] = descendants.map { it.config.id }
+                    val chainResult = daughterRepo.getFamilyChain(char.id)
+                    map[char.id] = chainResult.entries.map { it.config.id }
+                    // 问题38修复联动：这里只用于构建"母亲id -> 后代id列表"的映射，
+                    // parseFailed 时 entries 仍是尽力收集到的部分结果，
+                    // 沿用即可；此处不涉及 UI 直接展示，暂不需要额外提示。
+                    if (chainResult.parseFailed) {
+                        ZLog.w("PresenceViewModel", "家族链部分解析失败，characterId=${char.id}")
+                    }
                 }
                 _uiState.update { it.copy(familyChainMap = map, isFamilyChainLoaded = true) }
             } catch (e: kotlinx.coroutines.CancellationException) {

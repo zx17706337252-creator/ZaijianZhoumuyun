@@ -1,9 +1,11 @@
 package com.zaijian.zhoumuyun.data.privatechat
 
+import com.zaijian.zhoumuyun.data.AppContainer
 import com.zaijian.zhoumuyun.data.model.DefaultCharacters
 import com.zaijian.zhoumuyun.data.repository.DaughterCharacterRepository
 import com.zaijian.zhoumuyun.data.repository.PrivateChatMessageRepository
 import com.zaijian.zhoumuyun.data.repository.PrivateChatSessionRepository
+import com.zaijian.zhoumuyun.util.ZLog
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -48,6 +50,9 @@ class PrivateChatExporter(
             sb.appendLine("**${nameOf(msg.senderCharacterId, nameCache)}**：${msg.content}")
             sb.appendLine()
         }
+
+        // A9-5 修复：私聊导出附带双方与 owner 的关系值快照
+        appendRelationshipSection(sb, pairId)
         return sb.toString()
     }
 
@@ -74,7 +79,45 @@ class PrivateChatExporter(
             sb.appendLine("${nameOf(msg.senderCharacterId, nameCache)}：${msg.content}")
             sb.appendLine()
         }
+
+        // A9-5 修复：私聊导出附带双方与 owner 的关系值快照
+        appendRelationshipSection(sb, pairId)
         return sb.toString()
+    }
+
+    /**
+     * A9-5 修复：向导出文本末尾追加私聊双方与 owner 的关系值快照。
+     * 从 PrivateChatPairRepository 查出 characterIdA / characterIdB，
+     * 再用 RelationshipEngine.getOrCreate("user", cid) 获取各自关系数据。
+     * 关系数据获取失败不阻断导出，仅跳过该板块。
+     */
+    private suspend fun appendRelationshipSection(sb: StringBuilder, pairId: String) {
+        runCatching {
+            // 从 pairId 解析出两个角色 ID（pairId 格式为 "min_max"）
+            val parts = pairId.split("_")
+            if (parts.size != 2) return@runCatching
+            val cidA = parts[0].toIntOrNull() ?: return@runCatching
+            val cidB = parts[1].toIntOrNull() ?: return@runCatching
+            val relEngine = AppContainer.instance.relationshipEngine
+            val nameCache = mutableMapOf<Int, String>()
+
+            sb.appendLine("---")
+            sb.appendLine("## 关系数值快照")
+            for (cid in listOf(cidA, cidB)) {
+                val name = nameOf(cid, nameCache)
+                val rel = runCatching { relEngine.getOrCreate("user", cid.toString()) }.getOrNull()
+                if (rel != null) {
+                    sb.appendLine("### $name")
+                    sb.appendLine("- 信任：${rel.trust}/100")
+                    sb.appendLine("- 好感：${rel.affection}/100")
+                    sb.appendLine("- 冲突：${rel.conflict}/100")
+                    sb.appendLine("- 压抑：${rel.suppression}/100")
+                    sb.appendLine()
+                }
+            }
+        }.onFailure { e ->
+            ZLog.w("PrivateChatExporter", "追加关系值快照失败，跳过该板块", e)
+        }
     }
 
     /**

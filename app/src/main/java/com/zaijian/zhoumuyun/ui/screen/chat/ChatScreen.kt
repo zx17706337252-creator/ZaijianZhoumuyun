@@ -220,9 +220,8 @@ fun ChatScreen(
     // composable 离开组合（退出聊天页/切换角色）时清理，语义与原来一致。
     DisposableEffect(characterId) {
         onDispose {
-            if (PresenceEngine.foregroundChatCharacterId == characterId) {
-                PresenceEngine.foregroundChatCharacterId = null
-            }
+            // B1审查序号2修复：check-then-clear改用原子 compareAndSet，见 PresenceEngine 注释。
+            PresenceEngine.clearForegroundChatCharacterIdIfMatches(characterId)
         }
     }
 

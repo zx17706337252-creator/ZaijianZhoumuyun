@@ -1,6 +1,5 @@
 package com.zaijian.zhoumuyun.data.agent
 
-import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
@@ -100,7 +99,11 @@ class ScheduledJobWorker(
             json.keys().asSequence().associateWith { json.getString(it) }
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
-        } catch (_: Throwable) {
+        } catch (e: Throwable) {
+            // B3审查序号3修复：原为 catch (_: Throwable) { emptyMap() } 无日志，
+            // 解析失败后工具会以仅含 __character_id 的空参数执行，产生非预期行为
+            // 且无法排查。补日志记录原始 toolParamsJson，便于定位是哪条任务数据损坏。
+            ZLog.e("ScheduledJobWorker", "toolParamsJson解析失败，jobId=$jobId, raw=${job.toolParamsJson}", e)
             emptyMap()
         }
         // P-8 修复：注入 __character_id，工具执行时优先从 params 读取角色 ID，
@@ -119,6 +122,11 @@ class ScheduledJobWorker(
             if (job.toolName == AgentTaskJobExecutor.SENTINEL) {
                 AgentTaskJobExecutor.execute(context, db, job)
             } else {
+                // A2-2/A4-4 修复：ZaijianApp.registerAgentTools() 在 Dispatchers.Default
+                // 协程异步执行，本 Worker 由 WorkManager 冷启动后台触发时可能早于
+                // 注册完成。先等待注册就绪信号（带超时兜底，见 AgentToolRegistry.
+                // awaitReady），避免把"还没注册完"误判为"工具不存在"。
+                AgentToolRegistry.awaitReady()
                 val tool = AgentToolRegistry.get(job.toolName)
                 tool?.execute(params)
             }
@@ -266,7 +274,6 @@ class ScheduledJobWorker(
     // ─────────────────────────────────────────────────────────────
 
     private fun sendNotification(title: String, text: String, jobId: String, characterId: Int) {
-        val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
         // D-2 fix: 渠道已由 ZaijianApp.setupNotificationChannels() 在 onCreate() 统一创建，此处无需重复注册
 
@@ -317,6 +324,9 @@ class ScheduledJobWorker(
             .addAction(android.R.drawable.ic_dialog_info, "查看日程", schedulePendingIntent)
             .build()
 
-        nm.notify(jobId.hashCode(), notif)
+        // C类审查 #47 修复：改用统一的权限检查入口
+        com.zaijian.zhoumuyun.util.NotificationPermissionUtils.safeNotify(
+            context, jobId.hashCode(), notif, "ScheduledJobWorker",
+        )
     }
 }

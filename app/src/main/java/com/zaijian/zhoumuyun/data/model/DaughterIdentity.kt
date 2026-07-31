@@ -493,6 +493,11 @@ private fun JSONObject.optStringOrNull(key: String): String? {
  */
 fun DaughterCharacterData.toCharacterIdentityEntity(
     daughterCharacterId: Int,
+    // A7-3 修复：女儿注册时继承母亲 ownerAliasesJson，修正忠诚锚点文案中的
+    // ownerName 称呼。PromptOrchestrator.kt:393 解析 ownerName 时优先取
+    // ownerAliases[0]，女儿不继承则恒为空数组→回退到 userRoleLabelPrivate 或"他"。
+    // 传入 null 时保持默认 "[]"（不继承），与旧行为一致。
+    motherOwnerAliasesJson: String? = null,
 ): com.zaijian.zhoumuyun.data.db.entity.CharacterIdentityEntity {
     val id = identity
     return com.zaijian.zhoumuyun.data.db.entity.CharacterIdentityEntity(
@@ -516,6 +521,9 @@ fun DaughterCharacterData.toCharacterIdentityEntity(
         relationships = id.relationships,
         relationAssumption = id.relationAssumption,
         conflictStrategy = id.conflictStrategy,
+        // A7-3 修复：继承母亲 ownerAliasesJson，让忠诚锚点文案能正确解析 ownerName。
+        // motherOwnerAliasesJson 为 null（查询失败或调用方未传）时回退到默认 "[]"。
+        ownerAliasesJson = motherOwnerAliasesJson ?: "[]",
         // 女儿不支持完全覆盖 Identity Layer，customSystemPrompt 始终为 null
         customSystemPrompt = null,
         updatedAt = generatedAt,
@@ -556,12 +564,26 @@ fun DaughterCharacterData.toCharacterIdentityEntity(
  * @param daughterCharacterId 女儿自己的 characterId（与写入 character_identity
  *        表时用的是同一个号，由 [com.zaijian.zhoumuyun.data.manager.DaughterIdAllocator]
  *        分配，调用方通常直接传 `currentCharacterId`）。
+ * @param motherAccentColor A7b-2 修复：母亲的主题色。对于二代角色（母亲是 1-9 号
+ *        原生角色），调用方可不传，本函数会从 DefaultCharacters 查找。对于三代角色
+ *        （母亲是 1000+ 号二代女儿），DefaultCharacters 查不到，调用方必须通过
+ *        DaughterCharacterRepository.getCharacterConfig(motherCharacterId) 递归获取
+ *        母亲的 accentColor 后传入，否则会回退灰色 Color(0xFF9E9E9E)。
  */
 fun DaughterCharacterData.toCharacterConfig(
     daughterCharacterId: Int,
+    motherAccentColor: Color? = null,
 ): CharacterConfig {
     val id = identity
     val state = stateLayer
+
+    // A7b-2 修复：统一计算母亲主题色。优先使用调用方传入的 motherAccentColor
+    // （三代角色的母亲是 1000+ 号女儿，DefaultCharacters 查不到）；未传时回退到
+    // DefaultCharacters 查找（二代角色的母亲是 1-9 号原生角色），再回退灰色。
+    val resolvedMotherAccent = motherAccentColor
+        ?: DefaultCharacters.firstOrNull { it.id == motherCharacterId }?.accentColor
+        ?: Color(0xFF9E9E9E)
+    val daughterAccent = lerp(resolvedMotherAccent, Color.White, 0.25f)
 
     return CharacterConfig(
         id = daughterCharacterId,
@@ -573,24 +595,10 @@ fun DaughterCharacterData.toCharacterConfig(
         shelfRow = 0,
         shelfCol = 0,
         // accentColor：母亲色系 lerp 白色 25%，女儿用浅版母亲主题色
-        accentColor = run {
-            val motherAccent = DefaultCharacters
-                .firstOrNull { it.id == motherCharacterId }
-                ?.accentColor ?: Color(0xFF9E9E9E)
-            lerp(motherAccent, Color.White, 0.25f)
-        },
-        breathColor = run {
-            val motherAccent = DefaultCharacters
-                .firstOrNull { it.id == motherCharacterId }
-                ?.accentColor ?: Color(0xFF9E9E9E)
-            lerp(motherAccent, Color.White, 0.25f)
-        },
+        accentColor = daughterAccent,
+        breathColor = daughterAccent,
         // avatarUrl：ui-avatars.com 按名字+母亲派生色生成，与母亲头像风格一致
         avatarUrl = run {
-            val motherAccent = DefaultCharacters
-                .firstOrNull { it.id == motherCharacterId }
-                ?.accentColor ?: Color(0xFF9E9E9E)
-            val daughterAccent = lerp(motherAccent, Color.White, 0.25f)
             // ARGB long → 去掉 alpha 取低 24 位 RGB → 六位十六进制
             val argb = daughterAccent.value.toLong()
             val rgb = String.format("%06X", argb and 0xFFFFFFL)

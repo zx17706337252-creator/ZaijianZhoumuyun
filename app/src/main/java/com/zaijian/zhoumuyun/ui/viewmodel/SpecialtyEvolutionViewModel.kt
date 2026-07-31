@@ -178,6 +178,14 @@ class SpecialtyEvolutionViewModel(
                 content = planContent,
                 revisionReason = "USER_INITIATED",
             )
+            // C5-#14 修复：原逻辑只创建了 profile+plan，从未调用 scheduleNext()，
+            // 与下方 setActive(active=true) 的漏调用同根因——DailyPracticeScheduler
+            // 的闹钟只在"停用全部专长"时被 cancel（第218-224行），但从未在"新建/
+            // 重新启用"时被重新 schedule。用户首次创建专长时，Snackbar 明确承诺
+            // "今天的修炼会自动开始"，但实际上没有任何闹钟被设置，当天不会触发。
+            // scheduleNext 内部固定 requestCode，重复调用是幂等的（替换旧闹钟），
+            // 不会因为已有闹钟在跑而产生冲突或重复。
+            DailyPracticeScheduler.scheduleNext(getApplication())
             _snackbarMessage.value = "已创建「$domain」方向，今天的修炼会在设定的时间自动开始"
         }
     }
@@ -215,6 +223,15 @@ class SpecialtyEvolutionViewModel(
         viewModelScope.launch {
             repo.setActive(profileId, active)
             _snackbarMessage.value = if (active) "已重新启用" else "已暂停（每日修炼会跳过这个方向）"
+            if (active) {
+                // C5-#14 修复：与下方"停用后 cancel"对称——重新启用时也要确保闹钟在跑。
+                // 原逻辑完全没有这一行，用户从停用状态重新启用专长后，如果闹钟此前已被
+                // cancel（比如这是唯一一个专长，停用时触发过 cancel 分支），重新启用后
+                // 不会有任何东西把闹钟重新设置回来，当天甚至此后都不会触发修炼，
+                // 且没有任何 UI 提示告知用户闹钟未运行。scheduleNext 幂等，无论此前
+                // 是否已有闹钟在跑都可以安全调用。
+                DailyPracticeScheduler.scheduleNext(getApplication())
+            }
             // 漏调用-01 修复：停用后若已无任何启用中的专长，停掉每日修炼闹钟，
             // 否则闹钟会持续每日唤醒设备、启动 Worker 做无用功（DailyPracticeWorker
             // 内部逐一遍历 active profiles，全空时什么也不做但流程仍会跑一遍）。

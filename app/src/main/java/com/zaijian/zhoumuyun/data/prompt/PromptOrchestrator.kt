@@ -16,6 +16,7 @@ import com.zaijian.zhoumuyun.data.model.PregnancyState
 import com.zaijian.zhoumuyun.domain.displayLabel
 import com.zaijian.zhoumuyun.domain.parseUserGenderType
 import com.zaijian.zhoumuyun.domain.SpeakerContext
+import com.zaijian.zhoumuyun.util.ZLog
 
 /**
  * Prompt Orchestration Layer
@@ -1392,7 +1393,11 @@ ${nameStr}最近状态有些不同，你注意到了，
             val arr = org.json.JSONArray(json)
             (0 until arr.length()).map { arr.getString(it) }.filter { it.isNotBlank() }
                 .takeIf { it.isNotEmpty() }
-        } catch (_: Throwable) {
+        } catch (e: Throwable) {
+            // B3审查序号8修复：原无日志，损坏字段会静默回退到 CharacterConfig 默认值，
+            // 用户在身份编辑页自定义的边界/信念/别名被悄悄丢弃且无法定位是哪个字段。
+            // 补日志记录原始值前100字符（不整段记录，避免超长字段污染日志）。
+            ZLog.w("PromptOrchestrator", "人格字段JSON解析失败，raw=${json.take(100)}", e)
             null
         }
     }
@@ -1437,6 +1442,8 @@ ${nameStr}最近状态有些不同，你注意到了，
 （听到这声呼唤，手上的动作顿了顿，心里泛起一丝疑惑——对方很少无缘无故跑来找我，是不是遇到什么事了）
 在呢，怎么突然想起来找我啦？
 
-回复正文结束后，另起一行输出情绪标记（系统使用，不展示给用户）：[mood:情绪词]
-情绪词取值：平静 / 专注 / 好奇 / 满足 / 担忧 / 兴奋 / 疲惫 / 沉思"""
+回复正文结束后，另起一行输出情绪标记（系统使用，不展示给用户）：[mood:情绪词:强度]
+情绪词取值（选择最贴近角色此刻真实内心状态的一个）：平静 / 愉悦 / 悲伤 / 焦虑 / 嫉妒 / 窘迫 / 愤怒 / 内疚 / 孤独 / 期待 / 压抑 / 爱意
+强度取值：0-100 的整数，表示这种情绪当下有多强烈（隐约的情绪填 20-30，强烈的情绪填 70-90）
+示例：[mood:焦虑:65]"""
 }

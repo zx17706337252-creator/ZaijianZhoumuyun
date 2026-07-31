@@ -15,8 +15,10 @@ import com.zaijian.zhoumuyun.data.model.BriefingAttentionItem
 import com.zaijian.zhoumuyun.data.model.BriefingCharacterEntry
 import com.zaijian.zhoumuyun.data.model.BriefingData
 import com.zaijian.zhoumuyun.data.model.CharacterConfig
+import com.zaijian.zhoumuyun.data.model.CyclePhase
 import com.zaijian.zhoumuyun.data.model.DaughterDataException
 import com.zaijian.zhoumuyun.data.model.DefaultCharacters
+import com.zaijian.zhoumuyun.data.model.MenstrualCycleState
 import com.zaijian.zhoumuyun.data.model.PregnancyState
 import com.zaijian.zhoumuyun.domain.RelationshipEngine
 import com.zaijian.zhoumuyun.util.ZLog
@@ -39,6 +41,16 @@ import kotlinx.coroutines.flow.map
 //  女儿（daughterCharacterRepo.getAllDaughterCharacterIds()）。母亲和
 //  女儿最终都转成同一个 CharacterConfig 类型，聚合逻辑不需要区分两者。
 // ─────────────────────────────────────────────────────────────
+
+// A6-2 修复: 角标轻量路径原先用 Triple<CharacterConfig, Long?, Boolean>
+// 只装得下 character/lastMessageAt/isPregnant 三样，cyclePhase 装不进去。
+// 改为具名数据类，多带一个 cyclePhase 字段，可读性也优于 Triple 的 _1/_2/_3。
+private data class AttentionLightEntry(
+    val character: CharacterConfig,
+    val lastMessageAt: Long?,
+    val isPregnant: Boolean,
+    val cyclePhase: CyclePhase,
+)
 
 class BriefingRepository(
     private val relationshipDao: RelationshipDao,
@@ -82,8 +94,14 @@ class BriefingRepository(
         val milestonesSince = relationshipMilestoneDao.getAllSince(since)
         val worsenedMilestones = milestonesSince
             .filter { it.direction == RelationshipMilestoneDirection.WORSENED.name }
+        // B4审查报告【序号2】修复：原先只过滤 REPAIRED，STAGE_TRANSITION（关系阶段跃升，
+        // 同属正向"好消息"）不计入，导致角色卡蜡封角标与通知中心"好消息"区都不显示该里程碑。
+        // 两者都是值得展示的正向里程碑，一并计入。
         val repairedCharIds = milestonesSince
-            .filter { it.direction == RelationshipMilestoneDirection.REPAIRED.name }
+            .filter {
+                it.direction == RelationshipMilestoneDirection.REPAIRED.name ||
+                    it.direction == RelationshipMilestoneDirection.STAGE_TRANSITION.name
+            }
             .map { it.toId }
             .toSet()
 
@@ -204,13 +222,19 @@ class BriefingRepository(
             }
         }
 
-        val perCharacterFlow: Flow<List<Triple<CharacterConfig, Long?, Boolean>>> =
+        val perCharacterFlow: Flow<List<AttentionLightEntry>> =
             charactersFlow.flatMapLatest { characters ->
                 if (characters.isEmpty()) {
                     // 同上，显式指定类型参数，不依赖 val 标注隔层传播期望类型
-                    flowOf(emptyList<Triple<CharacterConfig, Long?, Boolean>>())
+                    flowOf(emptyList<AttentionLightEntry>())
                 } else {
                     val perCharacterFlows = characters.map { config ->
+                        // A6-2 修复: 把 menstrualCycleRepo.observe() 并入 perCharacterFlow，
+                        // 让周期阶段变化也能驱动角标实时刷新（此前只合了 lastMessageAt
+                        // 和 isPregnant，排卵期/经期变化角标不会更新）。menstrualCycleRepo
+                        // 已是本类构造参数，与同文件 pregnancyRepo/messageDao 同口径访问，
+                        // 不走 AppContainer.instance。三路 combine 后用 currentPhase() 把
+                        // 周期状态折算成 cyclePhase 一并装进 AttentionLightEntry。
                         combine(
                             messageDao.observeLastMessageAt(config.id)
                                 .catch { e ->
@@ -222,8 +246,18 @@ class BriefingRepository(
                                     ZLog.w("BriefingRepository", "characterId=${config.id} observePregnancy 失败，兜底为未怀孕", e)
                                     emit(PregnancyState(characterId = config.id))
                                 },
-                        ) { lastMessageAt, pregnancy ->
-                            Triple(config, lastMessageAt, pregnancy.isPregnant)
+                            menstrualCycleRepo.observe(config.id)
+                                .catch { e ->
+                                    ZLog.w("BriefingRepository", "characterId=${config.id} observe 周期失败，兜底为默认 SAFE", e)
+                                    emit(MenstrualCycleState(characterId = config.id))
+                                },
+                        ) { lastMessageAt, pregnancy, cycleState ->
+                            AttentionLightEntry(
+                                character     = config,
+                                lastMessageAt = lastMessageAt,
+                                isPregnant    = pregnancy.isPregnant,
+                                cyclePhase    = cycleState.currentPhase(isPregnant = pregnancy.isPregnant, now = System.currentTimeMillis()),
+                            )
                         }
                     }
                     combine(perCharacterFlows) { it.toList() }
@@ -237,8 +271,8 @@ class BriefingRepository(
 
     /**
      * buildAttentionList() 的轻量版：角标场景只需要 character/daysSinceContact/
-     * isPregnant 三样，不需要凑出完整 BriefingCharacterEntry（那样会带着一堆
-     * 无意义的默认值——completedTaskCount=0、projectNames=空列表等，容易让人
+     * isPregnant/cyclePhase 四样，不需要凑出完整 BriefingCharacterEntry（那样会带着
+     * 一堆无意义的默认值——completedTaskCount=0、projectNames=空列表等，容易让人
      * 误以为那是真实数据）。排序规则复用 attentionItemComparator，与
      * buildAttentionList() 保持完全一致的输出顺序。
      *
@@ -251,9 +285,12 @@ class BriefingRepository(
      * 列表过滤（fromId/toId 都在 validIds 里），与 generateBriefing() 调用
      * relationshipEngine.getInterCharacterMatrix(characters.map{it.id}) 的口径
      * 对齐。原先不过滤会导致女儿数据损坏时角标持续误报。
+     *
+     * A6-2 修复: 入参由 Triple<CharacterConfig, Long?, Boolean> 改为
+     * AttentionLightEntry，多带 cyclePhase，使排卵期/经期也能进入角标判定。
      */
     private fun buildAttentionListLight(
-        entries: List<Triple<CharacterConfig, Long?, Boolean>>,
+        entries: List<AttentionLightEntry>,
         interMatrix: List<RelationshipEntity>,
         worsened: List<RelationshipMilestoneEntity>,
         now: Long,
@@ -265,7 +302,7 @@ class BriefingRepository(
         val noContactThresholdDays = 7L
         val tensionThreshold       = 60
 
-        entries.forEach { (character, lastMessageAt, isPregnant) ->
+        entries.forEach { (character, lastMessageAt, isPregnant, cyclePhase) ->
             val days = lastMessageAt?.let { (now - it) / 86_400_000L }
             if (days == null) {
                 items += BriefingAttentionItem.NeverContacted(character)
@@ -274,6 +311,13 @@ class BriefingRepository(
             }
             if (isPregnant) {
                 items += BriefingAttentionItem.Pregnancy(character)
+            }
+            // A6-2 修复: 角标场景同样补充排卵期/经期判定，与 buildAttentionList()
+            // 保持一致，确保两条路径产出的 attentionItems 口径相同。
+            if (cyclePhase == CyclePhase.FERTILE) {
+                items += BriefingAttentionItem.FertileAttention(character.id, character.name)
+            } else if (cyclePhase == CyclePhase.MENSTRUAL) {
+                items += BriefingAttentionItem.MenstrualAttention(character.id, character.name)
             }
         }
         // P1-20 修复：buildAttentionList() 接收的是 getInterCharacterMatrix()
@@ -322,6 +366,14 @@ class BriefingRepository(
             if (entry.isPregnant) {
                 items += BriefingAttentionItem.Pregnancy(entry.character)
             }
+            // A6-1 修复: 根据 cyclePhase 补充排卵期/经期两类需要关注的条目，
+            // 与 isPregnant 同级判断。怀孕时 cyclePhase 为 PREGNANT，既不会
+            // 命中 FERTILE 也不会命中 MENSTRUAL，与上面 Pregnancy 分支互不冲突。
+            if (entry.cyclePhase == CyclePhase.FERTILE) {
+                items += BriefingAttentionItem.FertileAttention(entry.character.id, entry.character.name)
+            } else if (entry.cyclePhase == CyclePhase.MENSTRUAL) {
+                items += BriefingAttentionItem.MenstrualAttention(entry.character.id, entry.character.name)
+            }
         }
         interMatrix.values.filter { it.tension >= tensionThreshold }.forEach { rel ->
             items += BriefingAttentionItem.Tension(rel.fromId, rel.toId, rel.tension)
@@ -338,10 +390,12 @@ class BriefingRepository(
      *
      * 一级：按类型分组，优先级从高到低：
      *   1. Pregnancy        —— 健康相关，风险最高，永远置顶
-     *   2. RelationWorsened —— 已经发生的关系恶化事件，属于"已出问题"
-     *   3. Tension          —— 关系紧张但尚未恶化，属于"有风险但未爆发"
-     *   4. NeverContacted   —— 从未联系，文档明确比 NoContact 更紧急
-     *   5. NoContact        —— 久未联系，组内再按天数降序
+     *   2. FertileAttention —— 排卵期/易孕窗口，与怀孕同属周期健康维度，紧随其后
+     *   3. MenstrualAttention —— 经期，需要关怀，优先级略低于排卵期
+     *   4. RelationWorsened —— 已经发生的关系恶化事件，属于"已出问题"
+     *   5. Tension          —— 关系紧张但尚未恶化，属于"有风险但未爆发"
+     *   6. NeverContacted   —— 从未联系，文档明确比 NoContact 更紧急
+     *   7. NoContact        —— 久未联系，组内再按天数降序
      *
      * 二级：同类型内部再排序，避免退化回原始遍历顺序：
      *   - Tension 按 tension 数值降序（越紧张越靠前）
@@ -352,19 +406,23 @@ class BriefingRepository(
     private val attentionItemComparator: Comparator<BriefingAttentionItem> =
         compareBy<BriefingAttentionItem> { item ->
             when (item) {
-                is BriefingAttentionItem.Pregnancy        -> 0
-                is BriefingAttentionItem.RelationWorsened -> 1
-                is BriefingAttentionItem.Tension          -> 2
-                is BriefingAttentionItem.NeverContacted   -> 3
-                is BriefingAttentionItem.NoContact        -> 4
+                is BriefingAttentionItem.Pregnancy          -> 0
+                is BriefingAttentionItem.FertileAttention   -> 1
+                is BriefingAttentionItem.MenstrualAttention -> 2
+                is BriefingAttentionItem.RelationWorsened   -> 3
+                is BriefingAttentionItem.Tension            -> 4
+                is BriefingAttentionItem.NeverContacted     -> 5
+                is BriefingAttentionItem.NoContact          -> 6
             }
         }.thenByDescending { item ->
             when (item) {
-                is BriefingAttentionItem.Tension          -> item.tension.toLong()
-                is BriefingAttentionItem.NoContact        -> item.days
-                is BriefingAttentionItem.Pregnancy        -> 0L
-                is BriefingAttentionItem.RelationWorsened -> 0L
-                is BriefingAttentionItem.NeverContacted   -> 0L
+                is BriefingAttentionItem.Tension            -> item.tension.toLong()
+                is BriefingAttentionItem.NoContact          -> item.days
+                is BriefingAttentionItem.Pregnancy          -> 0L
+                is BriefingAttentionItem.FertileAttention   -> 0L
+                is BriefingAttentionItem.MenstrualAttention -> 0L
+                is BriefingAttentionItem.RelationWorsened   -> 0L
+                is BriefingAttentionItem.NeverContacted     -> 0L
             }
         }
 }

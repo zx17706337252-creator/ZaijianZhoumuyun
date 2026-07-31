@@ -8,6 +8,10 @@ import com.zaijian.zhoumuyun.util.ZLog
 import android.content.Context
 import com.zaijian.zhoumuyun.data.agent.AgentToolRegistry
 import com.zaijian.zhoumuyun.data.agent.CalendarSyncHelper
+import com.zaijian.zhoumuyun.data.agent.FileSearchTool
+import com.zaijian.zhoumuyun.data.agent.ImageEditTool
+import com.zaijian.zhoumuyun.data.agent.MediaInfoTool
+import com.zaijian.zhoumuyun.data.agent.PdfReadTool
 import com.zaijian.zhoumuyun.data.agent.GoalUpdateTool
 import com.zaijian.zhoumuyun.data.agent.HeartbeatDeleteTool
 import com.zaijian.zhoumuyun.data.agent.HeartbeatSetTool
@@ -350,6 +354,9 @@ class ZaijianApp : Application() {
                     context         = applicationContext,  // 批次1 1-5修复：补 context，让 runLocalCompensation 的 finally 块重新入队逻辑生效
                 )
                 compensationScheduleRepository.retryPendingCloudSync()
+                // B5 问题2修复：补重试上次启动中 markResultRead 失败、云端 is_read
+                // 仍为 false 的结果，避免每次冷启动都重复拉取同一条已处理的数据。
+                compensationScheduleRepository.retryPendingCloudMarkRead()
                 for (charId in 1..9) {
                     compensationScheduleRepository.syncCloudResults(charId)
                 }
@@ -416,6 +423,36 @@ class ZaijianApp : Application() {
             }
         }
 
+        // A13-2 修复：FCM 首次 token 获取。
+        // onNewToken() 仅在 token 刷新/轮转时回调（首次安装后可能数小时才触发或不触发），
+        // app 启动期需主动取一次 token 确保上传。FcmTokenUploadWorker.enqueue() 使用
+        // ExistingWorkPolicy.REPLACE，与 onNewToken() 路径天然去重，不会重复上传。
+        // 前置依赖：A13-1（google-services 插件 + google-services.json）必须先落地，
+        // 否则 FirebaseMessaging.getInstance() 会抛异常，此处的 try-catch 兜住后仅记日志，
+        // 不会崩溃、不影响 App 其他功能。
+        try {
+            com.google.firebase.messaging.FirebaseMessaging.getInstance().token
+                .addOnSuccessListener { token ->
+                    val prefs = getSharedPreferences("zaijian_device", MODE_PRIVATE)
+                    val deviceId = prefs.getString("device_id", null) ?: run {
+                        val newId = java.util.UUID.randomUUID().toString()
+                        prefs.edit().putString("device_id", newId).commit()
+                        newId
+                    }
+                    com.zaijian.zhoumuyun.data.push.FcmTokenUploadWorker.enqueue(
+                        context = applicationContext,
+                        token   = token,
+                        userId  = deviceId,
+                    )
+                }
+                .addOnFailureListener { e ->
+                    ZLog.w("ZaijianApp", "FCM 首次 token 获取失败: ${e.message}")
+                }
+        } catch (e: Exception) {
+            // FirebaseApp 未初始化（google-services.json 缺失等）时 getInstance() 会抛异常
+            ZLog.w("ZaijianApp", "FirebaseMessaging 不可用，FCM 推送链路未启动: ${e.message}")
+        }
+
         // 批次C·问题5 修复：分娩到期结算调度。
         // PregnancyRepository.settleDueDeliveries() 此前全项目零调用点，怀孕满 30 天
         // 不会自动触发分娩结算，isPregnant 永远卡在 true。
@@ -442,7 +479,8 @@ class ZaijianApp : Application() {
         // S8-窗口12 结论2/结论8修复：主动消息周期检查（ProactiveMessageWorker）
         // 此前只在 ProfileScreen 开关切换的回调里被 scheduleProactiveMessageCheck()，
         // ZaijianApp.onCreate() 和 BootReceiver 均无调用。WorkManager 的
-        // PeriodicWorkRequest 在设备重启后会被系统清空，若用户此前已开启主动消息
+        // PeriodicWorkRequest 通过自身 SQLite 持久化 WorkSpec，设备重启后自动恢复——
+        // 但用户 force-stop App 后队列不再执行，若用户此前已开启主动消息
         // 但重启后未手动重新切换开关，主动消息检查会永久停止，且没有任何提示。
         // 现在改为：启动时读取 ProfileScreen 写入的同一个 SharedPreferences
         // （"user_profile" / "proactive_enabled"，默认值 true 与 ProfileScreen
@@ -759,6 +797,13 @@ class ZaijianApp : Application() {
                     com.zaijian.zhoumuyun.data.agent.BuildApkDownloadTool.CHANNEL_NAME,
                     android.app.NotificationManager.IMPORTANCE_HIGH,
                 ).apply { description = "APK 下载完成通知" },
+                // A5-4 修复：DailyPracticeWorker 跳过提醒渠道——Provider 未配置时
+                // 连续跳过阈值的提醒，与其余 Worker 同款在此统一注册，不自行动态创建。
+                android.app.NotificationChannel(
+                    com.zaijian.zhoumuyun.data.agent.DailyPracticeWorker.CHANNEL_ID,
+                    com.zaijian.zhoumuyun.data.agent.DailyPracticeWorker.CHANNEL_NAME,
+                    android.app.NotificationManager.IMPORTANCE_DEFAULT,
+                ).apply { description = "每日修炼连续跳过提醒" },
             )
         )
     }
@@ -866,11 +911,52 @@ class ZaijianApp : Application() {
         context: Context,
     ) {
         // 顺序：本地无网络工具 → 网络工具 → 个人助手 → 创作 → CoreTools → CreativeDoc/DataVis/AgentMeta
-        runCatching { AgentToolRegistry.registerDataTools() }.onFailure { ZLog.e("ZaijianApp", "registerDataTools 注册失败", it) }
-        runCatching { AgentToolRegistry.registerBuiltinTools(context) }.onFailure { ZLog.e("ZaijianApp", "registerBuiltinTools 注册失败", it) }
-        runCatching { AgentToolRegistry.registerPersonalTools(context) }.onFailure { ZLog.e("ZaijianApp", "registerPersonalTools 注册失败", it) }
-        runCatching { AgentToolRegistry.registerCreativeTools() }.onFailure { ZLog.e("ZaijianApp", "registerCreativeTools 注册失败", it) }
-        runCatching { AgentToolRegistry.registerFileSystemTools(context) }.onFailure { ZLog.e("ZaijianApp", "registerFileSystemTools 注册失败", it) }
+        // C1-#5 修复：以下 13 处 runCatching 此前 onFailure 只写 ZLog.e（仅 logcat，
+        // 用户导出 agent_log.txt 排查不到），统一补一条 AgentLog.error 落盘，
+        // 与本函数内已有的 registerCreativeDocTools/registerDataVisTools 两处对齐。
+        runCatching { AgentToolRegistry.registerDataTools() }.onFailure {
+            ZLog.e("ZaijianApp", "registerDataTools 注册失败", it)
+            AgentLog.error("ZaijianApp", "registerDataTools 注册失败", it)
+        }
+        runCatching { AgentToolRegistry.registerBuiltinTools(context) }.onFailure {
+            ZLog.e("ZaijianApp", "registerBuiltinTools 注册失败", it)
+            AgentLog.error("ZaijianApp", "registerBuiltinTools 注册失败", it)
+        }
+        runCatching { AgentToolRegistry.registerPersonalTools(context) }.onFailure {
+            ZLog.e("ZaijianApp", "registerPersonalTools 注册失败", it)
+            AgentLog.error("ZaijianApp", "registerPersonalTools 注册失败", it)
+        }
+        runCatching { AgentToolRegistry.registerCreativeTools() }.onFailure {
+            ZLog.e("ZaijianApp", "registerCreativeTools 注册失败", it)
+            AgentLog.error("ZaijianApp", "registerCreativeTools 注册失败", it)
+        }
+        runCatching { AgentToolRegistry.registerFileSystemTools(context) }.onFailure {
+            ZLog.e("ZaijianApp", "registerFileSystemTools 注册失败", it)
+            AgentLog.error("ZaijianApp", "registerFileSystemTools 注册失败", it)
+        }
+        // C1-#1/#2/#3 修复（审查报告只提到 PdfReadTool/MediaInfoTool/ImageEditTool 三个，
+        // 复查 ChatToolRegistrar.registerStaticTools() 发现同一批次里的 FileSearchTool
+        // 构造签名与注册方式完全一致，同样只依赖 context+默认 characterIdProvider，
+        // 同样只在用户首次打开聊天界面后才存在，一并补上避免遗漏第四个）：
+        // 这四个工具此前仅在 ChatToolRegistrar.registerStaticTools() 注册，该方法唯一
+        // 调用点是 ChatViewModel.init 块，App 冷启动后、用户打开聊天界面前，后台路径
+        // （如角色自主触发的工具调用）通过 AgentToolRegistry.get() 拿到的是 null。
+        // 这里在 App 级别双重注册一份，ChatToolRegistrar 保留原注册不变（幂等，
+        // AgentToolRegistry.register 后注册覆盖先注册，不会因重复调用产生问题）。
+        // A4-5 修复：此处双重注册是有意为之，用于覆盖后台路径早于 ChatViewModel.init
+        // 的时序窗口，不要精简——移除任一层会重新引入 A4-1/2/3 修复前的 bug。
+        // CiCdStartTool/ProjectDailyPlannerTool 同理，见下方各自注册块。
+        runCatching {
+            AgentToolRegistry.registerAll(
+                PdfReadTool(context = context),
+                MediaInfoTool(context = context),
+                ImageEditTool(context = context),
+                FileSearchTool(context = context),
+            )
+        }.onFailure {
+            ZLog.e("ZaijianApp", "PdfReadTool/MediaInfoTool/ImageEditTool/FileSearchTool 注册失败", it)
+            AgentLog.error("ZaijianApp", "PdfReadTool/MediaInfoTool/ImageEditTool/FileSearchTool 注册失败", it)
+        }
 
         // ── AgentCoreTools ─────────────────────────────────────────────────
         //
@@ -970,7 +1056,10 @@ class ZaijianApp : Application() {
                     characterId = { -1 },
                 ),
             )
-        }.onFailure { ZLog.e("ZaijianApp", "AgentCoreTools(PlanSave/Memory/Goal/Task) 注册失败", it) }
+        }.onFailure {
+            ZLog.e("ZaijianApp", "AgentCoreTools(PlanSave/Memory/Goal/Task) 注册失败", it)
+            AgentLog.error("ZaijianApp", "AgentCoreTools(PlanSave/Memory/Goal/Task) 注册失败", it)
+        }
         // 问题39修复：Soul/Memory/User 三模块 6 个工具此前在本文件与 ChatViewModel.kt
         // 各自手写一份完全重复的实例化代码（唯一区别是 characterId 闭包），改用
         // registerSoulMemoryUserTools() 统一封装，本处传 -1 占位；ChatViewModel.init()
@@ -980,7 +1069,10 @@ class ZaijianApp : Application() {
                 identityDao = identityRepository,
                 characterId = { -1 },
             )
-        }.onFailure { ZLog.e("ZaijianApp", "registerSoulMemoryUserTools 注册失败", it) }
+        }.onFailure {
+            ZLog.e("ZaijianApp", "registerSoulMemoryUserTools 注册失败", it)
+            AgentLog.error("ZaijianApp", "registerSoulMemoryUserTools 注册失败", it)
+        }
         // Agent 结构化存储（方案_Agent结构化存储_最终版 8.10 第①处）：与上方
         // registerSoulMemoryUserTools() 同款 {-1} 静态占位注册——保证 App 启动早期
         // WorkflowEngine 等无 ChatViewModel 存活的后台路径也能通过
@@ -991,7 +1083,10 @@ class ZaijianApp : Application() {
                 repo = com.zaijian.zhoumuyun.data.AppContainer.instance.agentStoreRepo,
                 characterIdProvider = { -1 },
             )
-        }.onFailure { ZLog.e("ZaijianApp", "registerAgentStoreTools 注册失败", it) }
+        }.onFailure {
+            ZLog.e("ZaijianApp", "registerAgentStoreTools 注册失败", it)
+            AgentLog.error("ZaijianApp", "registerAgentStoreTools 注册失败", it)
+        }
 
         // S8-窗口11 P1-8-7 修复：RuleDistillTool 改为 providerFn 闭包模式后，
         // 不再需要在注册时刻判断 activeProvider 是否为 null——工具本身可以
@@ -1010,7 +1105,10 @@ class ZaijianApp : Application() {
                     characterId = { -1 },
                 )
             )
-        }.onFailure { ZLog.e("ZaijianApp", "RuleDistillTool 注册失败", it) }
+        }.onFailure {
+            ZLog.e("ZaijianApp", "RuleDistillTool 注册失败", it)
+            AgentLog.error("ZaijianApp", "RuleDistillTool 注册失败", it)
+        }
 
         // ── CreativeDocTools / DataVisTools / AgentMetaTools ─────────────────
         // W2 表格直传方案：scheduleRepository 必须在 registerDataVisTools 之前创建，
@@ -1069,7 +1167,10 @@ class ZaijianApp : Application() {
                 messageDao = MessageRepository(db.messageDao()),
                 taskDao    = db.taskDao(),
             )
-        }.onFailure { ZLog.e("ZaijianApp", "registerAgentMetaTools 注册失败", it) }
+        }.onFailure {
+            ZLog.e("ZaijianApp", "registerAgentMetaTools 注册失败", it)
+            AgentLog.error("ZaijianApp", "registerAgentMetaTools 注册失败", it)
+        }
 
         // ── CICD · GitHub 配置存储 ──────────────────────────────
         val githubConfigStore = GithubConfigDataStore(context)
@@ -1081,7 +1182,10 @@ class ZaijianApp : Application() {
 
         // ── 邮件账号存储 + 真实邮件收发工具（email_send / email_fetch）──
         val emailAccountStore = EmailAccountStore(context)
-        runCatching { AgentToolRegistry.registerEmailTools(emailAccountStore) }.onFailure { ZLog.e("ZaijianApp", "registerEmailTools 注册失败", it) }
+        runCatching { AgentToolRegistry.registerEmailTools(emailAccountStore) }.onFailure {
+            ZLog.e("ZaijianApp", "registerEmailTools 注册失败", it)
+            AgentLog.error("ZaijianApp", "registerEmailTools 注册失败", it)
+        }
 
         // ── 成长系统 · 每日自我规划工具（project_daily_planner）────────
         // provider 为 null 时静默跳过（首次启动未配置Key），
@@ -1095,7 +1199,10 @@ class ZaijianApp : Application() {
                     taskDao    = db.taskDao(),
                 )
             )
-        }.onFailure { ZLog.e("ZaijianApp", "ProjectDailyPlannerTool 注册失败", it) }
+        }.onFailure {
+            ZLog.e("ZaijianApp", "ProjectDailyPlannerTool 注册失败", it)
+            AgentLog.error("ZaijianApp", "ProjectDailyPlannerTool 注册失败", it)
+        }
 
         // ── CICD · 注册原子工具（流水线各步骤可单独被 LLM 调用）──────
         runCatching {
@@ -1135,7 +1242,10 @@ class ZaijianApp : Application() {
                     characterId        = { -1 },
                 ),
             )
-        }.onFailure { ZLog.e("ZaijianApp", "CICD 工具注册失败", it) }
+        }.onFailure {
+            ZLog.e("ZaijianApp", "CICD 工具注册失败", it)
+            AgentLog.error("ZaijianApp", "CICD 工具注册失败", it)
+        }
 
         // ── Phase 29 · 调度系统初始化 ─────────────────────────────
         // W2：scheduleRepository 已提前到 registerDataVisTools 之前创建（上方），
@@ -1168,7 +1278,10 @@ class ZaijianApp : Application() {
                     context = context,
                 )
             )
-        }.onFailure { ZLog.e("ZaijianApp", "ScheduleCreateTool 注册失败", it) }
+        }.onFailure {
+            ZLog.e("ZaijianApp", "ScheduleCreateTool 注册失败", it)
+            AgentLog.error("ZaijianApp", "ScheduleCreateTool 注册失败", it)
+        }
 
         // ── Phase 30 · 日程管理补全（delete / update / get / list） ──────
         runCatching {
@@ -1197,7 +1310,10 @@ class ZaijianApp : Application() {
                     projectRepository   = projectRepository,
                 ),
             )
-        }.onFailure { ZLog.e("ZaijianApp", "Schedule(delete/update/get/list) 注册失败", it) }
+        }.onFailure {
+            ZLog.e("ZaijianApp", "Schedule(delete/update/get/list) 注册失败", it)
+            AgentLog.error("ZaijianApp", "Schedule(delete/update/get/list) 注册失败", it)
+        }
 
         // ── Phase 30 · 心跳检查清单（set / update / delete） ────────────
         runCatching {
@@ -1215,7 +1331,16 @@ class ZaijianApp : Application() {
                     characterIdProvider = { -1 },
                 ),
             )
-        }.onFailure { ZLog.e("ZaijianApp", "Heartbeat(set/update/delete) 注册失败", it) }
+        }.onFailure {
+            ZLog.e("ZaijianApp", "Heartbeat(set/update/delete) 注册失败", it)
+            AgentLog.error("ZaijianApp", "Heartbeat(set/update/delete) 注册失败", it)
+        }
+
+        // A2-2/A4-4 修复：全部批次注册跑完（无论中间是否有单个 runCatching 失败，
+        // 各批次已各自隔离），标记 AgentToolRegistry 就绪。后台路径
+        // （ScheduledJobWorker 等）调用 AgentToolRegistry.awaitReady() 后即可
+        // 安全地按名称查找到本函数注册的全部工具，不再因为异步时序窗口拿到 null。
+        AgentToolRegistry.markReady()
     }
 
     /**

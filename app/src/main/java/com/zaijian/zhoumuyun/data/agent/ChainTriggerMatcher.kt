@@ -60,6 +60,25 @@ class ChainTriggerMatcher(
             EventBus.events.collect { event ->
                 try {
                     handleEvent(event)
+                    // A1-1 修复：App 存活时即时处理成功后，必须同步标记对应的
+                    // PendingEventEntity 为 processed=true——否则该记录永远停留在
+                    // processed=false，重启后 processPendingEvents() 会把"已经被
+                    // 实时处理过"的事件再重放一次，重复创建 ChainRunEntity 并重复
+                    // 执行整条链条。event.persistedId 为空说明该事件本身不走
+                    // §11.1 落盘兜底（纯瞬时事件），无需标记。
+                    event.persistedId?.let { id ->
+                        try {
+                            repository.markPendingEventProcessed(id)
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            throw e
+                        } catch (e: Throwable) {
+                            // 标记失败不影响本次已完成的实时处理，仅记录日志——
+                            // 该事件会在下次重启时被重放并重复执行一次链条，这是
+                            // 标记失败这一次性异常的已知代价，优先保证不吞掉取消
+                            // 信号、不中断订阅循环。
+                            ZLog.e(TAG, "标记事件已处理失败: id=$id, eventName=${event.name}", e)
+                        }
+                    }
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e  // 结构化并发约定：取消信号不能被吞掉
                 } catch (e: Throwable) {

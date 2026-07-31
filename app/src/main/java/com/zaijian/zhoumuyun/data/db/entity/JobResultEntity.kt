@@ -31,4 +31,8 @@ data class JobResultEntity(
     val completedAt: Long?,
     val isRead: Boolean = false,
     val createdAt: Long,
+    // B5 问题2修复：markResultRead 失败时置 false，标记该结果的云端 is_read
+    // 状态尚未同步成功，需在下次启动时补重试（见 ScheduleRepository.retryPendingCloudMarkRead）。
+    // 默认 true——本地产出的结果（executedBy="local"）不涉及云端已读状态，无需同步。
+    val cloudMarkReadSynced: Boolean = true,
 )

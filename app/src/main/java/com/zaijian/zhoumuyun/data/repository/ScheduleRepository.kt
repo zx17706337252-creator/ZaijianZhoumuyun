@@ -186,8 +186,27 @@ class ScheduleRepository(
      * 在 ZaijianApp.onCreate 中调用。
      */
     suspend fun syncCloudResults(characterId: Int) {
+        // B5 问题1修复：拉取失败（网络抖动/超时/瞬时 5xx）时不再直接放弃等下次
+        // 冷启动——先带 3s 退避重试一次。若用户长时间不重启 App（后台常驻场景），
+        // 此前的策略会导致云端任务结果持续丢失，直到用户主动重启。
+        var fetchResult = SupabaseClient.fetchUnreadResults(characterId)
+        if (fetchResult is com.zaijian.zhoumuyun.data.remote.FetchResult.Failed) {
+            ZLog.w(TAG, "fetchUnreadResults 首次拉取失败，3s 后重试一次（characterId=$characterId）")
+            kotlinx.coroutines.delay(3_000)
+            fetchResult = SupabaseClient.fetchUnreadResults(characterId)
+        }
+
         val cloudResults: List<CloudJobResult> =
-            SupabaseClient.fetchUnreadResults(characterId)
+            when (fetchResult) {
+                is com.zaijian.zhoumuyun.data.remote.FetchResult.Success -> fetchResult.results
+                is com.zaijian.zhoumuyun.data.remote.FetchResult.Failed -> {
+                    // 重试后仍失败：不再假装"本次同步已完成但云端恰好没有数据"。
+                    // SupabaseClient 内部已经用 ZLog.e 留了诊断记录，剩下只能等
+                    // 下次冷启动（或调用方下一次触发）自然重试。
+                    ZLog.e(TAG, "fetchUnreadResults 重试后仍失败，本次同步未执行（characterId=$characterId）")
+                    return
+                }
+            }
 
         // 第8窗口问题3修复：原先对 cloudResults 逐条调用 jobResultDao.findById()
         // 检查是否已存在（N+1）。改为一次批量查询取回所有已存在的 id 集合，
@@ -219,8 +238,33 @@ class ScheduleRepository(
                     )
                 )
             }
-            // 无论本地是否已存在，均标记云端已读，避免下次重复拉取
-            SupabaseClient.markResultRead(result.id)
+            // 无论本地是否已存在，均标记云端已读，避免下次重复拉取。
+            // B5 问题2修复：此前完全不检查返回值——失败时云端 is_read 永久
+            // 停留在 false，且本地因 existingIds 去重不会重复插入，问题对用户
+            // 不可见。现在失败时记录到本地待重试队列（cloudMarkReadSynced=false），
+            // 由 retryPendingCloudMarkRead() 在下次启动时补标。
+            val marked = SupabaseClient.markResultRead(result.id)
+            if (!marked) {
+                ZLog.w(TAG, "markResultRead 失败，加入待重试队列：id=${result.id}")
+                jobResultDao.markCloudReadSyncPending(result.id)
+            }
+        }
+    }
+
+    /**
+     * B5 问题2修复：扫描本地所有 cloudMarkReadSynced = false 的结果，逐个重新
+     * 调用 markResultRead（PATCH is_read=true 本身幂等安全），成功则清除待重试标记。
+     *
+     * 调用时机：与 retryPendingCloudSync 同批次，在 ZaijianApp.onCreate 每次
+     * 启动时重试一轮。
+     */
+    suspend fun retryPendingCloudMarkRead() {
+        val pending = jobResultDao.findPendingCloudMarkRead()
+        for (result in pending) {
+            val marked = SupabaseClient.markResultRead(result.id)
+            if (marked) {
+                jobResultDao.markCloudReadSynced(result.id)
+            }
         }
     }
 
@@ -259,12 +303,23 @@ class ScheduleRepository(
             // updateRunTime 等）都能释放锁，不再依赖 TTL 到期。单任务失败不传播，记录结果后继续循环。
             try {
                 // 解析参数
+                // C7#30 修复：原先解析失败时静默用 emptyMap() 继续往下执行，任务会
+                // 以完全空的参数真的跑一遍工具（比如"提醒发送内容为X"丢了 X），
+                // 且没有任何记录能说明"这次其实是参数损坏导致的空跑"。改为解析
+                // 失败时不再冒充"空参数也算正常参数"，直接把这次标记为一次真实的
+                // 失败执行（tool 不再被调用），复用下面已有的 jobResultDao.insert
+                // (status=failed) → updateRunTime/disable → releaseLock → 重新调度
+                // 整条既有生命周期，用户能在任务历史里看到失败原因，而不是一次
+                // 看起来"成功"但参数全空的静默错误执行。
+                var paramsCorrupted = false
                 val baseParams: Map<String, String> = try {
                     val json = JSONObject(job.toolParamsJson)
                     json.keys().asSequence().associateWith { json.getString(it) }
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e
                 } catch (e: Throwable) {
+                    ZLog.w(TAG, "[runLocalCompensation] toolParamsJson 解析失败，任务将标记为失败 jobId=${job.id}", e)
+                    paramsCorrupted = true
                     emptyMap()
                 }
                 // P-8 修复：注入 __character_id，工具执行时优先从 params 读取角色 ID，
@@ -273,7 +328,11 @@ class ScheduleRepository(
 
                 // 复用现有 AgentToolRegistry，不新增任何工具实现
                 val tool = AgentToolRegistry.get(job.toolName)
-                val toolResult = if (tool != null) {
+                val toolResult = if (paramsCorrupted) {
+                    // C7#30 修复：参数已损坏，不调用 tool.execute()（避免产生一次
+                    // 看似正常、实则参数全空的执行），直接构造失败结果。
+                    ToolResult(toolName = job.toolName, success = false, content = "", error = "任务参数解析失败，本次跳过执行")
+                } else if (tool != null) {
                     try {
                         tool.execute(params)
                     } catch (e: kotlinx.coroutines.CancellationException) {

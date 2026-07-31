@@ -97,6 +97,16 @@ object CiCdPipelineRunner {
                     repo.markFailed(jobId, "创建仓库失败：${createResult.error}")
                     return CiCdResult.Failed("创建仓库失败：${createResult.error}")
                 }
+                // A3-2 修复：create_github_repo 成功后，把新仓库名写回 DataStore。
+                // 后续步骤（git_commit_push / build_apk / build_status_check /
+                // build_apk_download）都通过 githubConfigStore.getConfig() 读取
+                // config.repo 来确定目标仓库；若不回写，它们会继续使用 DataStore
+                // 里旧有的默认仓库（DEFAULT_REPO = ZaijianZhoumuyun），导致代码提交 /
+                // 触发编译 / 下载 APK 全部落到错误的仓库上。这里先读取当前配置
+                // （保留 owner/token，避免把 token 清空），用本次新建的 repoName
+                // 覆盖 repo 字段后再 saveConfig 回写。
+                val currentConfig = githubConfigStore.getConfig()
+                githubConfigStore.saveConfig(currentConfig.copy(repo = params.repoName))
             }
 
             // 步骤 1：提交代码（已成功提交过的不重复提交，避免重复 commit）

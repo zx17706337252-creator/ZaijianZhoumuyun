@@ -22,14 +22,18 @@ import com.zaijian.zhoumuyun.util.ZLog
  */
 
 import android.content.Context
+import com.zaijian.zhoumuyun.data.AppContainer
+import com.zaijian.zhoumuyun.data.db.AppDatabase
 import com.zaijian.zhoumuyun.data.db.dao.MemoryDao
 import com.zaijian.zhoumuyun.data.db.entity.MemoryDomain
 import com.zaijian.zhoumuyun.data.db.entity.MemoryEntity
+import com.zaijian.zhoumuyun.data.db.entity.RelationshipStage
 import com.zaijian.zhoumuyun.data.db.entity.ScheduledJobEntity
 import com.zaijian.zhoumuyun.data.provider.LLMProvider
 import com.zaijian.zhoumuyun.data.repository.MemoryRepository
 import com.zaijian.zhoumuyun.data.repository.ScheduleRepository
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import org.apache.poi.ss.usermodel.FillPatternType
 import org.apache.poi.ss.usermodel.IndexedColors
@@ -846,7 +850,7 @@ class TableExportTool(
         "source", "file_path", "filter", "limit",
         "character_id", "date_from", "date_to",
     )
-    override val usageNotes = "source 可选值：csv(从已上传CSV文件)/schedule(从App日程数据)；filter 为筛选条件，格式为 列名=值"
+    override val usageNotes = "source 可选值：csv_file(从已上传CSV文件)/schedule(从App日程数据)/relationship(从关系值数据)；filter 为筛选条件，格式为 列名=值"
 
     // ⚠️ W2 验收修复：无实例字段承载 payload。原 `toolResultPayload` 共享可变字段已删除，
     // payload 走 ToolResult.tablePayloadJson 返回值（见类 KDoc「设计原则」段说明原因）。
@@ -868,19 +872,20 @@ class TableExportTool(
 
             val source = params["source"]?.trim()?.lowercase()
             if (source.isNullOrEmpty()) {
-                return@withContext ToolResult(name, false, "", "需要 source 参数（csv_file / schedule）")
+                return@withContext ToolResult(name, false, "", "需要 source 参数（csv_file / schedule / relationship）")
             }
 
             return@withContext try {
                 val rawPayload: TablePayload? = when (source) {
-                    "csv_file" -> loadFromCsvFile(params)
-                    "schedule" -> loadFromSchedule(params)
+                    "csv_file"      -> loadFromCsvFile(params)
+                    "schedule"      -> loadFromSchedule(params)
+                    "relationship"  -> loadFromRelationship(params)
                     else       -> {
                         return@withContext ToolResult(
                             toolName = name,
                             success  = false,
                             content  = "",
-                            error    = "未知 source：$source（支持 csv_file / schedule）",
+                            error    = "未知 source：$source（支持 csv_file / schedule / relationship）",
                         )
                     }
                 }
@@ -1098,6 +1103,106 @@ class TableExportTool(
             columns     = columns,
             rows        = rowsData,
             rowCountTotal = jobs.size,
+            generatedAt = System.currentTimeMillis(),
+        )
+    }
+
+    /**
+     * A9-5 修复：从关系值数据源加载表格（source=relationship）。
+     *
+     * 查询 user→角色 关系数据并转为 TablePayload。支持通过 character_id 参数
+     * 查询单个角色，不传时查询所有 user→角色 关系。
+     *
+     * 权限模型与 [loadFromSchedule] 一致：currentCharId < 0 时必须通过
+     * __character_id 显式指定角色；不允许查别的角色的单条关系（但允许
+     * 查"全部"，因为 table_export 的全部关系值是 owner 视角的全景数据）。
+     */
+    private suspend fun loadFromRelationship(params: Map<String, String>): TablePayload? {
+        val currentCharId = currentCharacterIdSafe()
+        val explicitCharId = params["__character_id"]?.toIntOrNull()
+        val requestedCharId = explicitCharId
+            ?: params["character_id"]?.toIntOrNull()
+
+        // 单角色查询的权限校验（与 loadFromSchedule 同精神）
+        if (requestedCharId != null && currentCharId >= 0 && requestedCharId != currentCharId) {
+            throw IllegalArgumentException(
+                "无权查询角色 $requestedCharId 的关系值（当前角色 $currentCharId）"
+            )
+        }
+
+        val relEngine = AppContainer.instance.relationshipEngine
+        val fmtDate = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
+            .withZone(ZoneId.systemDefault())
+
+        // 列定义：覆盖 RelationshipEntity 的全部用户可见维度
+        val columns = listOf(
+            "角色ID", "关系阶段", "信任", "尊重", "好感",
+            "好奇", "依赖", "冲突", "压抑", "更新时间",
+        )
+
+        fun stageLabel(stage: String): String = runCatching {
+            RelationshipStage.valueOf(stage)
+        }.getOrDefault(RelationshipStage.STRANGER).let {
+            when (it) {
+                RelationshipStage.STRANGER  -> "陌生"
+                RelationshipStage.FAMILIAR  -> "熟悉"
+                RelationshipStage.TRUSTED   -> "信任"
+                RelationshipStage.IMPORTANT -> "重要"
+                RelationshipStage.CORE      -> "核心"
+            }
+        }
+
+        if (requestedCharId != null) {
+            // 查询单个角色的关系数据
+            val rel = relEngine.getOrCreate("user", requestedCharId.toString())
+            val rowsData = listOf(listOf(
+                rel.toId,
+                stageLabel(rel.stage),
+                "${rel.trust}",
+                "${rel.respect}",
+                "${rel.affection}",
+                "${rel.curiosity}",
+                "${rel.dependence}",
+                "${rel.conflict}",
+                "${rel.suppression}",
+                fmtDate.format(Instant.ofEpochMilli(rel.updatedAt)),
+            ))
+            return TablePayload(
+                title       = "角色${requestedCharId}关系值",
+                columns     = columns,
+                rows        = rowsData,
+                rowCountTotal = 1,
+                generatedAt = System.currentTimeMillis(),
+            )
+        }
+
+        // 查询所有 user→角色 关系
+        val relDao = AppDatabase.getInstance(context).relationshipDao()
+        val rels = relDao.observeFrom("user").first()
+        if (rels.isEmpty()) {
+            throw IllegalArgumentException("当前没有任何关系值数据")
+        }
+
+        val rowsData = rels.map { rel ->
+            listOf(
+                rel.toId,
+                stageLabel(rel.stage),
+                "${rel.trust}",
+                "${rel.respect}",
+                "${rel.affection}",
+                "${rel.curiosity}",
+                "${rel.dependence}",
+                "${rel.conflict}",
+                "${rel.suppression}",
+                fmtDate.format(Instant.ofEpochMilli(rel.updatedAt)),
+            )
+        }
+
+        return TablePayload(
+            title       = "全部角色关系值",
+            columns     = columns,
+            rows        = rowsData,
+            rowCountTotal = rels.size,
             generatedAt = System.currentTimeMillis(),
         )
     }
@@ -1818,14 +1923,26 @@ class ChartDataTool(
                 // P3-4 修复：网络/LLM 异常时降级为纯文本表格，
                 // 而非直接返回失败。先从 description 中尝试提取数据。
                 ZLog.e("ChartDataTool", "图表生成失败，降级为文本表格", e)
+                // 问题32修复：区分"降级成功"（拿到了文本表格，仍算 success）
+                // 和"降级也失败"（连 description 都解析不了，只能原样回显）——
+                // 后一种情况之前也返回 success=true，LLM 完全无法区分
+                // "已生成图表/表格" 和 "彻底失败只是把原话retur回去了"。
+                var fallbackAlsoFailed = false
                 val fallbackText = try {
                     val parsed = parseDescriptionToTable(description)
                     generateTextTableFallback(parsed.first, parsed.second)
                 } catch (_: Throwable) {
-                    // 解析失败，返回原始描述作为降级
+                    fallbackAlsoFailed = true
                     "（图表生成失败，以下为原始数据描述）\n\n$description"
                 }
-                ToolResult(name, true, "$chartTitle\n$fallbackText", "降级为文本表格")
+                // 沿用原代码习惯：第4位置参数放简短提示文案（而非严格的 error code），
+                // 这里只调整 success 是否为 true，不改变该字段原有用法，避免超出本次修复范围。
+                ToolResult(
+                    name,
+                    !fallbackAlsoFailed,
+                    "$chartTitle\n$fallbackText",
+                    if (fallbackAlsoFailed) "图表与降级均失败" else "降级为文本表格",
+                )
             }
         }
 

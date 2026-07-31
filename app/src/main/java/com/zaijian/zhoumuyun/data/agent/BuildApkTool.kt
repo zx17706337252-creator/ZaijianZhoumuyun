@@ -6,7 +6,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
-import java.io.IOException
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
@@ -90,36 +89,53 @@ class BuildApkTool(
             })
         }.toString()
 
-        val conn = (URL(dispatchUrl).openConnection() as HttpURLConnection).apply {
-            requestMethod = "POST"
-            connectTimeout = 15_000
-            readTimeout    = 15_000
-            setRequestProperty("Accept",              "application/vnd.github+json")
-            setRequestProperty("Authorization",       "Bearer ${config.token}")
-            setRequestProperty("Content-Type",         "application/json")
-            setRequestProperty("X-GitHub-Api-Version", "2022-11-28")
-            doOutput = true
-        }
+        // B5-Fix6: 接入 githubHttpRetry，对 429/5xx 和网络异常自动指数退避重试。
+        // workflow_dispatch 成功返回 204（无响应体）；4xx（除 429）属不可重试错误
+        // （如 404 workflow 不存在 / 403 权限不足），直接返回 false 不重试。
+        // 原 #58 修复的「写入失败补充阶段信息」由 githubHttpRetry 统一捕获 IOException
+        // 并重试来覆盖，不再需要手动包装。
+        val dispatched = githubHttpRetry(
+            onRetry = { attempt, e ->
+                com.zaijian.zhoumuyun.util.ZLog.w(
+                    "BuildApk",
+                    "触发 workflow_dispatch 第 $attempt 次重试（HTTP ${e.statusCode}）：${e.responseBody.take(100)}",
+                )
+            },
+        ) {
+            val conn = (URL(dispatchUrl).openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = 15_000
+                readTimeout    = 15_000
+                setRequestProperty("Accept",              "application/vnd.github+json")
+                setRequestProperty("Authorization",       "Bearer ${config.token}")
+                setRequestProperty("Content-Type",         "application/json")
+                setRequestProperty("X-GitHub-Api-Version", "2022-11-28")
+                doOutput = true
+            }
 
-        try {
-            // #58 修复：原实现把 body 写入和 responseCode 读取包在同一个 try 里，
-            // 二者任何一步失败都被外层 execute() 的通用 catch 折叠成
-            // "触发编译失败：${e.message}"，写入阶段的 IOException（网络中断/
-            // 连接被服务器提前关闭等）和响应阶段的异常混在一起，错误信息不精确，
-            // 排查时分不清失败发生在"发请求"还是"读响应"。现在单独包一层，
-            // 写入失败时补充更明确的阶段信息。
             try {
                 OutputStreamWriter(conn.outputStream).use { it.write(body) }
-            } catch (e: IOException) {
-                throw IOException("请求体写入失败（发送 dispatch 载荷时网络中断或连接被提前关闭）：${e.message}", e)
+                val code = conn.responseCode
+                when {
+                    code == 204 -> true // 触发成功
+                    code == 429 || code >= 500 -> {
+                        // 可重试错误 → 抛出触发 helper 重试
+                        val err = try {
+                            conn.errorStream?.bufferedReader()?.use { it.readText() }?.take(200)
+                        } catch (_: Throwable) { null }
+                        throw GithubHttpException(
+                            statusCode = code,
+                            responseBody = err ?: conn.responseMessage,
+                        )
+                    }
+                    else -> false // 不可重试业务错误（404/403 等），不重试
+                }
+            } finally {
+                conn.disconnect()
             }
-            val code = conn.responseCode
-            if (code != 204) return null
-        } finally {
-            conn.disconnect()
         }
 
-        return lookupRunId(config, branch)
+        return if (dispatched) lookupRunId(config, branch) else null
     }
 
     /**

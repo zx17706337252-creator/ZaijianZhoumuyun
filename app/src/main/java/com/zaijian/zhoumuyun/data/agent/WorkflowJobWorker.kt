@@ -1,6 +1,5 @@
 package com.zaijian.zhoumuyun.data.agent
 
-import android.app.NotificationManager
 import android.content.Context
 import androidx.core.app.NotificationCompat
 import androidx.work.CoroutineWorker
@@ -76,6 +75,10 @@ class WorkflowJobWorker(
             // 原因是 WorkManager 的指数退避重试每次都会发现"已终态"而立即退出
             // （第63行），纯粹浪费 CPU/电量/唤醒次数。Provider 不可用是用户配置
             // 问题，不是临时故障，重试多少次都不会改变结果。
+            // C7 #42（已复核，有意设计，非需修复问题——审查报告v2 结论：
+            // "可接受的设计，仅WorkManager层面假成功"）：该做的都已经做了——
+            // job 在 DB 里老实标了 FAILED，通知也发了，只是 WorkManager 自身
+            // 收到的信号是 success（为了不触发它自己的重试机制）。
             return Result.success()
         }
 
@@ -119,8 +122,6 @@ class WorkflowJobWorker(
         // 异常/SecurityException 等原因把已 success 的 doWork() 拖成异常。包一层
         // try-catch，失败仅记日志，主流程照常返回。
         try {
-            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-
             // Phase 4（4.1）修复：渠道创建已统一收敛到 ZaijianApp.setupNotificationChannels()，
             // 此处原有的兜底 createNotificationChannel() 调用已移除，避免两处重复维护同一渠道定义。
             // CHANNEL_ID/CHANNEL_NAME 常量本身保留在这里不变，供 App 层引用（见该函数注释）。
@@ -133,7 +134,10 @@ class WorkflowJobWorker(
                 .setAutoCancel(true)
                 .build()
 
-            nm.notify(System.currentTimeMillis().toInt(), notif)
+            // C类审查 #47 修复：改用统一的权限检查入口
+            com.zaijian.zhoumuyun.util.NotificationPermissionUtils.safeNotify(
+                context, System.currentTimeMillis().toInt(), notif, "WorkflowJobWorker",
+            )
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Throwable) {

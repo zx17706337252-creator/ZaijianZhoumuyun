@@ -678,6 +678,36 @@ internal fun CompetitionDetailContent(
                 RoundStatusBanner(status = round.status, isLoading = isLoading)
             }
 
+            // A8-1 修复: 裁判无圆桌历史导致播报被跳过时，在 COMPLETED 展示区
+            // 提示用户评审结果仅在此页展示，不会出现在圆桌聊天中。
+            // judgeRoundtableBroadcastSkipped 由 CompetitionRoundManager.postJudgeResultToRoundtable
+            // 在 roundtableId 为 null 时置 true，经 DB 持久化后由本 UI 读取。
+            if (round.status == STATUS_COMPLETED && round.judgeRoundtableBroadcastSkipped) {
+                item {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(Radius.md))
+                            .background(colors.accent.copy(alpha = 0.08f))
+                            .padding(Spacing.cardPadding),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
+                    ) {
+                        Icon(
+                            imageVector        = AppIcons.Warning,
+                            contentDescription = null,
+                            tint               = colors.textSecondary,
+                            modifier           = Modifier.size(16.dp),
+                        )
+                        Text(
+                            text  = "裁判暂无关联圆桌，评审结果仅在此页展示",
+                            style = type.caption,
+                            color = colors.textSecondary,
+                        )
+                    }
+                }
+            }
+
             // ── 重试评审按钮（P0-2 修复 + P0-1 崩溃恢复 + W4-1 修复） ─────
             // 条件：COLLECTING（runJudging 失败回退）、COLLECTING_IN_PROGRESS
             // （runCollecting 中途崩溃/失败）、COLLECTED（runCollecting 已完成

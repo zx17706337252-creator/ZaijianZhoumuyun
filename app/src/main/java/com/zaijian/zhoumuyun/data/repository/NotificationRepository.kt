@@ -1,12 +1,15 @@
 package com.zaijian.zhoumuyun.data.repository
 
+import android.content.Context
 import com.zaijian.zhoumuyun.data.db.dao.NotificationReadStateDao
 import com.zaijian.zhoumuyun.data.db.entity.NotificationReadStateEntity
 import com.zaijian.zhoumuyun.data.model.BriefingAttentionItem
 import com.zaijian.zhoumuyun.data.model.BriefingCharacterEntry
 import com.zaijian.zhoumuyun.data.model.BriefingData
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.withContext
 
 // ─────────────────────────────────────────────────────────────
 //  NotificationRepository — 通知中心聚合层
@@ -109,6 +112,12 @@ class NotificationRepository(
             // itemKey，标记其一已读会连带另一条一起变已读（深度检查发现，
             // 2026-07-18 修复）。
             "worsened:${item.milestoneId}"
+        // A6-1 修复: 新增排卵期/经期两类条目的 itemKey，复用 characterId 维度
+        // （与 NoContact/Pregnancy 同口径），保证已读状态可按角色追踪。
+        is BriefingAttentionItem.FertileAttention ->
+            "fertile:${item.characterId}"
+        is BriefingAttentionItem.MenstrualAttention ->
+            "menstrual:${item.characterId}"
     }
 
     suspend fun markRead(item: BriefingAttentionItem) {
@@ -142,5 +151,42 @@ class NotificationRepository(
         } else {
             readStateDao.deleteNotIn(stillValidKeys)
         }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    //  A5-4 修复：非简报派生的"应用内通知"写入入口
+    // ─────────────────────────────────────────────────────────────
+    //
+    // 背景：审查报告 A5-4 指出 DailyPracticeWorker 在 Provider 为空时直接
+    // return Result.success() 静默跳过，连续多日无任何提示，建议复用既有
+    // "通知中心"（NotificationRepository）记录此类提示。
+    //
+    // 但 NotificationRepository 现有职责只覆盖 BriefingAttentionItem 的已读
+    // 状态管理——"需要关注"区块的内容由 BriefingRepository.generateBriefing()
+    // 每次现算、不落库，没有独立通知的持久化入口。新增 Room 表 + 迁移超出
+    // 本次 bug 修复范围，这里先用 SharedPreferences 承载这类"非简报派生"的
+    // 应用内通知，作为通知中心数据层（NotificationRepository）的轻量补充：
+    // 通知统一落在此处，便于后续在通知中心 UI 展示（需补 NotificationViewModel
+    // 读取逻辑，留作后续，不在本次范围内）。
+    //
+    // 注意：阈值 3 与"系统通知 + 应用内通知"两种提示形式均为实现选择
+    // （详见 DailyPracticeWorker 的 A5-4 修复说明），后续可按需调整。
+    suspend fun recordAppNotice(context: Context, title: String, content: String) = withContext(Dispatchers.IO) {
+        val prefs = context.getSharedPreferences(PREFS_APP_NOTICES, Context.MODE_PRIVATE)
+        val arr = runCatching {
+            org.json.JSONArray(prefs.getString(KEY_APP_NOTICES, "[]") ?: "[]")
+        }.getOrNull() ?: org.json.JSONArray()
+        arr.put(org.json.JSONObject().apply {
+            put("title", title)
+            put("content", content)
+            put("createdAt", System.currentTimeMillis())
+        })
+        prefs.edit().putString(KEY_APP_NOTICES, arr.toString()).apply()
+        Unit
+    }
+
+    private companion object {
+        const val PREFS_APP_NOTICES = "app_notices"
+        const val KEY_APP_NOTICES = "notices"
     }
 }

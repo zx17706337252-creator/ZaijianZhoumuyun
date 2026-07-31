@@ -152,6 +152,14 @@ data class RoundtableUiState(
     val blockedMemberIds: ImmutableSet<Int> = persistentSetOf(),
     val extraDaughterMembers: ImmutableList<CharacterConfig> = persistentListOf(),
     /**
+     * 问题39修复：setMembers() 解析角色配置时，若某个角色ID解析失败
+     * （resolveCharacterConfig 抛异常，已在内部 log 但静默用 `?: continue`
+     * 跳过），之前该角色会从圆桌成员里悄悄消失，用户只看到"少了一个人"
+     * 却没有任何提示。这里记录被跳过的角色ID列表，供 UI 展示"角色X加载失败"，
+     * 而不是让用户误以为对方原本就不该在场。加载成功时应保持为空列表。
+     */
+    val memberLoadErrors: ImmutableList<Int> = persistentListOf(),
+    /**
      * Step 5：设置面板"拉入女儿"列表用的候选池——所有已完成注册的女儿
      * （id ≥ 1000），不论是否已经在 [extraDaughterMembers] 里。
      * 由 [RoundtableViewModel.refreshAvailableDaughters] 异步加载，
@@ -236,7 +244,7 @@ class RoundtableViewModel(app: Application) : AndroidViewModel(app) {
     private val container = AppContainer.instance
     private val memoryRepo         get() = container.memoryRepo
     private val eventRepo          get() = container.eventRepo
-    private val memoryEngine       get() = container.memoryEngine
+    // A8-3：memoryEngine 属性随 RoundtableMessageOrchestrator 死参数删除一并移除
     private val relationshipEngine get() = container.relationshipEngine
     private val pregnancyRepo      get() = container.pregnancyRepo
     private val characterStateRepo get() = container.characterStateRepo
@@ -310,7 +318,7 @@ class RoundtableViewModel(app: Application) : AndroidViewModel(app) {
         relationshipEngine             = relationshipEngine,
         presenceEngine                 = presenceEngine,
         eventRepo                      = eventRepo,
-        memoryEngine                   = memoryEngine,
+        // A8-3：memoryEngine 参数已从 RoundtableMessageOrchestrator 构造函数删除
         isInterruptedRef               = { isInterrupted },
         isInterruptedSetter            = { isInterrupted = it },
         getCurrentRoundtableId         = { currentRoundtableId },
@@ -418,8 +426,16 @@ class RoundtableViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val mothers   = mutableListOf<CharacterConfig>()
             val daughters = mutableListOf<CharacterConfig>()
+            // 问题39修复：收集解析失败的角色ID，而不是像原来那样 `?: continue`
+            // 悄悄跳过、UI端完全无感知。仍然继续处理其余成员（失败一个不
+            // 应该阻断其他成员正常显示），只是额外把失败清单记下来。
+            val failedIds = mutableListOf<Int>()
             for (id in characterIds) {
-                val cfg = resolveCharacterConfig(id) ?: continue
+                val cfg = resolveCharacterConfig(id)
+                if (cfg == null) {
+                    failedIds.add(id)
+                    continue
+                }
                 if (id >= 1000) daughters.add(cfg) else mothers.add(cfg)
             }
             _uiState.update {
@@ -427,6 +443,7 @@ class RoundtableViewModel(app: Application) : AndroidViewModel(app) {
                     allMotherMembers     = mothers.toImmutableList(),
                     extraDaughterMembers = daughters.toImmutableList(),
                     blockedMemberIds     = persistentSetOf(),
+                    memberLoadErrors     = failedIds.toImmutableList(),
                 )
             }
             val newRoundtableId = characterIds.sorted().joinToString("_")
@@ -666,4 +683,7 @@ class RoundtableViewModel(app: Application) : AndroidViewModel(app) {
 
     fun clearError() = _uiState.update { it.copy(error = null) }
     fun clearApiKeyMissingFlag() = _uiState.update { it.copy(isApiKeyMissing = false) }
+    // 问题39修复：配合 RoundtableScreen 的 LaunchedEffect，展示一次提示后清空，
+    // 避免同一批加载失败反复弹 snackbar。
+    fun clearMemberLoadErrors() = _uiState.update { it.copy(memberLoadErrors = persistentListOf()) }
 }

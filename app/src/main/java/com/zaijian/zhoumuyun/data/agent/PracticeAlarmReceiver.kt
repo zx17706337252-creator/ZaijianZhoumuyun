@@ -11,12 +11,24 @@ import android.content.Intent
  * 接收后立即将 DailyPracticeWorker 投递给 WorkManager，由 WorkManager 管理
  * 实际执行（约束、重试、生命周期），BroadcastReceiver 本身不做耗时操作。
  *
+ * C9#49 修复：次日闹钟在此处立即挂上，不再等待 doWork() 的 finally。
+ * 原逻辑下一次调度完全依赖 DailyPracticeWorker.doWork() 执行完 finally 块；
+ * 但 dispatchWorker() 入队时带 NetworkType.CONNECTED 约束，若设备此刻离线，
+ * WorkManager 会一直不启动 doWork，finally 永远不执行 → 次日闹钟未设置 →
+ * 每日修炼链路整条断裂（需用户手动重新打开 App 触发某个间接路径才能恢复）。
+ * 现在 onReceive 一收到广播就调用 scheduleNext（不依赖 Worker 是否跑起来），
+ * 从而保证"次日同一时刻还有闹钟"这件事与网络状态、Worker 执行与否完全解耦。
+ * DailyPracticeWorker.doWork() 的 finally 调用保留：BroadcastReceiver 分支
+ * 和 Worker 分支各自独立触发 scheduleNext，WorkManager 内部按 requestCode
+ * 去重（PendingIntent.FLAG_UPDATE_CURRENT），重复调度是安全的幂等操作。
+ *
  * 需在 AndroidManifest.xml 中声明：
  * <receiver android:name=".data.agent.PracticeAlarmReceiver"
  *           android:exported="false" />
  */
 class PracticeAlarmReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
+        DailyPracticeScheduler.scheduleNext(context)
         DailyPracticeScheduler.dispatchWorker(context)
     }
 }

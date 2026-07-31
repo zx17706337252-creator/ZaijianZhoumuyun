@@ -58,4 +58,11 @@ sealed class BriefingAttentionItem {
         val description: String,
         val milestoneId: String,
     ) : BriefingAttentionItem()
+    // A6-1 修复: 补充排卵期（Fertile）与经期（Menstrual）两类事件。
+    // cyclePhase 在 BriefingRepository.buildAttentionList() 里已算好，
+    // 此前缺这两个子类导致角标/简报无法呈现这两类需要关注的状态。
+    // 这里只持 characterId + characterName，与 Pregnancy 同样是"角色级"
+    // 事件粒度，不需要完整 CharacterConfig。
+    data class FertileAttention(val characterId: Int, val characterName: String) : BriefingAttentionItem()
+    data class MenstrualAttention(val characterId: Int, val characterName: String) : BriefingAttentionItem()
 }

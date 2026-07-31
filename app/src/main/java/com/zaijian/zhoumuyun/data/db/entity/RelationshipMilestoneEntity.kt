@@ -25,6 +25,10 @@ enum class RelationshipMilestoneDirection {
     WORSENED,
     /** 关系缓和/和好节点，如"扣子事件后关系缓和了不少" */
     REPAIRED,
+    /** A9-3 修复：关系阶段跃迁节点（STRANGER→FAMILIAR→TRUSTED→IMPORTANT→CORE）。
+     *  多次小 delta 累积导致 stage 跃迁但单次 delta 不足阈值时，由 applyDelta
+     *  内的跃迁检测主动记录，弥补 maybeRecordMilestoneFromDelta 的单次阈值盲区。 */
+    STAGE_TRANSITION,
 }
 
 @Entity(

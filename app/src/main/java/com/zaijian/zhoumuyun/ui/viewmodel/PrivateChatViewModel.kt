@@ -3,12 +3,15 @@ package com.zaijian.zhoumuyun.ui.viewmodel
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.room.withTransaction
 import com.zaijian.zhoumuyun.data.AppContainer
+import com.zaijian.zhoumuyun.data.db.AppDatabase
 import com.zaijian.zhoumuyun.data.db.entity.PrivateChatMessageEntity
 import com.zaijian.zhoumuyun.data.db.entity.PrivateChatPairEntity
 import com.zaijian.zhoumuyun.data.db.entity.PrivateChatSessionEntity
 import com.zaijian.zhoumuyun.data.model.DefaultCharacters
 import com.zaijian.zhoumuyun.data.privatechat.PrivateChatEngine
+import com.zaijian.zhoumuyun.data.privatechat.PrivateChatSessionStatus
 import com.zaijian.zhoumuyun.data.privatechat.enqueuePrivateChatSession
 import com.zaijian.zhoumuyun.data.repository.DaughterCharacterRepository
 import com.zaijian.zhoumuyun.data.repository.PrivateChatPairRepository
@@ -120,6 +123,27 @@ class PrivateChatViewModel(application: Application) : AndroidViewModel(applicat
                 _toast.value = "全局私聊开关已关闭"
                 return@launch
             }
+            // A10-3②/A10-4 修复：enqueue 前补三项预检，与 PrivateChatEngine.runSession
+            // 的 Skipped 判断条件对齐，避免用户先看到"已发起私聊"提示、Worker 随后静默返回 Skipped。
+            val now = System.currentTimeMillis()
+            // ① 日上限预检（跨天则跳过——Worker 会先 resetDailyCounter 再判断）
+            if (!PrivateChatPairRepository.isStaleDay(pair.usedTodayResetAt, now)
+                && pair.sessionsUsedToday >= pair.maxSessionsPerDay) {
+                _toast.value = "今日私聊次数已达上限（${pair.sessionsUsedToday}/${pair.maxSessionsPerDay}）"
+                return@launch
+            }
+            // ② 冷却时间预检
+            if (now - pair.lastSessionAt < pair.cooldownMinutes * 60_000L) {
+                val remainingMin = ((pair.cooldownMinutes * 60_000L - (now - pair.lastSessionAt)) / 60_000L).toInt() + 1
+                _toast.value = "距上次私聊不足冷却时间，还需约 $remainingMin 分钟"
+                return@launch
+            }
+            // ③ 角色自主下线预检
+            if (PrivateChatSessionStatus.fromStored(pair.characterDisconnectState)
+                == PrivateChatSessionStatus.DISCONNECTED_BY_CHARACTER) {
+                _toast.value = "该角色已自主下线，暂不会再回复"
+                return@launch
+            }
             enqueuePrivateChatSession(getApplication(), pairId, initiatorId)
             _toast.value = "已发起私聊，请稍候"
         }
@@ -149,10 +173,34 @@ class PrivateChatViewModel(application: Application) : AndroidViewModel(applicat
         }
     }
 
+    // C8 #45：角色自主下线后，owner 手动恢复为 ACTIVE（PrivateChatEngine.kt:142-145
+    // 的静默跳过判定依赖这个字段，此前无 UI/ViewModel 入口能改回去，pair 永久卡死）
+    fun resetDisconnect(pairId: String) {
+        viewModelScope.launch {
+            pairRepo.resetCharacterDisconnectState(pairId)
+            _toast.value = "已恢复，可重新发起私聊"
+        }
+    }
+
     fun toggleKillSwitch(on: Boolean) {
         PrivateChatEngine.setKillSwitch(getApplication(), on)
         _killSwitchOn.value = on
         _toast.value = if (on) "已暂停所有私聊" else "已恢复私聊"
+    }
+
+    // A10-5 修复：删除私聊配对（含级联删除消息和会话记录）
+    // 三张表无 ForeignKey/cascade 约束，Room 不会自动级联删除，
+    // 需在同一事务内手动删除三张表的记录，避免孤儿数据残留。
+    fun deletePair(pairId: String) {
+        viewModelScope.launch {
+            val db = AppDatabase.getInstance(getApplication())
+            db.withTransaction {
+                db.privateChatMessageDao().deleteByPairId(pairId)
+                db.privateChatSessionDao().deleteByPairId(pairId)
+                db.privateChatPairDao().deleteByPairId(pairId)
+            }
+            _toast.value = "配对已删除"
+        }
     }
 
     fun clearToast() { _toast.value = null }

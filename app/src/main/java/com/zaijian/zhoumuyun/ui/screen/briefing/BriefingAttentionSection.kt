@@ -41,6 +41,12 @@ fun BriefingAttentionSection(
                         "${item.character.name}：还没有联系过"
                     is BriefingAttentionItem.Pregnancy ->
                         "${item.character.name}：怀孕中，记得多关心"
+                    // A6-1 修复: 新增排卵期/经期两类条目的展示文案，
+                    // 与 BriefingCharacterCard 的 chip 文案（排卵期/经期）保持口径一致。
+                    is BriefingAttentionItem.FertileAttention ->
+                        "${item.characterName}：排卵期中，留意易孕窗口"
+                    is BriefingAttentionItem.MenstrualAttention ->
+                        "${item.characterName}：经期中，记得多关心"
                     is BriefingAttentionItem.Tension -> {
                         val fromName = characterNameById(item.fromId, daughterNameMap)
                         val toName = characterNameById(item.toId, daughterNameMap)

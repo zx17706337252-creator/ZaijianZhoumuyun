@@ -10,8 +10,10 @@ import java.util.UUID
  *
  * ═══════════════════════════════════════════════════════════════
  * 注册为普通 AgentTool，LLM 在回复里输出
- *   <tool:chain_create name="过半小时检查心情" trigger_event="mood_below_threshold"
+ *   <tool:chain_create name="情绪波动后跟进" trigger_event="state_updated"
  *    nodes="[{...}]"/>
+ * （trigger_event 对应 CharacterStateRepository.updateState() 实际发布的事件名，
+ * payload 含 primaryEmotion/intensity 两个字段，可在 Check 节点条件表达式中引用）
  * 走 ToolParser → ToolCallInterceptor 流程（与 workflow_start 同款）。
  *
  * execute() 只做"创建阶段一次性挡住"的五条校验（§7），全部通过后写一条

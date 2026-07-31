@@ -84,7 +84,6 @@ fun CharacterDetailScreen(
     // P6 专长进化系统：从「目标」Tab 直接导航到专长档案页
     onNavigateToSpecialty: (Int) -> Unit = {},
     // U1 修复：从角色详情「目标」Tab → 专长页 → 竞赛页，补全导航链路
-    onNavigateToCompetition: (domain: String) -> Unit = {},
     // 精修方案 v1.3 第5.1节：「关联项目」WrapChipGroup 点击跳转项目详情页
     onNavigateToProjectDetail: (String) -> Unit = {},
     // P3-44 修复：从孕育记录点击跳转到子代角色详情页
@@ -620,8 +619,6 @@ fun CharacterDetailScreen(
                         onNavigateToGoals = { onNavigateToGoals(characterId) },
                         // P6 专长进化系统：跳转到专长档案页
                         onNavigateToSpecialty = { onNavigateToSpecialty(characterId) },
-                        // U1 修复：从专长页入竞赛页
-                        onNavigateToCompetition = onNavigateToCompetition,
                     )
                 }
             }

@@ -131,8 +131,6 @@ internal fun GoalPanel(
     onNavigateToGoals: () -> Unit = {},
     // P6 专长进化系统：跳转到专长档案页
     onNavigateToSpecialty: () -> Unit = {},
-    // U1 修复：从专长页直通竞赛页（domain 由专长档案决定）
-    onNavigateToCompetition: (domain: String) -> Unit = {},
 ) {
     val colors = ZaijianTheme.colors
     val type   = ZaijianTheme.typography

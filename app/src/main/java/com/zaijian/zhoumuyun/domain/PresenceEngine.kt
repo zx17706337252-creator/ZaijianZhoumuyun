@@ -27,6 +27,7 @@ import org.json.JSONObject
 import java.util.Calendar
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.random.Random
 
 private const val TAG = "PresenceEngine"
@@ -300,6 +301,14 @@ class PresenceEngine(
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Throwable) {
+                // C7 #41（已复核，边缘case，非阻断问题——审查报告v2 结论：
+                // 不需要二次复核）：world_events 持久化失败时，这里只 log
+                // 不做额外处理，函数末尾仍返回 try 块前已计算好的 snapshot。
+                // 影响范围很小：本次调用内 presenceCache（内存）已经是最新的，
+                // 当次交互不受影响；只有在"这次持久化恰好失败 + App 在下次
+                // 成功持久化前被系统杀掉"这个小概率窗口内，重启后才会从
+                // world_events 表读到上一次成功持久化的旧快照，短暂回退。
+                // 不改变现有返回行为，仅将日志级别保留在 warn（不算错误级）。
                 ZLog.w(TAG, "Presence persist failed for char $characterId", e)
             }
         }
@@ -1071,8 +1080,32 @@ class PresenceEngine(
         // 修复：新增 isAppInForeground，由 ZaijianApp 的 ActivityLifecycleCallbacks
         // （已有的 foregroundCount 计数逻辑）同步维护，是否抑制通知改为"角色匹配
         // 且 App 确实在前台"两个条件同时成立才抑制，仅角色匹配不再足够。
-        @Volatile
-        var foregroundChatCharacterId: Int? = null
+        //
+        // B1 审查序号2修复：原为 @Volatile var，三处写点（ChatSessionDelegate 设置 /
+        // ChatViewModel.onCleared / ChatScreen 的 onDispose）里 ChatViewModel、
+        // ChatScreen 两处清空都是非原子的 "check-then-clear"（先读再判等再置 null）。
+        // 核查结论：当前三处写点全部发生在 Main 线程，配合相等守卫，覆盖/读到过期值
+        // 在现有调用点下不可达——但这只是"Main 单线程串行"这个隐式不变量在起作用，
+        // 一旦未来有人在协程里用 Dispatchers.IO/Default 调用这三处之一，就会变成真实
+        // 竞态且不会有任何编译期提示。改为 AtomicReference 承载 + compareAndSet 做
+        // check-then-clear，把该不变量显式化、变成真正原子操作，即使未来调用点跑到
+        // 别的线程/协程分发器上也不会退化。对外暴露的 get/set 语义与原 @Volatile var
+        // 完全一致，调用方（ChatSessionDelegate 的无条件赋值）不用改。
+        private val _foregroundChatCharacterId = AtomicReference<Int?>(null)
+
+        var foregroundChatCharacterId: Int?
+            get() = _foregroundChatCharacterId.get()
+            set(value) { _foregroundChatCharacterId.set(value) }
+
+        /**
+         * 原子地"仅当当前值等于 expectedId 时才清空"，替代原先分散在
+         * ChatViewModel.onCleared / ChatScreen.onDispose 里的
+         * `if (foregroundChatCharacterId == expectedId) foregroundChatCharacterId = null`
+         * 非原子写法。返回是否实际执行了清空（调用方目前不需要这个返回值，
+         * 保留是为了未来排查时能加日志确认"这次清空到底生不生效"）。
+         */
+        fun clearForegroundChatCharacterIdIfMatches(expectedId: Int?): Boolean =
+            _foregroundChatCharacterId.compareAndSet(expectedId, null)
 
         @Volatile
         var isAppInForeground: Boolean = false

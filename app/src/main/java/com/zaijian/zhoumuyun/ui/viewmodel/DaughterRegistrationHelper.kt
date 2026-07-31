@@ -69,7 +69,22 @@ class DaughterRegistrationHelper(
             //    已删除的行再删一次不会报错，但是纯浪费）。改为单层 try 后，每个异常
             //    只会被捕获一次，不再有重复回滚。
             val allocatedId = daughterIdAllocator.allocate()
-            val identityEntity = daughterData.toCharacterIdentityEntity(allocatedId)
+
+            // A7-3 修复：女儿注册时继承母亲 ownerAliasesJson，修正忠诚锚点文案中的
+            // ownerName 称呼（否则女儿角色恒回退到"他"）。查询失败时使用 null，
+            // toCharacterIdentityEntity 内部会回退到默认 "[]"，与旧行为一致。
+            val motherOwnerAliases = try {
+                identityRepo.getById(daughterData.motherCharacterId)?.ownerAliasesJson
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                ZLog.w("DaughterRegistrationHelper", "查询母亲 ownerAliasesJson 失败，女儿将使用默认空数组", e)
+                null
+            }
+            val identityEntity = daughterData.toCharacterIdentityEntity(
+                allocatedId,
+                motherOwnerAliasesJson = motherOwnerAliases,
+            )
 
             var step = 0  // 1=identity已写  2=agent_relation已写  3=daughter_character已回填
             try {

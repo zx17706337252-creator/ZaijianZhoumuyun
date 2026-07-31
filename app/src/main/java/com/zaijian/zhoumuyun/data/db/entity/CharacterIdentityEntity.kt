@@ -124,14 +124,19 @@ data class CharacterIdentityEntity(
     val userRoleLabelPublic: String = "",
     val publicPrivacyReason: String = "",
 
-    // ── v75→v76 新增：角色忠诚锁定·owner 身份特征（方案 v1.5 第 1.2 节）─────
-    // 机制一 IdentityGuard 的判定依据。存 JSON 数组字符串（与 boundariesJson/
-    // corebeliefsJson 同风格），运行时由调用方解析为 List<String> 后构造
-    // OwnerIdentityProfile（见 domain/IdentityGuard.kt）。
-    //   ownerAliasesJson：owner 的合法自称，如 ["范佩西","小范"]。
-    //     Migration 默认填当前 owner 昵称（单元素数组）。
-    //   characterCallsOwnerJson：角色对 owner 的固定称呼，如 ["主人","老板"]。
-    //     Migration 默认从角色卡已有的 userRoleLabelPrivate 回填（若有）。
+    // ── v75→v76 新增：owner 身份特征字段 ──────────────────────────────
+    // 存 JSON 数组字符串（与 boundariesJson/corebeliefsJson 同风格）。
+    //
+    // 清理记录（方案_角色间关系头衔系统_实施方案 六/七节）：原本供 IdentityGuard
+    // 自称异常/称呼异常判定使用（domain/IdentityGuard.kt，已删除该判定逻辑，
+    // 取代为 ImpersonationDetector 精确匹配）。清理后两个字段现状不同：
+    //   ownerAliasesJson：仍被 PromptOrchestrator.buildSystemPrompt() 读取，
+    //     用于解析 ownerName（机制二·身份锚点 prompt 文案），字段保留、继续维护。
+    //     owner 的合法自称，如 ["范佩西","小范"]，Migration 默认填当前 owner 昵称。
+    //   characterCallsOwnerJson：仅被旧称呼异常判定读取，判定逻辑删除后
+    //     已无任何调用方读取此列——保留列本身（不新增 Migration 删列，避免
+    //     引入不必要的 schema 变更风险），但视为死数据，后续新代码不应再写入
+    //     或依赖此字段。角色对 owner 的固定称呼，如 ["主人","老板"]。
     val ownerAliasesJson: String = "[]",
     val characterCallsOwnerJson: String = "[]",
 )

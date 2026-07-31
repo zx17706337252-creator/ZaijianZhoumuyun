@@ -34,4 +34,8 @@ interface PrivateChatMessageDao {
 
     @Query("SELECT COUNT(*) FROM private_chat_messages WHERE pairId = :pairId")
     suspend fun countByPair(pairId: String): Int
+
+    // A10-5 修复：级联删除——按 pairId 删除该配对的所有消息
+    @Query("DELETE FROM private_chat_messages WHERE pairId = :pairId")
+    suspend fun deleteByPairId(pairId: String)
 }

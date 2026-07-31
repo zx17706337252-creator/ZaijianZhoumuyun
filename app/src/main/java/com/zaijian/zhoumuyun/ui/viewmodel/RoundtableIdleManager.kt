@@ -436,7 +436,10 @@ class RoundtableIdleManager(
             val (afterPsych, parsedPsych) = ChatTagParser.stripPsychText(afterThinking)
             val (cleanReply, parsedMood) = ChatTagParser.stripMoodTag(afterPsych)
             if (parsedMood != null) {
-                presenceEngine.updateMoodFromReply(initiator.id, parsedMood)
+                // C4#13 方案B：见 RoundtableBotReplyGenerator 同一处改动的注释——
+                // stripMoodTag 现在返回 ParsedMood（EmotionType+强度），.moodType 是按
+                // 默认情绪疲劳值换算出的 MoodType，用法与此前直接拿 MoodType 等价。
+                presenceEngine.updateMoodFromReply(initiator.id, parsedMood.moodType)
             }
 
             _uiState.update { s ->

@@ -1,5 +1,6 @@
 package com.zaijian.zhoumuyun.ui.viewmodel
 
+import com.zaijian.zhoumuyun.data.AppContainer
 import com.zaijian.zhoumuyun.data.agent.AgentToolRegistry
 import com.zaijian.zhoumuyun.data.db.entity.MessageEntity
 import com.zaijian.zhoumuyun.data.repository.MessageRepository
@@ -43,6 +44,33 @@ class ChatExportDelegate(
                         val speaker = if (msg.role == "user") "我" else characterName
                         appendLine("[$speaker] ${msg.content}")
                         appendLine()
+                    }
+
+                    // A9-5 修复：导出对话记录时附带当前关系值快照，
+                    // 与 MemoryViewModel.exportArchive() 的关系值板块保持一致。
+                    val rel = runCatching {
+                        AppContainer.instance.relationshipEngine.getOrCreate("user", characterId.toString())
+                    }.getOrNull()
+                    if (rel != null) {
+                        appendLine("---")
+                        appendLine("## 关系数值快照")
+                        val stageLabel = when (runCatching {
+                            com.zaijian.zhoumuyun.data.db.entity.RelationshipStage.valueOf(rel.stage)
+                        }.getOrDefault(com.zaijian.zhoumuyun.data.db.entity.RelationshipStage.STRANGER)) {
+                            com.zaijian.zhoumuyun.data.db.entity.RelationshipStage.STRANGER  -> "陌生"
+                            com.zaijian.zhoumuyun.data.db.entity.RelationshipStage.FAMILIAR  -> "熟悉"
+                            com.zaijian.zhoumuyun.data.db.entity.RelationshipStage.TRUSTED   -> "信任"
+                            com.zaijian.zhoumuyun.data.db.entity.RelationshipStage.IMPORTANT -> "重要"
+                            com.zaijian.zhoumuyun.data.db.entity.RelationshipStage.CORE      -> "核心"
+                        }
+                        appendLine("- 关系阶段：$stageLabel")
+                        appendLine("- 信任：${rel.trust}/100")
+                        appendLine("- 尊重：${rel.respect}/100")
+                        appendLine("- 好感：${rel.affection}/100")
+                        appendLine("- 好奇：${rel.curiosity}/100")
+                        appendLine("- 依赖：${rel.dependence}/100")
+                        appendLine("- 冲突：${rel.conflict}/100")
+                        appendLine("- 压抑：${rel.suppression}/100")
                     }
                 }.trimEnd()
 

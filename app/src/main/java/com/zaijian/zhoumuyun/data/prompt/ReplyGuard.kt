@@ -26,6 +26,15 @@ object ReplyGuard {
 
     private const val TAG = "ReplyGuard"
 
+    /**
+     * C10#52 修复：5.2 越界检测判定 system prompt，原先在 ChatMessageOrchestrator
+     * 和 PrivateChatEngine 两处逐字硬编码各写一份，未来改一处容易漏改另一处导致
+     * 判定标准分叉。抽为唯一常量，两处调用方分类器 lambda 内统一引用此值。
+     */
+    const val BOUNDARY_BREACH_CLASSIFIER_PROMPT =
+        "这段回复是否描写了角色与非owner对象发生了实质性亲密行为" +
+            "（接吻、身体接触升级等），或做出了等同于归属转移的宣告？只返回 true 或 false。"
+
     /** DECISION 标记正则（双方括号，降低与 roleplay 动作标记 [生气] 混淆概率） */
     private val DECISION_REGEX = Regex("""\[\[DECISION:(CONTINUE|DISCONNECT)\]\]""")
 
@@ -37,27 +46,36 @@ object ReplyGuard {
      * 6.3 施压类内容检测（独立的单轮分类调用）。
      *
      * @param message 当前这条 A 发给 B 的消息文本
-     * @param classifier 施压判定分类器，入参消息文本，返回 true=施压 / false=非施压。
+     * @param classifier 施压判定分类器，入参消息文本，返回 true=施压 / false=非施压 / null=调用失败。
      *                   生产环境由调用方注入真实 LLM 分类调用。
-     * @return true=命中施压
+     *                   A10-2 修复：返回类型改为 Boolean?，null 表示"无法判断"，
+     *                   调用方可据此保持上一值而非清零。
+     * @return true=命中施压 / false=未命中 / null=分类器调用失败
      */
     suspend fun detectPressure(
         message: String,
-        classifier: suspend (String) -> Boolean,
-    ): Boolean = classifier(message)
+        classifier: suspend (String) -> Boolean?,
+    ): Boolean? = classifier(message)
 
     /**
      * 5.2 候选回复越界检测（实质性亲密行为 / 归属转移宣告）。
      *
+     * A10-2/A11-8 修复：返回类型改为 Boolean?，null 表示 LLM 调用失败（无法判断）。
+     * 调用方应采用 fail-closed 策略——null 视同越界（丢弃重生成/兜底模板），
+     * 因为边界检测的 false negative 会导致不当内容直接展示给用户，不可逆。
+     * 这与 [detectPressure] 的"null 保持上一值"策略不同：施压检测漏判可下轮补回，
+     * 边界检测漏判无法撤回。
+     *
      * @param candidateReply 候选回复
-     * @param classifier 越界判定分类器，入参候选回复，返回 true=越界。
+     * @param classifier 越界判定分类器，入参候选回复，
+     *                   返回 true=越界 / false=未越界 / null=调用失败。
      *                   生产环境由调用方注入真实 LLM 分类调用。
-     * @return true=命中越界（应丢弃重生成）
+     * @return true=命中越界 / false=未越界 / null=分类器调用失败
      */
     suspend fun checkBoundaryBreach(
         candidateReply: String,
-        classifier: suspend (String) -> Boolean,
-    ): Boolean = classifier(candidateReply)
+        classifier: suspend (String) -> Boolean?,
+    ): Boolean? = classifier(candidateReply)
 
     /**
      * 解析回复末尾的 [[DECISION:...]] 标记（6.4 节）。

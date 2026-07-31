@@ -77,43 +77,60 @@ class CreateGithubRepoTool(
                     put("auto_init", autoInit)
                 }.toString()
 
-                val conn = (URL(url).openConnection() as HttpURLConnection).apply {
-                    requestMethod = "POST"
-                    connectTimeout = 15_000
-                    readTimeout    = 15_000
-                    setRequestProperty("Accept",              "application/vnd.github+json")
-                    setRequestProperty("Authorization",       "Bearer ${config.token}")
-                    setRequestProperty("Content-Type",         "application/json")
-                    setRequestProperty("X-GitHub-Api-Version", "2022-11-28")
-                    doOutput = true
-                }
-
-                return@withContext try {
-                    OutputStreamWriter(conn.outputStream).use { it.write(body) }
-                    val code = conn.responseCode
-                    if (code in 200..201) {
-                        val resp = conn.inputStream.bufferedReader().use { it.readText() }
-                        val cloneUrl = JSONObject(resp).optString("clone_url", "")
-                        ToolResult(
-                            toolName = name,
-                            success  = true,
-                            content  = "仓库已创建：$cloneUrl",
-                            userHint = "正在创建仓库…",
+                // B5-Fix6: 接入 githubHttpRetry，对 429/5xx 和网络异常自动指数退避重试；
+                // 4xx（除 429）属业务错误（如 422 仓库名已存在），直接返回 ToolResult 不重试，
+                // 既避免对不可逆操作无意义重试，又保留原有友好的错误信息。
+                // 注意：conn 必须在 lambda 内部创建，确保每次重试都使用全新的连接，
+                // 复用已 disconnect() 的 HttpURLConnection 会失败。
+                return@withContext githubHttpRetry(
+                    onRetry = { attempt, e ->
+                        com.zaijian.zhoumuyun.util.ZLog.w(
+                            "CreateGithubRepo",
+                            "GitHub API 第 $attempt 次重试（HTTP ${e.statusCode}）：${e.responseBody.take(100)}",
                         )
-                    } else {
-                        val err = try {
-                            conn.errorStream?.bufferedReader()?.use { it.readText() }?.take(200)
-                        } catch (e: kotlinx.coroutines.CancellationException) {
-                            throw e
-                        } catch (_: Throwable) { null }
-                        val msg = when (code) {
-                            422 -> "仓库名已存在或名称不合法"
-                            else -> "HTTP $code: ${err ?: conn.responseMessage}"
-                        }
-                        ToolResult(name, false, "", msg)
+                    },
+                ) {
+                    val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                        requestMethod = "POST"
+                        connectTimeout = 15_000
+                        readTimeout    = 15_000
+                        setRequestProperty("Accept",              "application/vnd.github+json")
+                        setRequestProperty("Authorization",       "Bearer ${config.token}")
+                        setRequestProperty("Content-Type",         "application/json")
+                        setRequestProperty("X-GitHub-Api-Version", "2022-11-28")
+                        doOutput = true
                     }
-                } finally {
-                    conn.disconnect()
+                    try {
+                        OutputStreamWriter(conn.outputStream).use { it.write(body) }
+                        val code = conn.responseCode
+                        if (code in 200..201) {
+                            val resp = conn.inputStream.bufferedReader().use { it.readText() }
+                            val cloneUrl = JSONObject(resp).optString("clone_url", "")
+                            ToolResult(
+                                toolName = name,
+                                success  = true,
+                                content  = "仓库已创建：$cloneUrl",
+                                userHint = "正在创建仓库…",
+                            )
+                        } else if (code == 429 || code >= 500) {
+                            // 可重试错误 → 抛出触发 helper 重试
+                            val err = readErrorBody(conn)
+                            throw GithubHttpException(
+                                statusCode = code,
+                                responseBody = err ?: conn.responseMessage,
+                            )
+                        } else {
+                            // 不可重试业务错误（422/403/401 等）→ 直接返回 ToolResult，不重试
+                            val err = readErrorBody(conn)
+                            val msg = when (code) {
+                                422 -> "仓库名已存在或名称不合法"
+                                else -> "HTTP $code: ${err ?: conn.responseMessage}"
+                            }
+                            ToolResult(name, false, "", msg)
+                        }
+                    } finally {
+                        conn.disconnect()
+                    }
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
@@ -121,4 +138,12 @@ class CreateGithubRepoTool(
                 toolFailure(name, "创建仓库失败，请稍后重试。", "create_github_repo_failed", e)
             }
         }
+
+    /**
+     * 读取 HTTP 错误响应体摘要（截断 200 字符），读取失败时返回 null。
+     * 提取为公共 helper 以避免重复的 try/catch 样板。
+     */
+    private fun readErrorBody(conn: HttpURLConnection): String? = try {
+        conn.errorStream?.bufferedReader()?.use { it.readText() }?.take(200)
+    } catch (_: Throwable) { null }
 }

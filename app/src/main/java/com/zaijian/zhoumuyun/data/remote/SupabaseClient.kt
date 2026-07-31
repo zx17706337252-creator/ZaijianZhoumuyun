@@ -95,8 +95,9 @@ object SupabaseClient {
     /**
      * 拉取指定角色的未读执行结果。
      * App 启动时调用，获取云端后台执行完毕的任务结果。
+     * C7#27 修复：返回 [FetchResult]，区分"云端确实无未读结果"和"拉取失败"。
      */
-    suspend fun fetchUnreadResults(characterId: Int): List<CloudJobResult> =
+    suspend fun fetchUnreadResults(characterId: Int): FetchResult =
         withTimeout(SUPABASE_TOTAL_TIMEOUT_MS) {
         withContext(Dispatchers.IO) {
             val conn = openConnection(
@@ -106,7 +107,10 @@ object SupabaseClient {
             try {
                 val code = conn.responseCode
                 if (code !in 200..299) {
-                    return@withContext emptyList()
+                    // C7#27 修复：HTTP 非 2xx 是拉取失败，不是"云端没有数据"，
+                    // 此前直接 emptyList() 会让这次同步的失败对调用方完全不可见。
+                    ZLog.e("SupabaseClient", "fetchUnreadResults HTTP $code，本次同步未执行")
+                    return@withContext FetchResult.Failed
                 }
 
                 val json = conn.inputStream.bufferedReader().readText()
@@ -134,12 +138,14 @@ object SupabaseClient {
                         )
                     )
                 }
-                results
+                FetchResult.Success(results)
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e  // S3问题2修复：rethrow，避免吞掉协程取消信号
             } catch (e: Throwable) {
-                ZLog.w("SupabaseClient", "fetchUnreadResults failed", e)
-                emptyList()
+                // C7#27 修复：升级为 error——本次云端任务结果同步已经失败且不会
+                // 自动重试（下次冷启动才会再拉一次），需要在诊断日志里留痕。
+                ZLog.e("SupabaseClient", "fetchUnreadResults failed，本次同步未执行", e)
+                FetchResult.Failed
             } finally {
                 conn.disconnect()
             }
@@ -319,3 +325,17 @@ data class CloudJobResult(
     val completedAt: Long?,
     val createdAt: Long,
 )
+
+/**
+ * C7#27 修复：fetchUnreadResults 的返回值包装。原先无论"云端确实没有未读结果"
+ * 还是"网络异常/HTTP 非 2xx 拉取失败"都统一返回空列表，调用方
+ * ScheduleRepository.syncCloudResults() 只在 App 冷启动时调用一次，没有下次
+ * 重试机会——拉取失败时，本该同步下来的云端任务结果就永久丢失了，且没有
+ * 任何用户可见或日志层面的痕迹能说明"这次同步其实失败了"。
+ * 只用于区分这两种情形，不引入重试机制（重试策略改动更大，且冷启动路径
+ * 本身就应该快速返回，不适合在这里阻塞重试）。
+ */
+sealed class FetchResult {
+    data class Success(val results: List<CloudJobResult>) : FetchResult()
+    data object Failed : FetchResult()
+}

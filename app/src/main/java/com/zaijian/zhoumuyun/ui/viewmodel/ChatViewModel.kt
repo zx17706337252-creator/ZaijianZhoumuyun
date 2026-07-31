@@ -122,9 +122,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         super.onCleared()
         ProviderManager.instance.removeOnProviderConfigChangedListener(evaluationDelegate.providerConfigListener)
         // window13结论7：离开聊天页时清除前台角色标记（仅当全局值仍是本 ViewModel 设置的）。
-        if (PresenceEngine.foregroundChatCharacterId == currentCharacterId) {
-            PresenceEngine.foregroundChatCharacterId = null
-        }
+        // B1审查序号2修复：check-then-clear改用原子 compareAndSet，见 PresenceEngine 注释。
+        PresenceEngine.clearForegroundChatCharacterIdIfMatches(currentCharacterId)
     }
 
     // ── 工具注册 ────────────────────────────────────────────────
@@ -228,6 +227,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         identityRepo         = identityRepo,
         pregnancyRepo        = pregnancyRepo,
         memoryRepo           = memoryRepo,
+        cycleRepository      = cycleRepository,
         daughterIdAllocator  = daughterIdAllocator,
         db                   = db,
         backgroundManager    = backgroundManager,
@@ -287,7 +287,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         pregnancyDelegate             = pregnancyDelegate,
         agentRelationEngine           = agentRelationEngine,
         daughterGenerator             = daughterGenerator,
+        characterTitleRelationRepo    = container.characterTitleRelationRepo,
         db                            = db,
+        getApplication                = { getApplication() },
         getCurrentCharacterId         = { currentCharacterId },
         getReplyJob                   = { replyJob },
         setReplyJob                   = { replyJob = it },

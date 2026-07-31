@@ -1,6 +1,5 @@
 package com.zaijian.zhoumuyun.domain
 
-import android.app.NotificationManager
 import com.zaijian.zhoumuyun.util.ZLog
 import android.app.PendingIntent
 import android.content.Context
@@ -145,9 +144,6 @@ class ProactiveMessageNotifier(
     }
 
     private fun sendNotification(characterId: Int, characterName: String, text: String) {
-        val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
-            ?: return
-
         // 点击通知 → 直接跳转到该角色的聊天页（复用 FCM 同款 "chat/{id}" 路由）
         // UI M5 修复：原自定义 action + extra 改为标准 ACTION_VIEW + zaijian:// 深链接
         val openIntent = Intent(context, MainActivity::class.java).apply {
@@ -172,6 +168,7 @@ class ProactiveMessageNotifier(
             .build()
 
         // notificationId 用 characterId，同一角色短时间内多条主动消息只保留最后一条通知，不刷屏
-        nm.notify(characterId, notif)
+        // C类审查 #47 修复：改用统一的权限检查入口，避免 Android 13+ 权限被拒时静默失败
+        com.zaijian.zhoumuyun.util.NotificationPermissionUtils.safeNotify(context, characterId, notif, TAG)
     }
 }

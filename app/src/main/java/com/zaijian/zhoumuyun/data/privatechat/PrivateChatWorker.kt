@@ -1,6 +1,5 @@
 package com.zaijian.zhoumuyun.data.privatechat
 
-import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
@@ -87,9 +86,6 @@ class PrivateChatWorker(
             val nameB = resolveCharacterName(pair.characterIdB, daughterRepo)
             val text = "$nameA 和 $nameB 的私聊没能完成，可以重新试试"
 
-            val nm = applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
-                ?: return
-
             val openIntent = Intent(applicationContext, MainActivity::class.java).apply {
                 action = Intent.ACTION_VIEW
                 data = Uri.parse("zaijian://private_chat/$pairId")
@@ -111,7 +107,10 @@ class PrivateChatWorker(
                 .setContentIntent(pendingIntent)
                 .build()
 
-            nm.notify(pairId.hashCode(), notif)
+            // C类审查 #47 修复：改用统一的权限检查入口
+            com.zaijian.zhoumuyun.util.NotificationPermissionUtils.safeNotify(
+                applicationContext, pairId.hashCode(), notif, TAG,
+            )
         } catch (ne: Throwable) {
             ZLog.w(TAG, "notifyFailure itself failed", ne)
         }

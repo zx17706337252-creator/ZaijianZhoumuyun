@@ -119,6 +119,8 @@ private data class MemoryEntry(
     val domainLabel: String = "",
     /** Phase 30 方案三：维度色条颜色 (ARGB Long) */
     val domainColorArgb: Long = 0xFF9E9E9EL,
+    /** C8#44 UI 闭环：假扮身份识别期间产生的叙事记忆，需在列表中标出以区分 */
+    val isNarrativeOnly: Boolean = false,
 )
 
 private fun MemoryUiItem.toEntry() = MemoryEntry(
@@ -131,6 +133,7 @@ private fun MemoryUiItem.toEntry() = MemoryEntry(
     decayLabel      = decayLabel,
     domainLabel     = domainLabel,
     domainColorArgb = domainColorArgb,
+    isNarrativeOnly = isNarrativeOnly,
 )
 
 @Composable
@@ -355,7 +358,20 @@ private fun NarrativeSection(
     val colors = ZaijianTheme.colors
     val type   = ZaijianTheme.typography
     var isEditing by remember { mutableStateOf(false) }
-    var draft by remember(content) { mutableStateOf(content) }
+    var draft by remember { mutableStateOf(content) }
+
+    // content 来自 Room Flow 观察的 character_identity（narrativeMemory/userImpression）。
+    // 此前用 remember(content) 做 key：agent 工具 SoulMemoryUserTools 在后台聊天/主动消息
+    // 流程中写入该字段会推送新 content，导致 draft 被静默重置，用户正在编辑但未保存的
+    // 内容被覆盖（B7 审查报告 序号2）。
+    // 改为只在非编辑态时把 draft 同步为最新 content：进入编辑态后，后台再怎么写都不会
+    // 打断用户输入；只有点击"保存"才会把 draft 提交出去。切换角色（content 随之切换）时
+    // 因为此时必然处于非编辑态，draft 会正常同步为新角色的内容。
+    LaunchedEffect(content, isEditing) {
+        if (!isEditing) {
+            draft = content
+        }
+    }
 
     WorldCard(modifier = modifier, cornerRadius = Radius.sm) {
         Column(modifier = Modifier.padding(Spacing.md)) {
@@ -478,11 +494,30 @@ private fun CoreAnchorsSection(
                                 style = type.body,
                                 color = colors.textPrimary,
                             )
-                            Text(
-                                text  = memory.dateLabel,
-                                style = type.label,
-                                color = colors.textDisabled,
-                            )
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(Spacing.xs),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    text  = memory.dateLabel,
+                                    style = type.label,
+                                    color = colors.textDisabled,
+                                )
+                                // C8#44 UI 闭环：isCore 和 isNarrativeOnly 是写入侧独立
+                                // 判定的两个字段（isCore = importance==5），假扮场景里
+                                // 产生的记忆一样可能被判为"重大事件"，这里同样需要标出，
+                                // 否则比普通列表更容易被误读成真实发生的关系里程碑。
+                                if (memory.isNarrativeOnly) {
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(4.dp))
+                                            .background(Palette.SemanticNeutral.copy(alpha = 0.12f))
+                                            .padding(horizontal = 5.dp, vertical = 1.dp),
+                                    ) {
+                                        Text("叙事记忆", style = type.label, color = colors.textSecondary)
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -828,6 +863,19 @@ private fun MemoryRow(
                                 .padding(horizontal = 5.dp, vertical = 1.dp),
                         ) {
                             Text(label, style = type.label, color = textColor)
+                        }
+                    }
+                    // C8#44 UI 闭环：叙事记忆标签——假扮身份识别期间产生的记忆，
+                    // 用中性灰区别于 decayLabel 的警示色，避免被误读成"即将过期"
+                    // 一类的状态提示；这条只是"来源说明"，不是需要用户处理的事。
+                    if (entry.isNarrativeOnly) {
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(4.dp))
+                                .background(Palette.SemanticNeutral.copy(alpha = 0.12f))
+                                .padding(horizontal = 5.dp, vertical = 1.dp),
+                        ) {
+                            Text("叙事记忆", style = type.label, color = colors.textSecondary)
                         }
                     }
                 }

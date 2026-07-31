@@ -65,4 +65,18 @@ interface JobResultDao {
 
     @Query("SELECT COUNT(*) FROM job_results WHERE characterId = :characterId AND isRead = 0")
     fun observeUnreadCount(characterId: Int): Flow<Int>
+
+    // ── B5 问题2修复：markResultRead 失败重试队列 ──────────────
+
+    /** 云端 markResultRead 失败时调用，标记该条结果待重试 */
+    @Query("UPDATE job_results SET cloudMarkReadSynced = 0 WHERE id = :id")
+    suspend fun markCloudReadSyncPending(id: String)
+
+    /** 重试成功后调用，清除待重试标记 */
+    @Query("UPDATE job_results SET cloudMarkReadSynced = 1 WHERE id = :id")
+    suspend fun markCloudReadSynced(id: String)
+
+    /** App 启动时扫描所有未成功同步 is_read 状态到云端的结果，逐条重试 */
+    @Query("SELECT * FROM job_results WHERE cloudMarkReadSynced = 0")
+    suspend fun findPendingCloudMarkRead(): List<JobResultEntity>
 }

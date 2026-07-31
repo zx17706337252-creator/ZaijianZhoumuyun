@@ -539,12 +539,24 @@ class CompetitionRoundManager(
                         ownContent = entry.content,
                         ownStyleNotes = contestant.styleNotes,
                     )
-                    db.competitionEntryDao().updateSelfResult(
-                        id = entry.id,
-                        score = selfResult.selfScore,
-                        reasoning = selfResult.selfReasoning,
-                    )
-                    ZLog.d(TAG, "[runJudging] 自评完成 char=${entry.characterId} selfScore=${selfResult.selfScore}")
+                    // C7#31 修复：selfEvaluateEntry 在 LLM 输出解析失败时会返回
+                    // success=false + selfScore=50（占位默认值，不代表真实评审结果）。
+                    // 此前无条件写入 DB，50 分看起来像一次正常评审，会让"实际未被
+                    // 评审"的条目获得不该有的中等分，且与项目里 selfScore/judgeScore
+                    // 为 null 的既有语义（CompetitionEntryEntity 字段注释："null 表示
+                    // 评审尚未完成"，finalizeRound 已经在用这个 null 跳过综合分计算）
+                    // 直接冲突。改为 success 时才写入，失败时跳过写入，selfScore
+                    // 保持数据库默认的 null，走既有的"未完成即跳过"路径。
+                    if (selfResult.success) {
+                        db.competitionEntryDao().updateSelfResult(
+                            id = entry.id,
+                            score = selfResult.selfScore,
+                            reasoning = selfResult.selfReasoning,
+                        )
+                        ZLog.d(TAG, "[runJudging] 自评完成 char=${entry.characterId} selfScore=${selfResult.selfScore}")
+                    } else {
+                        ZLog.w(TAG, "[runJudging] 自评解析失败，跳过写入（selfScore 保持 null）char=${entry.characterId}")
+                    }
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
@@ -1247,6 +1259,11 @@ class CompetitionRoundManager(
                 .findMostRecentRoundtableIdForSpeaker(round.judgeCharacterId.toString())
                 ?: run {
                     ZLog.d(TAG, "[播报] 裁判${round.judgeCharacterId}没有圆桌历史，跳过播报")
+                    // A8-1 修复: 裁判无圆桌历史导致播报被跳过，标记到轮次实体，
+                    // 供 CompetitionScreen 在 STATUS_COMPLETED 展示区提示用户
+                    // "裁判暂无关联圆桌，评审结果仅在此页展示"。
+                    db.competitionRoundDao()
+                        .updateJudgeRoundtableBroadcastSkipped(round.id, true)
                     return
                 }
 
@@ -1267,6 +1284,10 @@ class CompetitionRoundManager(
                     createdAt = System.currentTimeMillis(),
                 )
             )
+            // A8-1 修复: 播报成功，清除跳过标记（重试场景：此前因无圆桌历史被
+            // 跳过并置 true，本次重试裁判已有圆桌历史且播报成功，需复位为 false）。
+            db.competitionRoundDao()
+                .updateJudgeRoundtableBroadcastSkipped(round.id, false)
             ZLog.i(TAG, "[播报] 裁判评审结果已发送圆桌 roundtableId=$roundtableId")
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e

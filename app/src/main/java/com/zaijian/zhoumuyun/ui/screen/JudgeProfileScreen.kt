@@ -23,6 +23,11 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.zaijian.zhoumuyun.data.model.CompetitionRoundStatus.STATUS_COMPLETED
 import com.zaijian.zhoumuyun.data.model.CompetitionRoundStatus.STATUS_AWAITING_USER
+import com.zaijian.zhoumuyun.data.model.CompetitionRoundStatus.STATUS_COLLECTING
+import com.zaijian.zhoumuyun.data.model.CompetitionRoundStatus.STATUS_COLLECTING_IN_PROGRESS
+import com.zaijian.zhoumuyun.data.model.CompetitionRoundStatus.STATUS_COLLECTED
+import com.zaijian.zhoumuyun.data.model.CompetitionRoundStatus.STATUS_JUDGING
+import com.zaijian.zhoumuyun.data.model.CompetitionRoundStatus.STATUS_CANCELLED
 import com.zaijian.zhoumuyun.data.db.entity.CompetitionRoundEntity
 import com.zaijian.zhoumuyun.data.db.entity.JudgeProfileEntity
 import com.zaijian.zhoumuyun.data.model.DefaultCharacters
@@ -580,10 +585,18 @@ private fun RecentRoundRow(
             )
         }
         // 状态徽章
+        // B4审查报告【序号7】修复：原先仅 COMPLETED/AWAITING_USER 有中文文案，
+        // 其余 5 态落入 else，把原始英文状态串（如"COLLECTING"）直接展示给用户。
+        // 现补全全部 7 态的中文文案；else 分支保留但不再是常规可达路径，仅作兜底。
         val (statusText, statusColor) = when (round.status) {
             STATUS_COMPLETED -> "已完成" to colors.statusActive
             STATUS_AWAITING_USER -> "待打分" to Palette.Gold
-            else -> round.status to colors.textDisabled
+            STATUS_COLLECTING -> "创作中" to colors.textDisabled
+            STATUS_COLLECTING_IN_PROGRESS -> "创作中" to colors.textDisabled
+            STATUS_COLLECTED -> "待评审" to colors.textDisabled
+            STATUS_JUDGING -> "评审中" to colors.textDisabled
+            STATUS_CANCELLED -> "已取消" to colors.textDisabled
+            else -> "进行中" to colors.textDisabled
         }
         Box(
             modifier = Modifier

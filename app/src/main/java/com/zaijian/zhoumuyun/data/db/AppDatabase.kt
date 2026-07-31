@@ -111,12 +111,16 @@ import com.zaijian.zhoumuyun.data.db.dao.ChainDefinitionDao             // 灵�
 import com.zaijian.zhoumuyun.data.db.dao.ChainRunDao                    // 灵活自动化编排·链条运行实例
 import com.zaijian.zhoumuyun.data.db.dao.PendingEventDao                // 灵活自动化编排·待处理事件
 import com.zaijian.zhoumuyun.data.db.dao.FileIndexDao                  // 文件搜索·文件索引DAO
+import com.zaijian.zhoumuyun.data.db.dao.CharacterTitleRelationDao     // 角色间关系头衔 DAO
+import com.zaijian.zhoumuyun.data.db.dao.ImpersonationPresetDao        // 假扮预设名单 DAO
 import com.zaijian.zhoumuyun.data.db.entity.AgentStoreRecordEntity       // Agent 结构化存储
 import com.zaijian.zhoumuyun.data.db.entity.ChainDefinitionEntity        // 灵活自动化编排·链条定义
 import com.zaijian.zhoumuyun.data.db.entity.ChainRunEntity               // 灵活自动化编排·链条运行实例
 import com.zaijian.zhoumuyun.data.db.entity.PendingEventEntity           // 灵活自动化编排·待处理事件
 import com.zaijian.zhoumuyun.data.db.entity.FileIndexEntity             // 文件搜索·文件索引主表
 import com.zaijian.zhoumuyun.data.db.entity.FileIndexFtsEntity           // 文件搜索·FTS4虚拟表
+import com.zaijian.zhoumuyun.data.db.entity.CharacterTitleRelationEntity // 角色间关系头衔·方向性头衔
+import com.zaijian.zhoumuyun.data.db.entity.ImpersonationPresetEntity   // 角色间关系头衔·假扮预设名单
 
 /**
  * 再见周慕云 · Room 数据库
@@ -261,8 +265,21 @@ import com.zaijian.zhoumuyun.data.db.entity.FileIndexFtsEntity           // 文�
         PendingEventEntity::class,               // 灵活自动化编排——待处理事件（§11.1 事件落盘兜底）
         FileIndexEntity::class,                  // 文件搜索——文件索引主表
         FileIndexFtsEntity::class,               // 文件搜索——FTS4 全文检索虚拟表
+        CharacterTitleRelationEntity::class,     // 角色间关系头衔——方向性头衔关系
+        ImpersonationPresetEntity::class,        // 角色间关系头衔——假扮身份识别预设名单
     ],
-    version = 76,  // 75 → 76：角色忠诚锁定机制——character_identity 新增 ownerAliasesJson/
+    version = 79,  // B5 问题2修复: 78 → 79——job_results 新增 cloudMarkReadSynced 列，
+    // 标记 markResultRead 是否成功同步到云端，失败时供 ScheduleRepository.
+    // retryPendingCloudMarkRead() 在下次启动时补重试。纯新增非空默认列，详见
+    // Migration78to79.kt。
+    // A8-1 修复: 77 → 78——competition_rounds 新增 judgeRoundtableBroadcastSkipped
+    // 列，标记裁判圆桌播报是否因无圆桌历史被跳过，供 CompetitionScreen 在 COMPLETED
+    // 展示区提示用户。纯新增非空默认列，详见 Migration77to78.kt。
+    // 76 → 77：角色间关系头衔系统——新增 character_title_relations /
+    // impersonation_presets 两张表，含初代9人头衔种子数据（用户逐项确认口径，
+    // 非从 DefaultCharacters 硬编码文本提取，那段文本经核对与实际设定不符）。
+    // 详见 Migration76to77.kt。
+    // 75 → 76：角色忠诚锁定机制——character_identity 新增 ownerAliasesJson/
     // characterCallsOwnerJson（机制一判定依据），messages 新增 speakerContext（机制四状态隔离），
     // private_chat_pairs 新增 characterDisconnectState（6.4 角色自主下线），
     // memories 新增 isNarrativeOnly（4.2 记忆隔离）。详见 Migration75to76.kt。
@@ -385,6 +402,8 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun chainRunDao(): ChainRunDao                           // 灵活自动化编排·链条运行实例
     abstract fun pendingEventDao(): PendingEventDao                   // 灵活自动化编排·待处理事件
     abstract fun fileIndexDao(): FileIndexDao                         // 文件搜索·文件索引
+    abstract fun characterTitleRelationDao(): CharacterTitleRelationDao  // 角色间关系头衔
+    abstract fun impersonationPresetDao(): ImpersonationPresetDao        // 假扮身份识别预设名单
 
     /**
      * S2 修复：原子记录工作流步骤（插入步骤结果 + 推进 currentStep 在同一事务内）。
@@ -449,6 +468,9 @@ abstract class AppDatabase : RoomDatabase() {
                         com.zaijian.zhoumuyun.data.db.migration.MIGRATION_73_74,
                         com.zaijian.zhoumuyun.data.db.migration.MIGRATION_74_75,
                         com.zaijian.zhoumuyun.data.db.migration.MIGRATION_75_76,
+                        com.zaijian.zhoumuyun.data.db.migration.MIGRATION_76_77,
+                        com.zaijian.zhoumuyun.data.db.migration.MIGRATION_77_78,
+                        com.zaijian.zhoumuyun.data.db.migration.MIGRATION_78_79,
                     )
                     .fallbackToDestructiveMigrationOnDowngrade()
                     // P1-11 修复：原先仅有 fallbackToDestructiveMigrationOnDowngrade()
@@ -460,7 +482,23 @@ abstract class AppDatabase : RoomDatabase() {
                     // 追加 fallbackToDestructiveMigration()：仅在"迁移路径缺失/
                     // 执行异常"时触发清库重建兜底，不影响正常情况下 70 条迁移链
                     // 的照常执行，不会掩盖真实的 migration bug。
-                    .fallbackToDestructiveMigration()
+                    //
+                    // A12-6 修复：debug 构建移除 fallbackToDestructiveMigration()，
+                    // 让迁移 bug 直接崩溃暴露（IllegalStateException），不被静默吞掉。
+                    // 正式版保留兜底（避免用户因迁移 bug 无法启动 App），但记录警示日志。
+                    // 注意：Room 内部执行 destructive migration 时无回调钩子，
+                    // 此日志在配置阶段写入，标记"此构建存在静默清库风险"。
+                    .also { builder ->
+                        if (com.zaijian.zhoumuyun.BuildConfig.DEBUG) {
+                            // debug：不启用 fallback，让迁移路径缺失/异常直接崩溃
+                        } else {
+                            com.zaijian.zhoumuyun.util.ZLog.e(
+                                "AppDatabase",
+                                "正式版启用 fallbackToDestructiveMigration()：若迁移路径缺失/异常，将静默清空数据库重建。当前迁移链 v1→v78 共 77 条，正常升级不触发。",
+                            )
+                            builder.fallbackToDestructiveMigration()
+                        }
+                    }
                     .build()
                     .also { INSTANCE = it }
             }

@@ -74,6 +74,9 @@ internal data class SettingGroup(
 @Composable
 fun ProfileScreen(
     onNavigateToCharacter: (Int) -> Unit = {},
+    // 角色关系头衔管理页入口（方案_角色间关系头衔系统_实施方案 三节）。
+    // 无参跳转，比照 onNavigateToCharacter 挂法，实际回调在 AppNavigation.kt 里接线。
+    onNavigateToTitleRelations: () -> Unit = {},
     profileViewModel: com.zaijian.zhoumuyun.ui.viewmodel.ProfileViewModel = androidx.lifecycle.viewmodel.compose.viewModel(),
 ) {
     val colors = ZaijianTheme.colors
@@ -141,10 +144,37 @@ fun ProfileScreen(
         }
     }
 
+    // ── 怀孕功能总开关（C3#9 修复）──────────────────────────────
+    // 与 splashBgStore 同一持有模式：AppContainer.instance 单例，
+    // PregnancyTriggerManager 三处工厂方法均已注入同一实例读取该开关。
+    val pregnancyPressureStore = com.zaijian.zhoumuyun.data.AppContainer.instance.pregnancyPressureDataStore
+    val p5TriggerEnabled by pregnancyPressureStore.p5TriggerEnabledFlow.collectAsStateWithLifecycle(initialValue = true)
+
     // ── 通知设置（SharedPreferences 持久化）─────────────────────
     var notifyMessages    by remember { mutableStateOf(userPrefs.getBoolean("notify_messages",   true)) }
     var notifyTaskDone    by remember { mutableStateOf(userPrefs.getBoolean("notify_task_done",  true)) }
     var proactiveEnabled  by remember { mutableStateOf(userPrefs.getBoolean("proactive_enabled", true)) }
+
+    // C类审查 #46/#48 修复：ProfileScreen 开关此前只反映 app 级 SharedPreferences
+    // 状态，不检查系统级 POST_NOTIFICATIONS 权限——用户在系统里拒绝了通知权限后，
+    // 这里的开关依然显示"开"，用户以为通知会正常工作，实际全部静默失效。
+    // 用 Lifecycle.Event.ON_RESUME 而非只读一次：用户很可能是从系统设置页
+    // （点击下面的"去设置"按钮跳转过去）改完权限再返回本页，需要每次回到
+    // 前台都重新读一次系统权限状态，不能停留在进入本页那一刻的旧值上。
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    var systemNotificationsEnabled by remember {
+        mutableStateOf(com.zaijian.zhoumuyun.util.NotificationPermissionUtils.canPostNotifications(context))
+    }
+    androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                systemNotificationsEnabled =
+                    com.zaijian.zhoumuyun.util.NotificationPermissionUtils.canPostNotifications(context)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     // ── 角色管理头像（P0-2 修复，升级为响应式 Flow）─────────────
     // DefaultCharacters 里的 avatarUrl 是硬编码默认值；用户在角色详情页
@@ -156,6 +186,20 @@ fun ProfileScreen(
     // 行为与之前完全一致，只是数据访问逻辑挪到了 ViewModel 里。
     val profileUiState by profileViewModel.uiState.collectAsStateWithLifecycle()
     val characterAvatarOverrides = profileUiState.characterAvatarOverrides
+
+    // 功能（角色关系头衔管理入口，方案_角色间关系头衔系统_实施方案 三节）
+    val featureGroup = remember {
+        SettingGroup(
+            title = "功能",
+            items = listOf(
+                SettingItem(
+                    "角色关系头衔",
+                    description = "配置角色之间的称呼，以及假扮识别预设名单",
+                    onClick = onNavigateToTitleRelations,
+                ),
+            ),
+        )
+    }
 
     // 关于（静态）
     val aboutGroup = remember {
@@ -288,6 +332,13 @@ fun ProfileScreen(
                     notifyMessages   = notifyMessages,
                     notifyTaskDone   = notifyTaskDone,
                     proactiveEnabled = proactiveEnabled,
+                    systemNotificationsEnabled = systemNotificationsEnabled,
+                    onOpenSystemNotificationSettings = {
+                        val intent = android.content.Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                            putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName)
+                        }
+                        context.startActivity(intent)
+                    },
                     onNotifyMessagesChange = { v ->
                         notifyMessages = v
                         userPrefs.edit().putBoolean("notify_messages", v).apply()
@@ -309,6 +360,23 @@ fun ProfileScreen(
                         }
                     },
                 )
+                Spacer(Modifier.height(Spacing.md))
+            }
+
+            // ── 孕育系统总开关（C3#9 修复）───────────────────────
+            item {
+                PregnancySettingsSection(
+                    p5TriggerEnabled = p5TriggerEnabled,
+                    onP5TriggerEnabledChange = { v ->
+                        scope.launch { pregnancyPressureStore.setP5TriggerEnabled(v) }
+                    },
+                )
+                Spacer(Modifier.height(Spacing.md))
+            }
+
+            // ── 功能（角色关系头衔管理入口）──────────────────────
+            item {
+                SettingGroupSection(featureGroup)
                 Spacer(Modifier.height(Spacing.md))
             }
 

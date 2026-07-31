@@ -267,6 +267,17 @@ fun RoundtableScreen(
         }
     }
 
+    // 问题39修复：圆桌成员解析失败时提示用户，而不是让人悄悄消失、
+    // 用户毫无察觉地看到圆桌缺人。与上面 error 的处理模式一致：
+    // 展示后清空，避免同一批失败反复弹提示。
+    LaunchedEffect(uiState.memberLoadErrors) {
+        if (uiState.memberLoadErrors.isNotEmpty()) {
+            val idList = uiState.memberLoadErrors.joinToString("、")
+            snackbar.showSnackbar("部分角色加载失败（ID: $idList），圆桌可能缺少成员")
+            viewModel.clearMemberLoadErrors()
+        }
+    }
+
     val headerBg = if (colors.isDark)
         colors.bgBase.copy(alpha = GlassOpacity.topBarDark)
     else

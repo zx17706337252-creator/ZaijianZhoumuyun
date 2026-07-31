@@ -34,6 +34,14 @@ class MessageRepository(private val dao: MessageDao) {
     suspend fun getByCharacter(characterId: Int, limit: Int = 100): List<MessageEntity> =
         dao.getByCharacter(characterId, limit)
 
+    // C8 #43：LLM 上下文专用，过滤掉假扮期间（speakerContext=NON_OWNER）的消息
+    suspend fun getByCharacterForContext(characterId: Int, limit: Int = 100): List<MessageEntity> =
+        dao.getByCharacterForContext(characterId, limit)
+
+    // C8 #43：假扮识别判定在消息落库之后才算出结果，算出后回写这一条
+    suspend fun updateSpeakerContext(id: String, speakerContext: String) =
+        dao.updateSpeakerContext(id, speakerContext)
+
     suspend fun getRecentByCharacter(characterId: Int, limit: Int = 6): List<MessageEntity> =
         dao.getRecentByCharacter(characterId, limit)
 

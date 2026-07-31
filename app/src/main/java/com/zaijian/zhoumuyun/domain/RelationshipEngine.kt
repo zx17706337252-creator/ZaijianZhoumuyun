@@ -52,6 +52,11 @@ class RelationshipEngine(
     private val relationshipDao: RelationshipDao,
     private val eventRepo: EventRepository,
     private val milestoneDao: RelationshipMilestoneDao? = null,
+    // A9-4 修复：关系里程碑传播到 MemoryEngine，写入 PERSONAL 域长期记忆。
+    // 可空（默认 null）：测试代码或不需记忆传播的场景可不传，保持向后兼容。
+    // AppContainer 中 memoryEngine（第130行）先于 relationshipEngine（第199行）
+    // 初始化，传入时无循环依赖问题。
+    private val memoryEngine: com.zaijian.zhoumuyun.data.memory.MemoryEngine? = null,
 ) {
 
     companion object {
@@ -112,15 +117,22 @@ class RelationshipEngine(
         toId: String,
         delta: RelationshipDelta,
         sourceEventId: String? = null,
-        // 机制四·状态隔离（方案 v1.5 第 4.2 节）：NON_OWNER 来源的正向关系 delta
-        // 只允许写入"与该第三方角色的关系值"（角色间关系桶），禁止写入/换算到
-        // owner 归属相关数值。默认 OWNER_DIRECT，向后兼容（未传参的调用方行为不变）。
+        // 机制四·状态隔离（方案 v1.5 第 4.2 节，Window0 仲裁维持）：NON_OWNER 来源的
+        // 关系 delta 一律跳过写入，不产生任何角色间关系桶的旁路数值。
+        //
+        // C10#51 修复：以下这句改准确——该形参不再驱动任何"路由分支"（即不再决定
+        // 写入哪个关系桶、走哪套 delta 计算），但仍驱动下面 isNonOwner 的跳过守卫
+        // 这一个分支（return@withLock）。不要把这句话理解成"形参已失去实际作用可以
+        // 安全删除"：真实调用方目前恒传默认值 OWNER_DIRECT（NON_OWNER 时上层在
+        // ChatMessageOrchestrator 里就整段跳过、根本不调用 applyDelta，见 #55），
+        // 使得这里的守卫分支当前不可达——但它是有意保留的防御性双重保险，
+        // 不是死代码。
         speakerContext: SpeakerContext = SpeakerContext.OWNER_DIRECT,
     ) = deltaMutex.withLock {
-        // ── 机制四：NON_OWNER 隔离分支 ──────────────────────────
-        // 非owner互动产生的关系增量物理隔离到角色间关系桶，绝不碰 owner 归属数值。
+        // ── 机制四：NON_OWNER 隔离 ──────────────────────────────
+        // 非owner互动产生的关系增量直接丢弃，绝不写入 owner 归属数值，
+        // 也不写入角色间关系桶（Window0 仲裁：维持跳过，不做旁路落库）。
         if (speakerContext.isNonOwner) {
-            applyInterCharacterDelta(fromId, toId, delta, sourceEventId)
             return@withLock
         }
 
@@ -184,65 +196,44 @@ class RelationshipEngine(
         ))
 
         maybeRecordMilestoneFromDelta(fromId, toId, delta, sourceEventId, now)
-        } // end db.withTransaction
-    }
 
-    /**
-     * 机制四·NON_OWNER 关系增量隔离写入（方案 v1.5 第 4.2 节）。
-     *
-     * 非owner（第三方角色 / owner 扮演的第三方）互动产生的关系增量，写入
-     * "与该第三方角色的关系值"（角色间关系桶，isInterCharacter=true），与
-     * owner 归属数值物理隔离。沿用与 owner 关系同样的摩擦系数/棘轮/地板逻辑，
-     * 但：
-     *   - 不记录 owner 归属的关系转折点里程碑（maybeRecordMilestoneFromDelta）
-     *   - 事件 actorId/targetId 仍为两个角色，domain 标记 INTERCHAR 防与 owner 事件混淆
-     *   - 绝不调用 getOrCreate("user", ...)，owner 归属数值零接触
-     */
-    private suspend fun applyInterCharacterDelta(
-        fromId: String,
-        toId: String,
-        delta: RelationshipDelta,
-        sourceEventId: String?,
-    ) {
-        val current = getOrCreateInterCharacter(fromId, toId)
-        val currentStage = RelationshipStage.valueOf(current.stage)
-        val pos = posMultiplier(currentStage)
-        val neg = negMultiplier(currentStage)
-        fun scale(v: Int) = if (v >= 0) (v * pos).toInt() else (v * neg).toInt()
-
-        val newTrust      = (current.trust      + scale(delta.trust)     ).coerceIn(0, 100)
-        val newRespect    = (current.respect    + scale(delta.respect)   ).coerceIn(0, 100)
-        val newAffection0 = (current.affection  + scale(delta.affection) ).coerceIn(0, 100)
-        val newCuriosity  = (current.curiosity  + scale(delta.curiosity) ).coerceIn(0, 100)
-        val newDependence = (current.dependence + scale(delta.dependence)).coerceIn(0, 100)
-        val newConflict   = (current.conflict   + scale(delta.conflict)  ).coerceIn(0, 100)
-
-        val rawStage = calcStage(newTrust, newAffection0)
-        val newStage = if (rawStage.ordinal >= currentStage.ordinal) rawStage else currentStage
-        val newAffection = newAffection0.coerceAtLeast(affectionFloor(newStage))
-
-        val now = System.currentTimeMillis()
-        db.withTransaction {
-            relationshipDao.updateAllWithSuppression(
-                current.fromId, current.toId,
-                newTrust, newRespect, newAffection, newCuriosity, newDependence, newConflict,
-                current.suppression,
-                newStage.name, sourceEventId, now,
-            )
-            eventRepo.append(WorldEventEntity(
-                id         = UUID.randomUUID().toString(),
-                type       = EventType.RELATIONSHIP_CHANGED.name,
-                actorId    = fromId,
-                targetId   = toId,
-                domain     = "INTERCHAR",
-                projectId  = null,
-                payload    = """{"trust":$newTrust,"affection":$newAffection,"stage":"${newStage.name}","bucket":"inter_character"}""",
-                importance = 3,
-                createdAt  = now,
-            ))
+        // A9-3 修复：stage 跃迁检测——多次小 delta 累积导致 stage 跃迁时，
+        // maybeRecordMilestoneFromDelta 的单次 |delta|>=15 阈值不会触发，
+        // 但 stage 确实发生了质变（如 STRANGER→FAMILIAR），应该记录里程碑。
+        // 用 recordMilestone（原 A9-2 死代码）写入，顺带激活该方法，使其不再
+        // 是零调用的死接口。仅检测 ordinal 严格大于（跃迁），不检测持平
+        // （棘轮维持原 stage 不算跃迁）。
+        if (newStage.ordinal > currentStage.ordinal) {
+            val stageLabel = when (newStage) {
+                RelationshipStage.STRANGER  -> "陌生"
+                RelationshipStage.FAMILIAR  -> "熟悉"
+                RelationshipStage.TRUSTED   -> "信任"
+                RelationshipStage.IMPORTANT -> "重要"
+                RelationshipStage.CORE      -> "核心"
+            }
+            try {
+                recordMilestone(
+                    fromId      = fromId,
+                    toId        = toId,
+                    direction   = RelationshipMilestoneDirection.STAGE_TRANSITION,
+                    description = "关系阶段跃升至「$stageLabel」",
+                    sourceEventId = sourceEventId,
+                )
+                // A9-4 修复：阶段跃迁里程碑传播到 MemoryEngine。
+                memoryEngine?.let { engine ->
+                    toId.toIntOrNull()?.let { charId ->
+                        engine.onRelationshipMilestone(charId, RelationshipMilestoneDirection.STAGE_TRANSITION.name, "关系阶段跃升至「$stageLabel」", sourceEventId)
+                    }
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                // 与 maybeRecordMilestoneFromDelta 同款策略：milestone 写入失败
+                // 不回滚已提交的关系数值，仅记录日志。
+                ZLog.e("RelationshipEngine", "关系值已提交但记录阶段跃迁里程碑失败（fromId=$fromId, toId=$toId, stage=$stageLabel）", e)
+            }
         }
-        // 刻意不调用 maybeRecordMilestoneFromDelta——那是 owner 归属关系转折点记录，
-        // NON_OWNER 互动不应在 owner 关系历史上留下任何痕迹。
+        } // end db.withTransaction
     }
 
     private suspend fun maybeRecordMilestoneFromDelta(
@@ -269,10 +260,20 @@ class RelationshipEngine(
                         createdAt     = now,
                     )
                 )
+                // A9-4 修复：里程碑传播到 MemoryEngine，写入 PERSONAL 域长期记忆。
+                memoryEngine?.let { engine ->
+                    toId.toIntOrNull()?.let { charId ->
+                        engine.onRelationshipMilestone(charId, RelationshipMilestoneDirection.WORSENED.name, "关系出现明显裂痕", sourceEventId)
+                    }
+                }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Throwable) {
-                ZLog.w("RelationshipEngine", "记录关系转折点(WORSENED)失败（fromId=$fromId, toId=$toId）", e)
+                // C7#20 修复：六维关系值和事件已在同一事务内成功提交，唯独这条
+                // milestone insert 失败——数值和里程碑记录从此不一致（用户能看到
+                // 关系变化，但"转折点"列表里永久缺这一条）。升级为 ZLog.e，
+                // agent_log.txt 保留诊断记录。
+                ZLog.e("RelationshipEngine", "关系值已提交但记录转折点(WORSENED)失败，二者状态不一致（fromId=$fromId, toId=$toId）", e)
             }
         }
         if (repaired) {
@@ -288,10 +289,17 @@ class RelationshipEngine(
                         createdAt     = now,
                     )
                 )
+                // A9-4 修复：里程碑传播到 MemoryEngine，写入 PERSONAL 域长期记忆。
+                memoryEngine?.let { engine ->
+                    toId.toIntOrNull()?.let { charId ->
+                        engine.onRelationshipMilestone(charId, RelationshipMilestoneDirection.REPAIRED.name, "关系明显缓和", sourceEventId)
+                    }
+                }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Throwable) {
-                ZLog.w("RelationshipEngine", "记录关系转折点(REPAIRED)失败（fromId=$fromId, toId=$toId）", e)
+                // C7#20 修复：同上，六维值已提交、milestone 丢失，状态不一致，升级 error。
+                ZLog.e("RelationshipEngine", "关系值已提交但记录转折点(REPAIRED)失败，二者状态不一致（fromId=$fromId, toId=$toId）", e)
             }
         }
     }

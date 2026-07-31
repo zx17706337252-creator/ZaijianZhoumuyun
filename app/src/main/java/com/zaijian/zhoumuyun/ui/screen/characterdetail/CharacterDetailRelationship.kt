@@ -128,13 +128,34 @@ internal fun RelationshipPanel(
     val recentRelEvents = remember { mutableStateOf<List<com.zaijian.zhoumuyun.data.db.entity.WorldEventEntity>>(emptyList()) }
     // 关系转折点（Milestone）
     val milestones = remember { mutableStateOf<List<com.zaijian.zhoumuyun.data.db.entity.RelationshipMilestoneEntity>>(emptyList()) }
+    // C7#21 修复：新增两个失败标记，与上面两个列表分开维护——列表继续保持
+    // "无数据即空列表"的原有语义（下面 W5-013 的 loading 判断依赖这个），
+    // 失败标记只用于渲染层额外提示"加载失败"，不侵入原有的空列表判断逻辑。
+    var relEventsLoadFailed by remember { mutableStateOf(false) }
+    var milestonesLoadFailed by remember { mutableStateOf(false) }
     LaunchedEffect(characterIdStr) {
-        recentRelEvents.value = relationshipViewModel.getRecentRelationshipEvents(
+        when (val result = relationshipViewModel.getRecentRelationshipEvents(
             actorId = "user", targetId = characterIdStr, queryLimit = 8,
-        )
-        milestones.value = relationshipViewModel.getRecentMilestones(
+        )) {
+            is com.zaijian.zhoumuyun.data.repository.RelQueryResult.Success -> {
+                recentRelEvents.value = result.data
+                relEventsLoadFailed = false
+            }
+            is com.zaijian.zhoumuyun.data.repository.RelQueryResult.Failed -> {
+                relEventsLoadFailed = true
+            }
+        }
+        when (val result = relationshipViewModel.getRecentMilestones(
             fromId = "user", toId = characterIdStr, limit = 10,
-        )
+        )) {
+            is com.zaijian.zhoumuyun.data.repository.RelQueryResult.Success -> {
+                milestones.value = result.data
+                milestonesLoadFailed = false
+            }
+            is com.zaijian.zhoumuyun.data.repository.RelQueryResult.Failed -> {
+                milestonesLoadFailed = true
+            }
+        }
     }
 
     val dims = relState?.let { rel ->
@@ -259,6 +280,15 @@ internal fun RelationshipPanel(
                 MilestoneRow(milestone = milestone, accentColor = accentColor)
                 Spacer(Modifier.height(Spacing.xs))
             }
+        } else if (milestonesLoadFailed) {
+            // C7#21 修复：区分"没有转折点"和"查询失败"，避免用户误以为
+            // 从来没发生过关系转折。
+            Spacer(Modifier.height(Spacing.lg))
+            Text(
+                "重大转折点加载失败，重新进入本页可再次尝试",
+                style = type.secondary,
+                color = colors.textSecondary,
+            )
         }
 
         // ── Phase 17：关系历史 Timeline ─────────────────────
@@ -274,6 +304,14 @@ internal fun RelationshipPanel(
                 RelationshipHistoryRow(event = event, accentColor = accentColor)
                 Spacer(Modifier.height(Spacing.xs))
             }
+        } else if (relEventsLoadFailed) {
+            // C7#21 修复：同上，区分"无关系变化记录"和"查询失败"。
+            Spacer(Modifier.height(Spacing.lg))
+            Text(
+                "关系变化记录加载失败，重新进入本页可再次尝试",
+                style = type.secondary,
+                color = colors.textSecondary,
+            )
         }
 
         // ── B-1 Fix：故事时间线入口按钮 ─────────────────────
@@ -370,15 +408,26 @@ private fun MilestoneRow(
     val colors = ZaijianTheme.colors
     val type   = ZaijianTheme.typography
 
-    val isWorsened = milestone.direction ==
-        com.zaijian.zhoumuyun.data.db.entity.RelationshipMilestoneDirection.WORSENED.name
+    // B4审查报告【序号1】修复：direction 曾按 isWorsened 二分类，STAGE_TRANSITION
+    // 落入 else 被误标为"缓和"，与"阶段跃升"语义矛盾。改为三路判断，
+    // STAGE_TRANSITION 独立配色与文案，不与 REPAIRED 混同。
+    val direction = com.zaijian.zhoumuyun.data.db.entity.RelationshipMilestoneDirection
+        .entries.firstOrNull { it.name == milestone.direction }
 
-    val dotColor = if (isWorsened)
-        Palette.SemanticDanger   // 红：恶化
-    else
-        Palette.SemanticSafe   // 绿：缓和/和好（W12问题5修复：原硬编码 0xFF81C784，与该 token 同值）
+    val dotColor = when (direction) {
+        com.zaijian.zhoumuyun.data.db.entity.RelationshipMilestoneDirection.WORSENED ->
+            Palette.SemanticDanger   // 红：恶化
+        com.zaijian.zhoumuyun.data.db.entity.RelationshipMilestoneDirection.STAGE_TRANSITION ->
+            Palette.Gold   // 金：阶段跃升，与"缓和"的绿区分
+        com.zaijian.zhoumuyun.data.db.entity.RelationshipMilestoneDirection.REPAIRED, null ->
+            Palette.SemanticSafe   // 绿：缓和/和好（W12问题5修复：原硬编码 0xFF81C784，与该 token 同值）
+    }
 
-    val directionLabel = if (isWorsened) "↘ 转折" else "↗ 缓和"
+    val directionLabel = when (direction) {
+        com.zaijian.zhoumuyun.data.db.entity.RelationshipMilestoneDirection.WORSENED -> "↘ 转折"
+        com.zaijian.zhoumuyun.data.db.entity.RelationshipMilestoneDirection.STAGE_TRANSITION -> "◆ 跃升"
+        com.zaijian.zhoumuyun.data.db.entity.RelationshipMilestoneDirection.REPAIRED, null -> "↗ 缓和"
+    }
 
     val dateLabel = remember(milestone.createdAt) {
         TimeFormatUtils.formatMonthDaySlashTime(milestone.createdAt)

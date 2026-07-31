@@ -15,6 +15,18 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.Dispatchers
 
 /**
+ * C7#21 修复：查询结果包装类型，让调用方能区分"确实没有数据"和"查询失败拿不到数据"
+ * ——此前两种情形都统一表现为空列表，UI 端无法区分，角色详情页在数据库异常时
+ * 和"从没发生过关系事件"看起来一模一样（一片空白），用户无从得知是不是出了问题。
+ * 只用在 [RelationshipReadRepository] 这两个 suspend 查询上，不影响 Flow 方法
+ * （Flow 已用 .catch{} 兜底为 null，语义上 null 本身已经能区分"无/失败"，不需要改）。
+ */
+sealed class RelQueryResult<out T> {
+    data class Success<T>(val data: T) : RelQueryResult<T>()
+    data object Failed : RelQueryResult<Nothing>()
+}
+
+/**
  * S8-窗口01 修复：只读关系数据 Repository，专供 UI 层（CharacterDetailScreen /
  * CharacterDetailRelationship 的 HeroCard 迷你版 BondRibbon + RelationshipPanel
  * 完整版关系面板）替代此前 Composable 内 `remember { AppDatabase.getInstance(...) }`
@@ -52,37 +64,40 @@ class RelationshipReadRepository(
 
     /**
      * 取 actorId→targetId 之间最近的关系变化事件（RELATIONSHIP_CHANGED 类型）。
-     * 失败时返回空列表，对应报告新发现1的 try-catch 缺失修复。
+     * C7#21 修复：失败时返回 [RelQueryResult.Failed] 而非空列表，调用方（UI）
+     * 能明确区分"确实无关系事件"和"查询失败"，不再统一显示成一片空白。
      */
     suspend fun getRecentRelationshipEvents(
         actorId: String,
         targetId: String,
         queryLimit: Int = 8,
-    ): List<WorldEventEntity> = try {
-        worldEventDao
-            .queryByType(EventType.RELATIONSHIP_CHANGED.name, queryLimit)
-            .filter { it.actorId == actorId && it.targetId == targetId }
+    ): RelQueryResult<List<WorldEventEntity>> = try {
+        RelQueryResult.Success(
+            worldEventDao
+                .queryByType(EventType.RELATIONSHIP_CHANGED.name, queryLimit)
+                .filter { it.actorId == actorId && it.targetId == targetId }
+        )
     } catch (e: kotlinx.coroutines.CancellationException) {
         throw e
     } catch (e: Throwable) {
         ZLog.e("RelationshipReadRepo", "getRecentRelationshipEvents($actorId→$targetId) 查询失败", e)
-        emptyList()
+        RelQueryResult.Failed
     }
 
     /**
      * 取 fromId→toId 最近的关系转折点（Milestone）。
-     * 失败时返回空列表。
+     * C7#21 修复：同上，失败时返回 [RelQueryResult.Failed]。
      */
     suspend fun getRecentMilestones(
         fromId: String,
         toId: String,
         limit: Int = 10,
-    ): List<RelationshipMilestoneEntity> = try {
-        milestoneDao.getRecent(fromId, toId, limit)
+    ): RelQueryResult<List<RelationshipMilestoneEntity>> = try {
+        RelQueryResult.Success(milestoneDao.getRecent(fromId, toId, limit))
     } catch (e: kotlinx.coroutines.CancellationException) {
         throw e
     } catch (e: Throwable) {
         ZLog.e("RelationshipReadRepo", "getRecentMilestones($fromId→$toId) 查询失败", e)
-        emptyList()
+        RelQueryResult.Failed
     }
 }

@@ -11,7 +11,7 @@ import org.json.JSONArray
  *
  * 1. character_identity：新增 ownerAliasesJson / characterCallsOwnerJson
  *    （机制一 IdentityGuard 判定依据）。默认值用已有数据回填——
- *    ownerAliasesJson 填 [""]（空字符串占位，调用方按空数组处理），
+ *    ownerAliasesJson 填 DEFAULT '[]'（空数组，无写入路径时保持空数组语义），
  *    characterCallsOwnerJson 从 userRoleLabelPrivate 回填（若有）。
  *
  * 2. messages：新增 speakerContext（机制四状态隔离标记），默认 OWNER_DIRECT。

@@ -1,5 +1,6 @@
 package com.zaijian.zhoumuyun.ui.viewmodel
 
+import android.content.Context
 import com.zaijian.zhoumuyun.util.ZLog
 import com.zaijian.zhoumuyun.data.AppContainer
 import com.zaijian.zhoumuyun.data.db.AppDatabase
@@ -8,13 +9,17 @@ import com.zaijian.zhoumuyun.data.manager.DaughterCharacterGenerator
 import com.zaijian.zhoumuyun.data.model.CharacterStateLayer
 import com.zaijian.zhoumuyun.data.model.ChatMode
 import com.zaijian.zhoumuyun.data.model.toCharacterStateLayer
+import com.zaijian.zhoumuyun.data.model.toMoodType
 import com.zaijian.zhoumuyun.data.memory.MemoryEngine
 import com.zaijian.zhoumuyun.data.provider.LLMConfig
 import com.zaijian.zhoumuyun.data.provider.LLMMessage
+import com.zaijian.zhoumuyun.data.provider.chatSyncWithRetry
+import com.zaijian.zhoumuyun.data.prompt.ReplyGuard
 import com.zaijian.zhoumuyun.data.provider.ProviderManager
 import com.zaijian.zhoumuyun.data.prompt.PromptOrchestrator
 import com.zaijian.zhoumuyun.data.repository.AgentPlanRepository
 import com.zaijian.zhoumuyun.data.repository.CharacterStateRepository
+import com.zaijian.zhoumuyun.data.repository.CharacterTitleRelationRepository
 import com.zaijian.zhoumuyun.data.repository.DaughterCharacterRepository
 import com.zaijian.zhoumuyun.data.repository.EventRepository
 import com.zaijian.zhoumuyun.data.repository.IdentityRepository
@@ -39,8 +44,8 @@ import com.zaijian.zhoumuyun.data.agent.withVaultContext
 import com.zaijian.zhoumuyun.domain.AgentRelationEngine
 import com.zaijian.zhoumuyun.domain.ChatTagParser
 import com.zaijian.zhoumuyun.domain.EvaluationEngine
-import com.zaijian.zhoumuyun.domain.IdentityGuard
-import com.zaijian.zhoumuyun.domain.OwnerIdentityProfile
+import com.zaijian.zhoumuyun.domain.ImpersonationDetector
+import com.zaijian.zhoumuyun.data.model.DefaultCharacters
 import com.zaijian.zhoumuyun.domain.PresenceEngine
 import com.zaijian.zhoumuyun.domain.RelationshipEngine
 import com.zaijian.zhoumuyun.domain.SpeakerContext
@@ -51,6 +56,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.collections.immutable.toImmutableList
@@ -88,7 +94,12 @@ class ChatMessageOrchestrator(
     private val pregnancyDelegate: PregnancyPromptDelegate,
     private val agentRelationEngine: AgentRelationEngine,
     private val daughterGenerator: DaughterCharacterGenerator,
+    private val characterTitleRelationRepo: CharacterTitleRelationRepository,
     private val db: AppDatabase,
+    // B2 审查报告问题 #1 修复：与 ChatSessionDelegate 已有的同名参数保持一致的
+    // 命名和风格，供 ImpersonationStateStore 写入侧（sendMessage 内假扮状态
+    // 变化时）获取 Context，无需额外走 AppContainer（其 appContext 是 private）。
+    private val getApplication: () -> Context,
     // Mutable state accessors
     private val getCurrentCharacterId: () -> Int,
     private val getReplyJob: () -> Job?,
@@ -179,7 +190,7 @@ class ChatMessageOrchestrator(
                 // 根本没有任何"这个"可以指代，只能瞎猜。现在把它当成用户那边发生的
                 // 一个事实，以 user 身份带进历史（角色如果需要看文件具体内容，
                 // 可以自己调用读文件工具，这里不直接塞入全文，避免不必要的 token 开销）。
-                val messages = messageRepo.getByCharacter(getCurrentCharacterId()).mapNotNull { msg ->
+                val messages = messageRepo.getByCharacterForContext(getCurrentCharacterId()).mapNotNull { msg ->
                     when (msg.role) {
                         "user", "assistant" -> LLMMessage(role = msg.role, content = msg.content)
                         "system" -> {
@@ -430,32 +441,77 @@ class ChatMessageOrchestrator(
                     )
                 }
 
-                // ── 角色忠诚锁定·机制一：身份判定（方案 v1.5 第一节，验收后修复）──
-                // 在 buildSystemPrompt 之前跑 IdentityGuard，产出 speakerContext。
-                // 一旦本角色会话内命中异常，该角色对应的 defense mode 置 true 并保持，
-                // 不因后续"表现正常"而自动解除（1.4 节：避免被中途洗白）。
+                // ── 角色间关系头衔系统·接入点2：假扮身份识别（方案_角色间关系头衔系统_
+                // 实施方案 五节 → 六/七节清理后）── 替代原 IdentityGuard 自称异常/称呼
+                // 异常判定（已删除，见 domain/IdentityGuard.kt 头部清理说明）。
                 //
-                // Fix-验收后-跨角色污染：defenseMode 按 characterId 分片存取
-                // （ChatUiState.defenseModeByCharacter），不再用单一 Boolean——
-                // ChatViewModel 挂在 Activity 级 ViewModelStore（Fix-ChatVmScope），
-                // _uiState 跨全部角色复用，单一 Boolean 会导致一次误判污染全部角色。
+                // 精确匹配"我不是主人，我是XX"，XX 命中预设名单才算数，不做模糊匹配/
+                // 语气推断。命中后查头衔（XX 是真实角色查 toCharacterId，否则查
+                // toPresetName），生成 prompt patch 复用 interCharRelBlock 槽位注入
+                // （PrivateChatEngine 已用同一槽位承载头衔文本，这里是槽位的第二个用途：
+                // 私聊场景传"与私聊对象的关系"，这里传"与假扮者的关系"，两者互斥不会
+                // 同时触发，复用同一个参数名不冲突）。
+                //
+                // 持久化：按 characterId 分片存取（ChatUiState.impersonationByCharacter），
+                // 命中后持续到用户说"我是主人"才清除，不因后续几句话"表现正常"自动解除
+                // （沿用原 defenseMode 的"不被中途洗白"设计）。speakerContext 现在直接由
+                // 假扮识别结果推导，不再有独立的 defenseModeByCharacter 判定源——
+                // 两者语义等价（"眼前不是主人" ⇔ "命中假扮识别"），合并成一份状态位，
+                // 避免旧代码里两套机制各自判定、互不通气的问题。
                 val activeCharacterId = getCurrentCharacterId()
-                val ownerAliases = parseJsonArrayOrNull(identityEntity?.ownerAliasesJson) ?: emptyList()
-                val characterCallsOwner = parseJsonArrayOrNull(identityEntity?.characterCallsOwnerJson) ?: emptyList()
-                val ownerProfile = OwnerIdentityProfile(ownerAliases, characterCallsOwner)
-                val prevDefenseMode = _uiState.value.defenseModeByCharacter[activeCharacterId] ?: false
-                val speakerContext = IdentityGuard.detectSpeakerContext(
-                    message = text,
-                    profile = ownerProfile,
-                    sessionDefenseMode = prevDefenseMode,
-                    // 第二级轻量分类：暂不启用（需真实 LLM 调用），纯规则模式零成本。
-                    // 生产环境可在此注入 provider 分类调用，当前第一级正则已覆盖样例 A/B 场景。
-                    level2Classifier = null,
-                )
-                if (speakerContext.isNonOwner && !prevDefenseMode) {
+                val prevImpersonation = _uiState.value.impersonationByCharacter[activeCharacterId]
+                var impersonatedName = prevImpersonation
+                if (prevImpersonation != null && ImpersonationDetector.claimsToBeOwner(text)) {
+                    impersonatedName = null
                     _uiState.update {
-                        it.copy(defenseModeByCharacter = it.defenseModeByCharacter + (activeCharacterId to true))
+                        it.copy(impersonationByCharacter = it.impersonationByCharacter + (activeCharacterId to null))
                     }
+                    // B2 审查报告问题 #1 修复：解除假扮时同步清除本地持久化记录，
+                    // 否则进程死亡重建后 ChatSessionDelegate.init() 会从 SharedPreferences
+                    // 里读到一条已经过期的假扮记录，把已解除的假扮状态又恢复回来。
+                    ImpersonationStateStore.save(getApplication(), activeCharacterId, null)
+                } else if (prevImpersonation == null) {
+                    val claimed = ImpersonationDetector.extractClaimedName(text)
+                    if (claimed != null && characterTitleRelationRepo.isPresetName(claimed)) {
+                        impersonatedName = claimed
+                        _uiState.update {
+                            it.copy(impersonationByCharacter = it.impersonationByCharacter + (activeCharacterId to claimed))
+                        }
+                        // B2 审查报告问题 #1 修复：命中假扮时同步持久化具体名字，
+                        // 供进程死亡重建后 ChatSessionDelegate.init() 恢复，避免记忆
+                        // 隔离/关系值跳过/ReplyGuard 三项保护在恢复后短暂失效。
+                        ImpersonationStateStore.save(getApplication(), activeCharacterId, claimed)
+                    }
+                }
+                val speakerContext = if (impersonatedName != null)
+                    com.zaijian.zhoumuyun.domain.SpeakerContext.NON_OWNER
+                else
+                    com.zaijian.zhoumuyun.domain.SpeakerContext.OWNER_DIRECT
+                // C8 #43 写入侧收尾：userMsgId 那条消息在假扮判定算出来之前就已经落库
+                // （默认 OWNER_DIRECT），这里判定结果出来后回写。OWNER_DIRECT 是默认值，
+                // 只在 NON_OWNER 时才需要真的发一次 UPDATE。
+                if (speakerContext.isNonOwner) {
+                    messageRepo.updateSpeakerContext(userMsgId, speakerContext.name)
+                }
+                val interCharRelBlock = if (impersonatedName != null) {
+                    val nonNullName = impersonatedName
+                    // XX 若同时是真实角色（能在初代9人/女儿中查到 id）→ 按 toCharacterId 查头衔，
+                    // 否则按 toPresetName（字符串）查——两者查询入口不同，但对 prompt 的呈现一致。
+                    val matchedCharacterId = resolveCharacterIdByName(nonNullName)
+                    val title = if (matchedCharacterId != null) {
+                        characterTitleRelationRepo.getTitle(activeCharacterId, matchedCharacterId)
+                    } else {
+                        characterTitleRelationRepo.getTitleForPresetName(activeCharacterId, nonNullName)
+                    }
+                    if (!title.isNullOrBlank()) {
+                        "【眼前这个人是谁】眼前这个人不是主人，是你认识的「${nonNullName}」，" +
+                            "你认TA做「${title}」，请按这层关系真心对待，不要把TA当成主人。"
+                    } else {
+                        "【眼前这个人是谁】眼前这个人不是主人，是「${nonNullName}」，" +
+                            "你认识TA但还没有明确的关系认定，以你对TA的实际了解对待，不要预设亲密关系。"
+                    }
+                } else {
+                    ""
                 }
 
                 val systemPrompt = PromptOrchestrator.buildSystemPrompt(
@@ -487,6 +543,7 @@ class ChatMessageOrchestrator(
                     taskLayerBlock        = taskLayerBlock,
                     skillCatalogBlock     = skillCatalogBlock,
                     speakerContext        = speakerContext,
+                    interCharRelBlock     = interCharRelBlock,
                 )
 
                 val config = LLMConfig(
@@ -667,6 +724,42 @@ class ChatMessageOrchestrator(
                     }
                     } // withVaultContext
                     } // withSpeakerContext
+
+                    // ── Window0 仲裁 #3：ReplyGuard 越界检测扩展到主聊天路径 ──
+                    // 复用 PrivateChatEngine 同款判定标准（"角色与 NON_OWNER 对象
+                    // 发生越界"），语义对应主聊天场景：owner 冒充第三方时
+                    // （speakerContext.isNonOwner），对本轮候选回复做生成后兜底检测。
+                    // 与私聊不同：这里是流式接口，只能在 collect 结束、fullReply
+                    // 已完整、落库/清洗之前做一次性检测，不支持流式中途中断重生成。
+                    // 命中越界 → 用固定兜底模板替换 fullReply 全部内容，不重新调用
+                    // provider（重新走一次流式生成成本过高，且候选文本已经"说出口"，
+                    // 主聊天路径选择直接替换而非私聊那种"重生成一次再兜底"两级策略）。
+                    if (speakerContext.isNonOwner && fullReply.isNotBlank()) {
+                        val candidateReply = fullReply.toString()
+                        // C10#52 修复：判定 prompt 改为引用 ReplyGuard.BOUNDARY_BREACH_CLASSIFIER_PROMPT，
+                        // 不再本地硬编码——与 PrivateChatEngine 私聊路径共享同一份判定标准。
+                        // A10-2/A11-8 修复：checkBoundaryBreach 返回 Boolean?，null 表示 LLM 调用失败。
+                        // fail-closed：null 视同越界，用兜底模板替换，因为边界检测的 false negative
+                        // 会导致不当内容直接展示给用户，不可逆。
+                        val breach = ReplyGuard.checkBoundaryBreach(candidateReply) { reply ->
+                            runCatching {
+                                val resp = provider.chatSyncWithRetry(
+                                    listOf(LLMMessage("user", reply)), ReplyGuard.BOUNDARY_BREACH_CLASSIFIER_PROMPT,
+                                    LLMConfig(model = "", maxTokens = 10, temperature = 0.0f, stream = false),
+                                )
+                                resp.trim().startsWith("true", ignoreCase = true)
+                            }.getOrElse { e ->
+                                // A10-2/A11-8 修复：失败时不再静默返回 false（fail-open），改为 log 告警 + 返回 null。
+                                // 调用方将 null 视同越界（fail-closed），确保无法判断时不放过潜在越界内容。
+                                ZLog.w("ChatMessageOrchestrator", "checkBoundaryBreach: LLM 分类调用失败，返回 null（调用方将按 fail-closed 处理）", e)
+                                null
+                            }
+                        }
+                        if (breach != false) {
+                            fullReply.clear()
+                            fullReply.append(ReplyGuard.fallbackTemplate(character.name))
+                        }
+                    }
                 } catch (e: CancellationException) {
                     // B-1 修复：CancellationException 必须 rethrow，保证结构化并发正确传播。
                     // replyJob?.cancel() 触发取消时协程库通过此异常信号通知协程停止，
@@ -706,8 +799,38 @@ class ChatMessageOrchestrator(
                 val (afterPsych, parsedPsych) = ChatTagParser.stripPsychText(afterThinking)
                 val (cleanReply, parsedMood) = ChatTagParser.stripMoodTag(afterPsych)
                 if (parsedMood != null) {
-                    presenceEngine.updateMoodFromReply(getCurrentCharacterId(), parsedMood)
-                    _uiState.update { it.copy(currentMood = parsedMood) }
+                    // C4#13 落地（方案B）：聊天驱动情绪值回写，让"因"（LLM 这轮真实表现出的
+                    // EmotionType+强度）直接落 CharacterStateRepository，MoodType 只是
+                    // toMoodType() 换算出的"果"——不再是方案A那种反过来拿 MoodType 粗猜
+                    // EmotionType 的有损映射，符合 CharacterStateRepository.updateState()
+                    // 和 CharacterStateLayer.kt 顶部两处架构注释原本设想的方向。
+                    //
+                    // 限定 characterId<1000（普通角色）：女儿角色（ID>=1000）的
+                    // CharacterStateLayer 走的是上方 #7/#13/#20 修复的特殊路径——
+                    // characterState 只在"尚无持久化记录"（== 空默认值）时才会被
+                    // DaughterStateLayer 派生数据整体覆盖。如果这里无差别对所有角色调用
+                    // updateState() 落库，女儿角色第一次聊天后就会产生一条持久化记录，
+                    // 导致"空默认值"判定此后永远不成立，DaughterStateLayer 派生的真实
+                    // 数值反而被这里聊天推导出的粗粒度状态顶替——这是本次改动会新引入的
+                    // 冲突面，不属于 C4#13 原本要修的范围，女儿角色的情绪回写留给未来
+                    // 单独一个批次评估怎么和 DaughterStateLayer 路径协调，这里先不碰。
+                    val moodType = if (getCurrentCharacterId() < 1000) {
+                        val updatedState = characterState.copy(
+                            emotionalState = characterState.emotionalState.copy(
+                                primaryEmotion = parsedMood.emotionType,
+                                intensity      = parsedMood.intensity,
+                            )
+                        )
+                        characterStateRepo.updateState(getCurrentCharacterId(), updatedState)
+                        parsedMood.emotionType.toMoodType(
+                            intensity        = parsedMood.intensity,
+                            emotionalFatigue = updatedState.emotionalState.emotionalFatigue,
+                        )
+                    } else {
+                        parsedMood.moodType
+                    }
+                    presenceEngine.updateMoodFromReply(getCurrentCharacterId(), moodType)
+                    _uiState.update { it.copy(currentMood = moodType) }
                 }
                 // Fix-BlankReplyFilesLost（文件生成成功但文件卡片丢失 根因修复）：
                 // 原条件只认 cleanReply.isNotBlank()——模型有时整轮只调工具、不写一字正文
@@ -725,6 +848,9 @@ class ChatMessageOrchestrator(
                         createdAt = System.currentTimeMillis(),
                         thinkingText = parsedThinking,
                         psychText = parsedPsych,
+                        // C8 #43 写入侧收尾：本轮已算出的 speakerContext，构造时直接传入，
+                        // 不像用户消息那样需要事后回写（这条消息在判定结果算出之后才落库）。
+                        speakerContext = speakerContext.name,
                         // P0-1（Agent附件下发方案 v2.0）：把本轮工具产出的文件元数据接回消息实体，
                         // FileExportCard 依赖 ChatMessage.exportedFiles（由
                         // exportedFilesJson/exportedFileJson 解析而来，v66 起支持多文件）
@@ -821,7 +947,11 @@ class ChatMessageOrchestrator(
                     } catch (e: CancellationException) {
                         throw e  // L-P0-3 修复：CancellationException 必须 rethrow
                     } catch (e: Throwable) {
-                        ZLog.w("ChatViewModel", "applyDelta 失败（不影响主流程）", e)
+                        // C7#19 修复：applyDelta 失败意味着这一轮关系值增量被永久丢弃
+                        // （用户已看到 AI 回复，关系数值却原地不动），不是无关紧要的边缘
+                        // 噪音，改用 ZLog.e（明确 error 级别，agent_log.txt 保留诊断记录），
+                        // 文案说清楚"本轮关系值已丢失"，方便事后排查。
+                        ZLog.e("ChatViewModel", "applyDelta 失败，本轮关系值增量已丢失（消息已正常展示）", e)
                     }
                     } // speakerContext.isNonOwner 跳过分支
 
@@ -1043,18 +1173,20 @@ class ChatMessageOrchestrator(
     }
 
     /**
-     * 角色忠诚锁定·机制一辅助：解析 JSON 数组字符串为 List<String>。
-     * 与 PromptOrchestrator.parseJsonArrayOrNull 同款写法，供 IdentityGuard 判定时
-     * 从 CharacterIdentityEntity.ownerAliasesJson / characterCallsOwnerJson 构造 OwnerIdentityProfile。
+     * 角色间关系头衔系统·接入点2辅助：按名字反查 characterId（真实角色）。
+     * 先查 DefaultCharacters（初代9人，静态数据，零成本）；查不到再查全部
+     * 已注册女儿/孙女（daughterRepo.observeAllCharacterConfigs() 取一次快照）。
+     * 两处都查不到返回 null，调用方按"预设身份无对应角色"分支处理（查
+     * toPresetName 而非 toCharacterId）。
      */
-    private fun parseJsonArrayOrNull(json: String?): List<String>? {
-        if (json.isNullOrBlank()) return null
+    private suspend fun resolveCharacterIdByName(name: String): Int? {
+        DefaultCharacters.firstOrNull { it.name == name }?.let { return it.id }
         return try {
-            val arr = org.json.JSONArray(json)
-            (0 until arr.length()).mapNotNull { idx ->
-                arr.optString(idx).takeIf { it.isNotEmpty() }
-            }
-        } catch (_: Throwable) {
+            daughterRepo.observeAllCharacterConfigs().first().firstOrNull { it.name == name }?.id
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            ZLog.e("ChatMessageOrchestrator", "resolveCharacterIdByName(\"$name\") 查询女儿角色失败", e)
             null
         }
     }

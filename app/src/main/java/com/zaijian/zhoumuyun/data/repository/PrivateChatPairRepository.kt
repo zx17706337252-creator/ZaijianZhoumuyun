@@ -39,6 +39,11 @@ class PrivateChatPairRepository(private val dao: PrivateChatPairDao) {
     suspend fun updateCharacterDisconnectState(pairId: String, state: String) =
         dao.updateCharacterDisconnectState(pairId, state)
 
+    // C8 #45：角色自主下线后重置为 ACTIVE（仅 owner 手动操作可触发，6.4 节原设计
+    // 就要求"仅 owner 手动可恢复"，此前一直缺 UI/ViewModel 入口，pair 一旦下线永久卡死）
+    suspend fun resetCharacterDisconnectState(pairId: String) =
+        dao.updateCharacterDisconnectState(pairId, "ACTIVE")
+
     companion object {
         /**
          * 生成规范化 pairId：两个 characterId 按数值排序后拼接，如 "1_7"。

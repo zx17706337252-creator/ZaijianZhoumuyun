@@ -590,6 +590,13 @@ class FileReadTool(private val context: Context) : AgentTool {
                 contentBuilder.appendLine("── 文本文件内容（${textEntries.size} 个）──")
 
                 var totalChars = contentBuilder.length
+                // 问题33修复：单个条目读失败时不能只在正文里悄悄写一句带过——
+                // 之前的做法是把"（无法读取该文件内容）"混在一堆正常内容中间，
+                // LLM/用户很容易看漏，误以为拿到的是完整结果。这里改为显式计数，
+                // 最后在结果最前面加一句醒目汇总，并在失败数达到半数以上时把
+                // success 置为 false，让调用方能明确判断"这次读取不完整"。
+                var failedCount = 0
+                val failedNames = mutableListOf<String>()
 
                 for (entry in textEntries) {
                     if (totalChars >= MAX_CHARS) break
@@ -620,15 +627,31 @@ class FileReadTool(private val context: Context) : AgentTool {
                         throw e
                     } catch (_: Throwable) {
                         contentBuilder.appendLine("（无法读取该文件内容）")
+                        failedCount++
+                        failedNames.add(entry.name)
                     }
                 }
 
                 // zip.close() 已由 .use{} 自动执行
 
+                // 失败数达到半数（含全部失败）算这次读取不可信，success=false；
+                // 否则仍算成功，但在正文最前面插入醒目汇总，避免失败信息被
+                // 淹没在一堆正常内容中间导致 LLM/用户看漏。
+                val failureNotice = if (failedCount > 0) {
+                    val nameList = failedNames.take(5).joinToString("、") +
+                        if (failedNames.size > 5) " 等" else ""
+                    "⚠️ ZIP 中有 $failedCount / ${textEntries.size} 个文件读取失败（$nameList），" +
+                        "以下内容不完整。\n\n"
+                } else {
+                    ""
+                }
+                val majorityFailed = textEntries.isNotEmpty() && failedCount * 2 >= textEntries.size
+
                 ToolResult(
                     toolName = name,
-                    success  = true,
-                    content  = contentBuilder.toString().take(MAX_CHARS),
+                    success  = !majorityFailed,
+                    content  = (failureNotice + contentBuilder.toString()).take(MAX_CHARS),
+                    error    = if (majorityFailed) "zip_entries_partial_failed" else null,
                     userHint = "正在分析 ZIP 文件内容…",
                 )
                 }  // .use { zip -> }

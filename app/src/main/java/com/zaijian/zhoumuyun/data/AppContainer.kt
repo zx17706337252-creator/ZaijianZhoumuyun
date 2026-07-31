@@ -29,6 +29,7 @@ import com.zaijian.zhoumuyun.data.repository.MenstrualCycleRepository
 import com.zaijian.zhoumuyun.data.repository.MessageRepository
 import com.zaijian.zhoumuyun.data.repository.NotificationRepository
 import com.zaijian.zhoumuyun.data.repository.PregnancyRepository
+import com.zaijian.zhoumuyun.data.repository.CharacterTitleRelationRepository
 import com.zaijian.zhoumuyun.data.repository.PrivateChatPairRepository
 import com.zaijian.zhoumuyun.data.repository.PrivateChatMessageRepository
 import com.zaijian.zhoumuyun.data.repository.PrivateChatSessionRepository
@@ -196,7 +197,9 @@ class AppContainer private constructor(context: Context) {
     // 统一为带 milestoneDao 的版本（审计报告 Phase 3 决策 2：
     // 一对一聊天以后也会记录关系里程碑，是一次真实的功能变化）。
     val relationshipEngine: RelationshipEngine = RelationshipEngine(
-        db, db.relationshipDao(), eventRepo, db.relationshipMilestoneDao()
+        db, db.relationshipDao(), eventRepo, db.relationshipMilestoneDao(),
+        // A9-4 修复：传入 memoryEngine，关系里程碑记录后传播到 PERSONAL 域长期记忆。
+        memoryEngine,
     )
 
     // S8-窗口01 修复：CharacterDetailScreen.kt（HeroCard 迷你版 BondRibbon）与
@@ -263,6 +266,7 @@ class AppContainer private constructor(context: Context) {
         relationshipEngine   = relationshipEngine,
         aiJudge              = fertileWindowConsentJudge,
         consentJudge         = userConsentIntentJudge,
+        pressureDataStore    = pregnancyPressureDataStore,
     )
 
     fun createPregnancyTriggerManagerForRoundtable(
@@ -273,6 +277,7 @@ class AppContainer private constructor(context: Context) {
         pregnancyRepository  = pregnancyRepo,
         cycleRepository      = cycleRepository,
         stateRepository      = stateRepository,
+        pressureDataStore    = pregnancyPressureDataStore,
     )
 
     fun createPregnancyTriggerManagerMinimal(
@@ -283,6 +288,7 @@ class AppContainer private constructor(context: Context) {
         pregnancyRepository  = pregnancyRepo,
         cycleRepository      = cycleRepository,
         stateRepository      = stateRepository,
+        pressureDataStore    = pregnancyPressureDataStore,
     )
 
     // 报告第5条：PresenceEngine 收敛。原先由 ZaijianApp.onCreate() 构造并写入
@@ -477,6 +483,10 @@ class AppContainer private constructor(context: Context) {
     val privateChatSessionRepo: PrivateChatSessionRepository =
         PrivateChatSessionRepository(db.privateChatSessionDao())
 
+    // ── 角色间关系头衔系统（方案_角色间关系头衔系统_实施方案）────────────
+    val characterTitleRelationRepo: CharacterTitleRelationRepository =
+        CharacterTitleRelationRepository(db.characterTitleRelationDao(), db.impersonationPresetDao())
+
     // Agent 结构化存储（方案_Agent结构化存储_最终版）：与上方私聊三 repo 同款薄封装，
     // 容器唯一持有源，供 ZaijianApp 静态占位注册与 ChatToolRegistrar 角色覆盖注册两处引用。
     val agentStoreRepo: AgentStoreRepository =
@@ -561,6 +571,7 @@ class AppContainer private constructor(context: Context) {
         identityRepo         = identityRepo,
         characterStateRepo   = characterStateRepo,
         daughterCharacterRepo = daughterCharacterRepo,
+        titleRelationRepo     = characterTitleRelationRepo,
         providerFn           = { ProviderManager.instance.activeProvider },
         appContext            = appContext,
     )
@@ -591,6 +602,15 @@ class AppContainer private constructor(context: Context) {
         private set
 
     @Volatile var competitionRoundManager: CompetitionRoundManager? = null
+        private set
+
+    // 问题35修复：competitionEngine 为 null 有两种完全不同的原因——
+    // ①用户尚未配置任何 Provider/Key（activeProvider 为 null，属正常未装配）
+    // ②用户已配置 Key，但装配过程本身抛异常（构造函数出错等）。
+    // 原先两者对调用方（CompetitionViewModel）表现完全一样，导致②的场景下
+    // UI 误报"请先配置 API Key"，用户配了 Key 却看到这提示会不知所措。
+    // 这里补一个显式标志区分两种情况，供 UI 展示更准确的提示。
+    @Volatile var competitionEngineAssemblyFailed: Boolean = false
         private set
 
     private val competitionBuildMutex = Mutex()
@@ -672,6 +692,7 @@ class AppContainer private constructor(context: Context) {
                 )
                 competitionEngine = newCompetitionEngine
                 competitionRoundManager = newCompetitionRoundManager
+                competitionEngineAssemblyFailed = false  // 成功后清除失败标志
                 ZLog.d("AppContainer", "竞争引擎装配完成")
             } catch (e: kotlinx.coroutines.CancellationException) {
                 // 必须重新抛出：结构化并发约定要求取消信号不能被吞掉
@@ -679,9 +700,10 @@ class AppContainer private constructor(context: Context) {
                 throw e
             } catch (e: Throwable) {
                 ZLog.e("AppContainer", "竞争引擎装配失败，competitionEngine/competitionRoundManager 保持 null", e)
+                competitionEngineAssemblyFailed = true
                 // 不重新抛出：装配失败不应该导致 App 启动流程或 Provider 配置
                 // 变更回调所在的协程崩溃。competitionEngine 保持 null，下次
-                // onProviderConfigChanged 触发时会自然重试。
+                // onProviderConfigChanged 触发时会自然重试（重试成功会在上面清除标志）。
             }
         }
     }
@@ -709,5 +731,15 @@ class AppContainer private constructor(context: Context) {
          * 崩溃并给出清晰堆栈，而不是在后面某个随机调用点因 NPE 崩溃。
          */
         val instance: AppContainer get() = _instance!!
+
+        /**
+         * B3审查序号13修复：instance 的降级版。FCM 消息回调等系统入口理论上
+         * 可能早于 ZaijianApp.onCreate() 触发（冷启动竞态），这类调用点要的是
+         * "取不到就跳过这次"的优雅降级，而非 instance 那种"崩给你看"的设计
+         * 意图——两者场景不同，不应该共用同一个 API 然后在外面套 try/catch
+         * 硬吞掉本该触发崩溃的启动期 bug。ViewModel 等常规调用点应继续用
+         * instance，不要改用这个。
+         */
+        fun instanceOrNull(): AppContainer? = _instance
     }
 }

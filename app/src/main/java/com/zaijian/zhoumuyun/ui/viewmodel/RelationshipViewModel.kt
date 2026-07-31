@@ -6,6 +6,7 @@ import com.zaijian.zhoumuyun.data.AppContainer
 import com.zaijian.zhoumuyun.data.db.entity.RelationshipEntity
 import com.zaijian.zhoumuyun.data.db.entity.RelationshipMilestoneEntity
 import com.zaijian.zhoumuyun.data.db.entity.WorldEventEntity
+import com.zaijian.zhoumuyun.data.repository.RelQueryResult
 import kotlinx.coroutines.flow.Flow
 
 // ═══════════════════════════════════════════════════════════════
@@ -36,23 +37,24 @@ class RelationshipViewModel(application: Application) : AndroidViewModel(applica
 
     /**
      * 取 actorId→targetId 之间最近的关系变化事件（RELATIONSHIP_CHANGED 类型）。
-     * 失败时由 Repo 兜底为空列表。
+     * C7#21 修复：返回 [RelQueryResult]，"无数据"和"查询失败"两种情形不再被
+     * Repo 强行合并成同一个空列表，交给 UI 层区分展示。
      */
     suspend fun getRecentRelationshipEvents(
         actorId: String,
         targetId: String,
         queryLimit: Int = 8,
-    ): List<WorldEventEntity> =
+    ): RelQueryResult<List<WorldEventEntity>> =
         relationshipReadRepo.getRecentRelationshipEvents(actorId, targetId, queryLimit)
 
     /**
      * 取 fromId→toId 最近的关系转折点（Milestone）。
-     * 失败时由 Repo 兜底为空列表。
+     * C7#21 修复：同上，返回 [RelQueryResult]。
      */
     suspend fun getRecentMilestones(
         fromId: String,
         toId: String,
         limit: Int = 10,
-    ): List<RelationshipMilestoneEntity> =
+    ): RelQueryResult<List<RelationshipMilestoneEntity>> =
         relationshipReadRepo.getRecentMilestones(fromId, toId, limit)
 }

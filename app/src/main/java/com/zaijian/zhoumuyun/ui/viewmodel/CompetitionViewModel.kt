@@ -91,6 +91,16 @@ class CompetitionViewModel(
     private val competitionRoundManager: CompetitionRoundManager?
         get() = AppContainer.instance.competitionRoundManager
 
+    // 问题35修复：manager 为 null 时，区分"用户还没配置 Key（正常未装配）"
+    // 和"配置了 Key 但装配过程本身出错"，避免后一种情况误报"请先配置 API Key"
+    // 让已经配好 Key 的用户看到文不对题的提示、不知道该怎么办。
+    private fun managerUnavailableMessage(): String =
+        if (AppContainer.instance.competitionEngineAssemblyFailed) {
+            "竞争系统初始化失败，请稍后重试或重启 App"
+        } else {
+            "请先配置 API Key"
+        }
+
     // ── domain 初始化 ────────────────────────────────────────────
 
     private val restoredDomain: String = savedStateHandle.get<String>(KEY_DOMAIN) ?: ""
@@ -272,7 +282,7 @@ class CompetitionViewModel(
 
         val manager = competitionRoundManager
         if (manager == null) {
-            _snackbarMessage.value = "请先配置 API Key"
+            _snackbarMessage.value = managerUnavailableMessage()
             return
         }
 
@@ -325,7 +335,7 @@ class CompetitionViewModel(
     fun retryJudging(roundId: String) {
         val manager = competitionRoundManager
         if (manager == null) {
-            _snackbarMessage.value = "请先配置 API Key"
+            _snackbarMessage.value = managerUnavailableMessage()
             return
         }
         // P2-9 修复：防重入——_isLoading 为 true 时跳过，避免用户快速连点
@@ -360,7 +370,7 @@ class CompetitionViewModel(
     fun retryCollecting(roundId: String) {
         val manager = competitionRoundManager
         if (manager == null) {
-            _snackbarMessage.value = "请先配置 API Key"
+            _snackbarMessage.value = managerUnavailableMessage()
             return
         }
         if (_isLoading.value) return
@@ -419,7 +429,7 @@ class CompetitionViewModel(
     fun cancelRound(roundId: String) {
         val manager = competitionRoundManager
         if (manager == null) {
-            _snackbarMessage.value = "请先配置 API Key"
+            _snackbarMessage.value = managerUnavailableMessage()
             return
         }
         if (_isLoading.value) return
@@ -503,7 +513,7 @@ class CompetitionViewModel(
     ) {
         val manager = competitionRoundManager
         if (manager == null) {
-            _snackbarMessage.value = "请先配置 API Key"
+            _snackbarMessage.value = managerUnavailableMessage()
             return
         }
         // P2-9 修复：防重入

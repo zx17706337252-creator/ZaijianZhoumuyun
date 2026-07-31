@@ -12,6 +12,7 @@ import com.zaijian.zhoumuyun.data.model.toDaughterCharacterData
 import com.zaijian.zhoumuyun.data.repository.DaughterCharacterRepository
 import com.zaijian.zhoumuyun.data.repository.IdentityRepository
 import com.zaijian.zhoumuyun.data.repository.MemoryRepository
+import com.zaijian.zhoumuyun.data.repository.MenstrualCycleRepository
 import com.zaijian.zhoumuyun.data.repository.MessageRepository
 import com.zaijian.zhoumuyun.data.repository.PregnancyRepository
 import com.zaijian.zhoumuyun.domain.ChatTagParser
@@ -53,6 +54,9 @@ class ChatSessionDelegate(
     private val identityRepo: IdentityRepository,
     private val pregnancyRepo: PregnancyRepository,
     private val memoryRepo: MemoryRepository,
+    // A7-1 修复：B-6 补偿路径需要 cycleRepository 来补做第 5 步 resetAnchorToToday，
+    // 与 DaughterRegistrationHelper.onIdentityRegister 的注册步骤对齐。
+    private val cycleRepository: MenstrualCycleRepository,
     private val daughterIdAllocator: DaughterIdAllocator,
     private val db: AppDatabase,
     private val backgroundManager: ChatBackgroundManager,
@@ -140,6 +144,31 @@ class ChatSessionDelegate(
                 backgroundImageUri = null,
             ) }
 
+            // B2 审查报告问题 #1 修复：假扮状态惰性恢复。
+            // impersonationByCharacter 只存在内存里，进程被杀死重建后复位为
+            // emptyMap()——若不恢复，SpeakerContext 会短暂回退到 OWNER_DIRECT，
+            // 记忆隔离/关系值跳过/ReplyGuard 三项保护随之短暂失效，直到用户
+            // 再次说出"我不是主人，我是XX"。
+            //
+            // 用 containsKey 而非 `[characterId] == null` 判断"是否已有记录"：
+            // 用户主动解除假扮时，ChatMessageOrchestrator 会写入
+            // (characterId to null) 这一条目本身（而不是删除 key），标记"已确认
+            // 当前未假扮"，避免后续每条消息都重新跑一次 extractClaimedName 检测。
+            // 这种情况下 `[characterId]` 同样是 null，但 key 是存在的，不应该
+            // 触发恢复（否则会把用户刚解除的假扮状态又拉回来）。只有 key 完全
+            // 不存在时（本次进程内还没有为这个角色判定过），才说明是进程刚
+            // 重建，需要去 SharedPreferences 查一次。只在真正切换/首次进入时
+            // 查一次，不会每次切换角色都多打一次开销，符合惰性恢复的思路。
+            if (!_uiState.value.impersonationByCharacter.containsKey(characterId)) {
+                val restoredName = ImpersonationStateStore.load(getApplication(), characterId)
+                if (restoredName != null) {
+                    _uiState.update {
+                        it.copy(impersonationByCharacter = it.impersonationByCharacter + (characterId to restoredName))
+                    }
+                    ZLog.i("ChatSessionDelegate", "问题#1修复：characterId=$characterId 从本地持久化恢复假扮状态 impersonatedName=$restoredName")
+                }
+            }
+
             // B-6 修复：死状态2补偿——进程被杀时机恰好在 saveDaughter() 之后、
             // onIdentityRegister 回调之前，daughter_character 行有完整 JSON 但
             // daughterCharacterId 为 null。每次打开母亲角色聊天界面时检查一次，
@@ -156,24 +185,67 @@ class ChatSessionDelegate(
                         ZLog.w("ChatSessionDelegate", "B-6: 检测到死状态2（母亲=$characterId），重新执行 onIdentityRegister")
                         val daughterData = raw.toDaughterCharacterData()
                         val allocatedId = daughterIdAllocator.allocate()
-                        val identityEntity = daughterData.toCharacterIdentityEntity(allocatedId)
-                        identityRepo.upsert(identityEntity)
-                        db.agentRelationDao().insert(
-                            AgentRelationEntity(
-                                daughterId        = allocatedId,
-                                motherCharacterId = daughterData.motherCharacterId,
+
+                        // A7-3 修复：女儿注册时继承母亲 ownerAliasesJson，修正忠诚锚点
+                        // 文案中的 ownerName 称呼（否则女儿角色恒回退到"他"）。
+                        val motherOwnerAliases = try {
+                            identityRepo.getById(daughterData.motherCharacterId)?.ownerAliasesJson
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            throw e
+                        } catch (e: Throwable) {
+                            ZLog.w("ChatSessionDelegate", "B-6: 查询母亲 ownerAliasesJson 失败，女儿将使用默认空数组", e)
+                            null
+                        }
+                        val identityEntity = daughterData.toCharacterIdentityEntity(
+                            allocatedId,
+                            motherOwnerAliasesJson = motherOwnerAliases,
+                        )
+
+                        // A7-1/A7-2 修复：B-6 补偿路径此前是扁平 try-catch+日志，
+                        // 缺少第 5 步 resetAnchorToToday，且中间步骤失败时已写入的行
+                        // 不会被回滚。改为与 DaughterRegistrationHelper.onIdentityRegister
+                        // 完全相同的 step 计数 + 反序回滚模式，并补上第 5 步。
+                        var step = 0  // 1=identity已写  2=agent_relation已写  3=daughter_character已回填
+                        try {
+                            identityRepo.upsert(identityEntity)
+                            step = 1
+                            db.agentRelationDao().insert(
+                                AgentRelationEntity(
+                                    daughterId        = allocatedId,
+                                    motherCharacterId = daughterData.motherCharacterId,
+                                )
                             )
-                        )
-                        daughterRepo.updateDaughterCharacterId(
-                            motherCharacterId   = characterId,
-                            daughterCharacterId = allocatedId,
-                        )
-                        ZLog.i("ChatSessionDelegate", "B-6: 补偿注册完成，daughterId=$allocatedId")
+                            step = 2
+                            daughterRepo.updateDaughterCharacterId(
+                                motherCharacterId   = characterId,
+                                daughterCharacterId = allocatedId,
+                            )
+                            step = 3
+                            // A7-1 修复：第 5 步——初始化周期锚点，与 DaughterRegistrationHelper 对齐。
+                            // 用 resetAnchorToToday 而非 initIfAbsent：后者只遍历写死的母亲映射表，
+                            // 不认识动态分配的女儿 characterId。
+                            cycleRepository.resetAnchorToToday(allocatedId)
+                            ZLog.i("ChatSessionDelegate", "B-6: 补偿注册完成，daughterId=$allocatedId")
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            if (step >= 3) runCatching {
+                                daughterRepo.clearDaughterCharacterIdForRollback(daughterData.motherCharacterId, allocatedId)
+                            }
+                            if (step >= 2) runCatching { db.agentRelationDao().deleteByDaughterId(allocatedId) }
+                            if (step >= 1) runCatching { db.characterIdentityDao().deleteForRollback(allocatedId) }
+                            throw e
+                        } catch (e: Throwable) {
+                            ZLog.e("ChatSessionDelegate", "B-6: 补偿注册失败，已回滚到 step=$step", e)
+                            if (step >= 3) {
+                                daughterRepo.clearDaughterCharacterIdForRollback(daughterData.motherCharacterId, allocatedId)
+                            }
+                            if (step >= 2) db.agentRelationDao().deleteByDaughterId(allocatedId)
+                            if (step >= 1) db.characterIdentityDao().deleteForRollback(allocatedId)
+                        }
                     }
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e
                 } catch (e: Throwable) {
-                    ZLog.e("ChatSessionDelegate", "B-6: 补偿注册失败", e)
+                    ZLog.e("ChatSessionDelegate", "B-6: 死状态检测或补偿注册异常", e)
                 }
             }
         }

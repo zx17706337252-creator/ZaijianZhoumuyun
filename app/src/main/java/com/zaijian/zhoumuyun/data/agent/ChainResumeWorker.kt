@@ -96,15 +96,37 @@ class ChainResumeWorker(
             throw e
         } catch (e: Throwable) {
             ZLog.e(TAG, "ChainResumeWorker 执行失败 runId=$runId", e)
-            Result.success()
-            // 对照 WorkflowJobWorker：不返回 failure() 避免重试，异常已被 advance()
-            // 内部各 handle* 分支的 markFailed 兜底；这里的 catch 是防止 advance()
-            // 本身抛出未预期异常（如 claimRun/releaseLock 的 DB 异常）击穿 doWork()。
+            // C7-#26 修复：原逻辑直接返回 Result.success()，注释声称异常已被
+            // advance() 内部各 handle* 分支的 markFailed 兜底——但这里能捕获到的
+            // 恰恰是 advance() 内部兜底覆盖不到的场景（claimRun/releaseLock 等
+            // DB 层异常直接从 advance() 逃逸），此时 run 状态仍是 WAITING/RUNNING，
+            // 返回 success 会让 run 永久卡死且不再被任何 Worker 触碰。
+            //
+            // 区分瞬时故障（DB 短暂异常，值得重试）和永久故障（重试次数耗尽后放弃）：
+            // 参照本项目 ScheduledJobWorker/CiCdPipelineWorker 的既有模式，用
+            // runAttemptCount 限制重试上限，避免 markFailed 本身持续失败（如 DB
+            // 已损坏/磁盘写满）时无限 retry 空耗电且永远不收敛。
+            try {
+                chainRunRepository.markFailed(runId, "ChainResumeWorker 执行异常: ${e.message}")
+                Result.success()
+            } catch (markFailedError: Throwable) {
+                ZLog.e(TAG, "ChainResumeWorker markFailed 兜底也失败 runId=$runId，第 $runAttemptCount 次尝试", markFailedError)
+                if (runAttemptCount < MAX_RETRY_COUNT) {
+                    Result.retry()
+                } else {
+                    // 重试耗尽仍无法写入 FAILED 状态：DB 层大概率已不可用，继续 retry
+                    // 没有意义。此时 run 会停留在 WAITING/RUNNING 且没有 WorkSpec 再唤醒它，
+                    // 需要人工介入排查 DB 状态；返回 failure 而非 success，
+                    // 避免掩盖"这次真的没能收敛"这一事实。
+                    Result.failure()
+                }
+            }
         }
     }
 
     companion object {
         const val KEY_RUN_ID = "runId"
         private const val TAG = "ChainResumeWorker"
+        private const val MAX_RETRY_COUNT = 3
     }
 }

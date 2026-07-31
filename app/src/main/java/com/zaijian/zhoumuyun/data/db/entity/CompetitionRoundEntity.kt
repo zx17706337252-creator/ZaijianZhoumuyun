@@ -58,4 +58,10 @@ data class CompetitionRoundEntity(
 
     /** COMPLETED 时写入，其他状态为 null */
     val completedAt: Long? = null,
+
+    // A8-1 修复: 裁判圆桌播报跳过标记。postJudgeResultToRoundtable 在 runJudging
+    // 阶段调用，当 findMostRecentRoundtableIdForSpeaker 返回 null（裁判从未在任何
+    // 圆桌发言）时，播报被静默跳过。此处落 true，供 CompetitionScreen 在
+    // STATUS_COMPLETED 展示区读取并提示用户"裁判暂无关联圆桌，评审结果仅在此页展示"。
+    val judgeRoundtableBroadcastSkipped: Boolean = false,
 )

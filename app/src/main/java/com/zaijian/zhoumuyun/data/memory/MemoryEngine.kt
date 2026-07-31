@@ -124,6 +124,43 @@ class MemoryEngine(
     }
 
     // ─────────────────────────────────────────────────────────
+    //  A9-4 修复：关系里程碑 → PERSONAL 域长期记忆
+    // ─────────────────────────────────────────────────────────
+
+    /**
+     * 关系里程碑记录时，同步生成 PERSONAL domain 的 MemoryCandidate，
+     * 走与 [onTaskCompleted] / [onToolFailureExhausted] 相同的晋升管道。
+     *
+     * 触发时机：RelationshipEngine 记录关系里程碑后调用（WORSENED / REPAIRED /
+     * STAGE_TRANSITION 三种方向均触发）。
+     *
+     * @param characterId  关系对象的角色 ID（toId 解析为 Int）
+     * @param direction    里程碑方向（RelationshipMilestoneDirection.name）
+     * @param description  里程碑描述文案
+     * @param sourceEventId 关联的 WorldEvent ID（可空）
+     */
+    suspend fun onRelationshipMilestone(
+        characterId: Int,
+        direction: String,
+        description: String,
+        sourceEventId: String?,
+    ) = withContext(Dispatchers.IO) {
+        val now = System.currentTimeMillis()
+        val candidate = MemoryCandidateEntity(
+            id            = UUID.randomUUID().toString(),
+            characterId   = characterId,
+            sourceEventId = sourceEventId ?: UUID.randomUUID().toString(),
+            content       = "关系转折：$description（$direction）",
+            score         = 4,            // 关系里程碑，进入长期记忆（importance=4 < 5，非 isCore）
+            domain        = MemoryDomain.PERSONAL.name,
+            projectId     = null,
+            createdAt     = now,
+        )
+        memoryRepo.insertCandidate(candidate)
+        processCandidate(candidate)
+    }
+
+    // ─────────────────────────────────────────────────────────
     //  候选晋升：Candidate → Memory（或丢弃）
     // ─────────────────────────────────────────────────────────
 

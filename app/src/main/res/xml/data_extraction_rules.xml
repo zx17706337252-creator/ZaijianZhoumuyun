@@ -1,11 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
     审查项 3.10 配套规则（Android 12 / API 31+）：allowBackup 已改为 true 以支持换设备
-    数据保留，但以下两个 EncryptedSharedPreferences 文件必须排除：
+    数据保留，但以下三个 EncryptedSharedPreferences 文件必须排除：
     - zaijian_github_config（GithubConfigDataStore，含 owner/repo/token）
     - zaijian_email_account（EmailAccountStore，含邮箱账号与授权码）
-    这两个文件的加密密钥由 Android Keystore 持有，Keystore 密钥本身不会随备份
-    迁移到新设备/新安装，备份这两个文件不仅无法在目标设备解密，还会在恢复后
+    - zaijian_api_keys（ProviderManager，含 LLM API Key；B6 审查报告 序号1 补充）
+    这三个文件的加密密钥由 Android Keystore 持有，Keystore 密钥本身不会随备份
+    迁移到新设备/新安装，备份这些文件不仅无法在目标设备解密，还会在恢复后
     读取时抛出异常。cloud-backup 与 device-transfer 都需要排除，因为设备到设备
     迁移同样跨 Keystore 实例。
 -->
@@ -13,9 +14,11 @@
     <cloud-backup>
         <exclude domain="sharedpref" path="zaijian_github_config.xml"/>
         <exclude domain="sharedpref" path="zaijian_email_account.xml"/>
+        <exclude domain="sharedpref" path="zaijian_api_keys.xml"/>
     </cloud-backup>
     <device-transfer>
         <exclude domain="sharedpref" path="zaijian_github_config.xml"/>
         <exclude domain="sharedpref" path="zaijian_email_account.xml"/>
+        <exclude domain="sharedpref" path="zaijian_api_keys.xml"/>
     </device-transfer>
 </data-extraction-rules>

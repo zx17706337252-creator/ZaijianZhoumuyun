@@ -1,6 +1,5 @@
 package com.zaijian.zhoumuyun.data.agent
 
-import android.app.NotificationManager
 import android.content.Context
 import androidx.core.app.NotificationCompat
 import androidx.work.CoroutineWorker
@@ -62,7 +61,10 @@ class CiCdPipelineWorker(
         // 其余（提交/编译/下载等明确业务失败）→ Result.failure()，不再无意义重试。
         return when (result) {
             is CiCdResult.Success -> {
-                sendNotification("✅ 编译完成", "APK 已下载到本地，点击安装")
+                // A3-1 修复：原此处发送"✅ 编译完成 / APK 已下载到本地，点击安装"通知，
+                // 但 BuildApkDownloadTool 在 APK 下载完成时已发送带安装 PendingIntent 的
+                // 通知（apk_download 渠道）。本 Worker 的成功通知无 PendingIntent、点击
+                // 无反应却写"点击安装"，构成双重通知+误导。删除此条成功通知，保留失败通知。
                 Result.success()
             }
             is CiCdResult.Failed -> {
@@ -78,8 +80,6 @@ class CiCdPipelineWorker(
     }
 
     private fun sendNotification(title: String, text: String) {
-        val nm = appContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-
         // 修复（第4窗口审查报告问题4）：原在此处自行调用 createNotificationChannel()，
         // 与项目中其余 Worker 的渠道管理方式不一致。渠道已改为在
         // ZaijianApp.setupNotificationChannels() 中统一注册，此处不再重复创建。
@@ -92,6 +92,9 @@ class CiCdPipelineWorker(
             .setAutoCancel(true)
             .build()
 
-        nm.notify(System.currentTimeMillis().toInt(), notif)
+        // C类审查 #47 修复：改用统一的权限检查入口
+        com.zaijian.zhoumuyun.util.NotificationPermissionUtils.safeNotify(
+            appContext, System.currentTimeMillis().toInt(), notif, "CiCdPipelineWorker",
+        )
     }
 }

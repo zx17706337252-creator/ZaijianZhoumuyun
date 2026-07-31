@@ -1,5 +1,8 @@
 package com.zaijian.zhoumuyun.domain
 
+import com.zaijian.zhoumuyun.data.model.EmotionType
+import com.zaijian.zhoumuyun.data.model.toMoodType
+
 /**
  * 架构位置说明（本次从 `ui.viewmodel` 包下沉至 `domain` 包）：
  *
@@ -18,7 +21,14 @@ object ChatTagParser {
 
     // Fix-MoodLeak：匹配末尾的 [mood:词] 或 [mood：词]（中英文冒号都兼容），
     // 允许标签前有空行/空格，允许标签后有少量尾随空白。
-    private val MOOD_TAG_REGEX = Regex("""\[mood[:：]\s*([^\[\]]+?)\s*]\s*$""")
+    //
+    // C4#13 方案B：格式扩展为 [mood:情绪词:强度]，强度是可选的 0-100 整数
+    // （第二个捕获组）。group1 排除冒号本身，避免和分隔情绪词/强度的那个冒号
+    // 混在一起被一起吞掉。强度部分整体用 `(?:...)?` 包成可选——不强制要求
+    // LLM 每次都带强度，漏带时 group2 为 null，调用方按约定的默认强度处理，
+    // 不因为格式没完全对齐就整条丢弃（与本文件一贯的"格式异常静默降级、不打断
+    // 主流程"风格一致）。
+    private val MOOD_TAG_REGEX = Regex("""\[mood[:：]\s*([^\[\]:：]+?)\s*(?:[:：]\s*(\d{1,3}))?\s*]\s*$""")
 
     // display 专用：末尾出现 "[mood" 任意未闭合前缀时也要隐藏，前面允许换行/空格。
     // 例如 "[", "[m", "[mo", "[moo", "[mood", "[mood:", "[mood:平" 等streaming中间态。
@@ -108,23 +118,53 @@ object ChatTagParser {
         return stripPsychText(withoutTail)
     }
 
+    /** 未指定强度时的默认值——与 [EmotionType.toMoodType] 自身的 intensity 默认参数保持一致。 */
+    private const val DEFAULT_MOOD_INTENSITY = 50
+
     /**
-     * 剥离回复末尾的 `[mood:情绪词]` 系统标记，返回（净文本, 解析出的 MoodType?）。
+     * 剥离出的情绪标记解析结果。
+     *
+     * C4#13 方案B：LLM 现在直接输出细粒度 [EmotionType]（12种）+ 强度，而不再是
+     * PresenceEngine 的粗粒度 8 种 MoodType——EmotionType 是因，MoodType 是果，
+     * 见 [com.zaijian.zhoumuyun.data.model.toMoodType] 顶部的架构注释。
+     *
+     * [moodType] 是用默认情绪疲劳值（30，见 [EmotionType.toMoodType] 默认参数）算出的
+     * 便捷换算结果，供不关心/暂未接入真实 emotionalFatigue 的调用方直接使用
+     * （圆桌自发发言等）。需要精确结果的调用方（如 ChatMessageOrchestrator，手上有
+     * 角色当前真实 CharacterStateLayer）应该自己用 [emotionType]/[intensity] 拿到的值
+     * 配合真实 emotionalFatigue 重新调用 [EmotionType.toMoodType]，不要用这个便捷值。
+     */
+    data class ParsedMood(val emotionType: EmotionType, val intensity: Int) {
+        val moodType: MoodType get() = emotionType.toMoodType(intensity)
+    }
+
+    /**
+     * 剥离回复末尾的 `[mood:情绪词:强度]` 系统标记，返回（净文本, 解析出的 ParsedMood?）。
      *
      * 背景（Fix-MoodLeak）：COMPANION 模式的 Output Layer
      * （见 PromptOrchestrator.COMPANION_OUTPUT_CONSTRAINTS）要求 LLM 在正文末尾另起一行输出
-     * `[mood:情绪词]`，注释明确写"系统使用，不展示给用户"，但此前全项目
+     * 情绪标记，注释明确写"系统使用，不展示给用户"，但此前全项目
      * 没有任何代码解析或剥离它——用户在这两种模式下每条回复末尾都会看到
      * 裸露的 `[mood:平静]` 这类内部标记，且 PresenceEngine.updateMoodFromReply()
      * 已经写好却从未被调用。
      *
-     * @return Pair(去除标签后的文本, 解析出的 MoodType；未命中或无标签则为 null)
+     * C4#13 方案B：格式从 8 种粗粒度中文情绪词升级为覆盖 EmotionType 全部 12 种的
+     * 情绪词 + 可选强度数字，解析结果不再是 PresenceEngine.MoodType，而是
+     * data/model.EmotionType + Int 强度，交由调用方（通常是
+     * CharacterStateRepository.updateState() 的调用点）落库，从"因"直接驱动，
+     * 不再需要 MoodType→EmotionType 的反向粗映射。
+     *
+     * @return Pair(去除标签后的文本, 解析出的 ParsedMood；未命中、无标签、或情绪词
+     *   不在 12 种已知取值内则为 null——静默忽略，不让一次格式异常的 LLM 输出打断主流程)
      */
-    fun stripMoodTag(reply: String): Pair<String, MoodType?> {
+    fun stripMoodTag(reply: String): Pair<String, ParsedMood?> {
         val match = MOOD_TAG_REGEX.find(reply) ?: return reply to null
         val cleaned = reply.substring(0, match.range.first).trimEnd()
         val moodWord = match.groupValues[1].trim()
-        return cleaned to parseMoodType(moodWord)
+        val emotionType = parseEmotionWord(moodWord) ?: return cleaned to null
+        val intensity = match.groupValues[2].trim().toIntOrNull()?.coerceIn(0, 100)
+            ?: DEFAULT_MOOD_INTENSITY
+        return cleaned to ParsedMood(emotionType, intensity)
     }
 
     /**
@@ -186,22 +226,28 @@ object ChatTagParser {
     }
 
     /**
-     * Fix⑥：COMPANION_OUTPUT_CONSTRAINTS 里
-     * 给 LLM 的情绪词枚举（中文）与 MoodType（英文枚举）做对应——
-     * 两边在设计时本就是按顺序一一对应的（平静/专注/好奇/满足/担忧/兴奋/疲惫/沉思
-     * ↔ CALM/FOCUSED/CURIOUS/SATISFIED/CONCERNED/EXCITED/TIRED/REFLECTIVE），
-     * 只是从未写出这层转换代码。未命中时返回 null（不更新 mood，静默忽略，
-     * 不让一次格式异常的 LLM 输出打断主流程）。
+     * C4#13 方案B：COMPANION_OUTPUT_CONSTRAINTS 里给 LLM 的情绪词枚举（中文）
+     * 与 [EmotionType]（12 种）做对应，取代原先 Fix⑥ 那套 8 词→MoodType 的映射。
+     *
+     * 中文词选取自 [EmotionType] 声明处每个值自带的注释（如 HAPPY // 满足/愉悦，
+     * 取"愉悦"避免与旧 MoodType.SATISFIED 的"满足"混淆——两者现在是完全不同层级
+     * 的概念，用词上也不该看起来像同一件事），保证这张表本身就是自解释的，
+     * 不需要另外去 PromptOrchestrator 里对照。未命中时返回 null（不更新情绪，
+     * 静默忽略，不让一次格式异常的 LLM 输出打断主流程）。
      */
-    private fun parseMoodType(word: String): MoodType? = when (word) {
-        "平静" -> MoodType.CALM
-        "专注" -> MoodType.FOCUSED
-        "好奇" -> MoodType.CURIOUS
-        "满足" -> MoodType.SATISFIED
-        "担忧" -> MoodType.CONCERNED
-        "兴奋" -> MoodType.EXCITED
-        "疲惫" -> MoodType.TIRED
-        "沉思" -> MoodType.REFLECTIVE
+    private fun parseEmotionWord(word: String): EmotionType? = when (word) {
+        "平静" -> EmotionType.CALM
+        "愉悦" -> EmotionType.HAPPY
+        "悲伤" -> EmotionType.SAD
+        "焦虑" -> EmotionType.ANXIOUS
+        "嫉妒" -> EmotionType.JEALOUS
+        "窘迫" -> EmotionType.EMBARRASSED
+        "愤怒" -> EmotionType.ANGRY
+        "内疚" -> EmotionType.GUILTY
+        "孤独" -> EmotionType.LONELY
+        "期待" -> EmotionType.HOPEFUL
+        "压抑" -> EmotionType.FRUSTRATED
+        "爱意" -> EmotionType.AFFECTIONATE
         else   -> null
     }
 }

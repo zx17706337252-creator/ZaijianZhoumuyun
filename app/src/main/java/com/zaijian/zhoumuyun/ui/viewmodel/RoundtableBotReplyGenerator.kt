@@ -481,7 +481,13 @@ class RoundtableBotReplyGenerator(
                 // 圆桌角色此前从未回写过，导致 RoundtableIdleManager.pickSpontaneousInitiator
                 // 读到的情绪权重实际上是私聊那边写的陈旧值——补上这条写入顺带修正了
                 // 自发发言的情绪权重计算。
-                presenceEngine.updateMoodFromReply(bot.id, parsedMood)
+                //
+                // C4#13 方案B：ChatTagParser.stripMoodTag 现在解析出的是 EmotionType+强度
+                // （ParsedMood），不再直接是 MoodType，这里用 .moodType 便捷属性
+                // （按默认情绪疲劳值换算）取得和此前同规格的 MoodType 用于 presence 缓存——
+                // 圆桌是否也要像私聊那样把 ParsedMood 写回 CharacterStateRepository.updateState()
+                // 落库+发 state_updated 事件，是本次改动范围之外的问题，留给未来单独评估。
+                presenceEngine.updateMoodFromReply(bot.id, parsedMood.moodType)
             }
 
             _uiState.update { s ->

@@ -49,13 +49,19 @@ class EventPublisher(
             }
             json.toString()
         } catch (e: Exception) {
-            ZLog.e(TAG, "序列化事件 payload 失败: ${event.name}", e)
-            "{}"
+            // 问题34修复：序列化失败时不能再用 "{}" 空 payload 继续走完
+            // 写库+emit 流程——事件表面上"发布成功"，但依赖 payload 具体字段
+            // 判断触发条件的链条会永远匹配不上，且没有任何报错提示这一点。
+            // 改为在此处中止本次 publish，不写 PendingEventEntity 也不 emit，
+            // 用 error 级别日志留痕，方便按事件名排查"为什么这条链条没触发"。
+            ZLog.e(TAG, "序列化事件 payload 失败，已放弃发布此事件（不写库/不emit）: ${event.name}", e)
+            return
         }
 
+        val pendingId = UUID.randomUUID().toString()
         repository.insertPendingEvent(
             PendingEventEntity(
-                id = UUID.randomUUID().toString(),
+                id = pendingId,
                 eventName = event.name,
                 characterId = event.characterId,
                 payloadJson = payloadJson,
@@ -64,7 +70,10 @@ class EventPublisher(
             )
         )
 
-        EventBus.emit(event)
+        // A1-1 修复：把落盘记录的 id 带入 emit 出去的事件，供 ChainTriggerMatcher
+        // 在 App 存活时即时处理成功后据此回写 processed=true，避免重启后
+        // processPendingEvents() 把同一条已处理事件再重放一次。
+        EventBus.emit(event.copy(persistedId = pendingId))
     }
 
     companion object {
