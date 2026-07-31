@@ -57,7 +57,7 @@ internal val MIGRATION_75_76 = object : Migration(75, 76) {
                 }
                 db.execSQL(
                     "UPDATE character_identity SET characterCallsOwnerJson = ? WHERE characterId = ?",
-                    arrayOf(json, characterId),
+                    arrayOf<Any?>(json, characterId),
                 )
             }
         }
