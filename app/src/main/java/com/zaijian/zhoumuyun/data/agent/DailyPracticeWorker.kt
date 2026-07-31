@@ -46,7 +46,7 @@ class DailyPracticeWorker(
     params: WorkerParameters,
 ) : CoroutineWorker(context, params) {
 
-    private companion object {
+    companion object {
         const val PRACTICE_EXPORT_DIR = "specialty_practices"
         val UNSAFE_CHARS = Regex("[/\\\\:*?\"<>|]")
 
