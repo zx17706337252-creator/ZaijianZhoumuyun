@@ -70,14 +70,14 @@ suspend fun <T> githubHttpRetry(
             throw e // 协程取消不吞
         } catch (e: IOException) {
             // 网络层异常（连接超时/读超时/DNS 失败/连接被重置等）视为可重试瞬时故障
-            val err = GithubHttpException(
+            val networkError = GithubHttpException(
                 statusCode = -1,
                 responseBody = e.message ?: "网络异常",
                 cause = e,
             )
-            lastError = err
+            lastError = networkError
             if (attempt < maxAttempts - 1) {
-                onRetry(attempt + 1, err)
+                onRetry(attempt + 1, networkError)
                 delay(1000L * (1L shl attempt))
             }
         }

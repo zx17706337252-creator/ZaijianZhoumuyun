@@ -1,17 +1,19 @@
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+    id("org.jetbrains.kotlin.plugin.compose")
     id("com.google.devtools.ksp")
+    id("com.google.gms.google-services")
 }
 
 android {
     namespace = "com.zaijian.zhoumuyun"
-    compileSdk = 35
+    compileSdk = 34
 
     defaultConfig {
         applicationId = "com.zaijian.zhoumuyun"
         minSdk = 26
-        targetSdk = 35
+        targetSdk = 34
         versionCode = 148
         versionName = "1.4.8"
 
@@ -45,10 +47,6 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
-    }
-
-    composeOptions {
-        kotlinCompilerExtensionVersion = "1.5.11"
     }
 
     packaging {
@@ -122,7 +120,8 @@ dependencies {
     implementation("com.sun.mail:jakarta.mail:2.0.1")
 
     // Firebase
-    implementation("com.google.firebase:firebase-messaging-ktx:24.0.0")
+    implementation(platform("com.google.firebase:firebase-bom:33.1.0"))
+    implementation("com.google.firebase:firebase-messaging-ktx")
 
     implementation("org.json:json:20240303")
 
