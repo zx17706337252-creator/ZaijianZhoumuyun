@@ -5,10 +5,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -24,6 +21,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle // P1-11-2
 import com.zaijian.zhoumuyun.data.db.entity.EventType
 import com.zaijian.zhoumuyun.data.db.entity.WorldEventEntity
 import com.zaijian.zhoumuyun.ui.component.DetailTopBar
+import com.zaijian.zhoumuyun.ui.design.GhostGoldButton
+import com.zaijian.zhoumuyun.ui.design.GoldPrimaryButton
 import com.zaijian.zhoumuyun.ui.design.WorldCard
 import com.zaijian.zhoumuyun.ui.theme.Palette
 import com.zaijian.zhoumuyun.ui.theme.Spacing
@@ -79,21 +78,18 @@ fun TimelineScreen(
                     textAlign = TextAlign.Center,
                 )
                 Spacer(Modifier.height(20.dp))
-                Button(
+                GoldPrimaryButton(
+                    text = "重试",
                     onClick = { viewModel.load(actorId = characterId?.toString()) },
                     modifier = Modifier.fillMaxWidth(),
-                    colors = ButtonDefaults.buttonColors(containerColor = colors.accent),
-                ) {
-                    Text("重试")
-                }
+                )
                 if (characterId != null) {
                     Spacer(Modifier.height(12.dp))
-                    OutlinedButton(
+                    GhostGoldButton(
+                        text = "查看全部时间线",
                         onClick = { viewModel.load(actorId = null) },
                         modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text("查看全部时间线")
-                    }
+                    )
                 }
             }
         } else if (uiState.events.isEmpty()) {

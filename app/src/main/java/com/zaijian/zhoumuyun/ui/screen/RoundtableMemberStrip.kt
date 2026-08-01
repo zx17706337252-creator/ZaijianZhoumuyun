@@ -94,6 +94,7 @@ import coil.request.ImageRequest
 import com.zaijian.zhoumuyun.data.model.CharacterConfig
 import com.zaijian.zhoumuyun.data.model.DefaultCharacters
 import com.zaijian.zhoumuyun.ui.theme.AnimDuration
+import com.zaijian.zhoumuyun.ui.theme.AppBrushes
 import com.zaijian.zhoumuyun.ui.theme.AppTheme
 import com.zaijian.zhoumuyun.ui.theme.AvatarSize
 import com.zaijian.zhoumuyun.ui.theme.BubbleDimen
@@ -221,7 +222,16 @@ private fun MemberChip(
                     // 保留现有 presenceGlow 而非替换为完整 BreathingAvatar：
                     // presenceGlow 是本组件的既定轻量方案（28dp 小头像 + 生成状态点），
                     // 替换为 BreathingAvatar 是更大改动，风险不成比例，故仅做最小视觉对齐。
-                    .border(1.dp, bot.accentColor.copy(alpha = 0.3f), CircleShape),
+                    // UI 升级 v2.0（融合方案帧17 成员条报幕）：发言中成员的头像描边
+                    // 升级为 2dp 黄铜渐变金环（上移弹出 + 金环 + 金点脉冲三件套之一），
+                    // 非发言态保持 1dp 角色色淡边——"谁在开腔"靠上光，不靠放大。
+                    .then(
+                        if (isActive) {
+                            Modifier.border(2.dp, AppBrushes.goldGradient(), CircleShape)
+                        } else {
+                            Modifier.border(1.dp, bot.accentColor.copy(alpha = 0.3f), CircleShape)
+                        }
+                    ),
                 error              = rememberVectorPainter(AppIcons.Person),
             )
 
@@ -240,8 +250,10 @@ private fun MemberChip(
         Text(
             text  = bot.name,
             style = type.label,
+            // UI 升级 v2.0：发言中名字用深金 accentDeep（帧17：衬线署名的视觉落点
+            // 在发言者身上），其余状态沿用墨色层级不变。
             color = when (status) {
-                BotGenerationStatus.GENERATING -> colors.textPrimary
+                BotGenerationStatus.GENERATING -> colors.accentDeep
                 BotGenerationStatus.WAITING    -> colors.textSecondary
                 BotGenerationStatus.DONE       -> colors.textSecondary
                 else                           -> colors.textDisabled

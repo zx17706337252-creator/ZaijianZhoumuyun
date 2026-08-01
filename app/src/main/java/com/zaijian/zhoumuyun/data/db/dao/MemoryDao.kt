@@ -195,6 +195,13 @@ abstract class MemoryDao {
      * C8#44 修复：加 isNarrativeOnly = 0 过滤。此查询是 MemoryQueryTool（LLM 可
      * 主动调用的 memory_query 工具）和一般记忆检索的共同入口，结果会原样喂回
      * LLM 上下文，同样不应包含假扮身份识别期间产生的叙事记忆。
+     *
+     * 私聊记忆放开修复：私聊场景（PrivateChatEngine 生成的记忆，sourceEventId
+     * 以 "private_chat:" 开头）复用了同一个 isNarrativeOnly 标记做隔离，但
+     * 隔离诉求不同于假扮身份识别——私聊记忆不该参与"长期归纳/关系判断"
+     * （getCoreMemories 等仍然排除），但角色应该能在被主动问起、或后续私聊
+     * 检索时回忆起聊过什么，因此此处放行 sourceEventId 前缀匹配私聊来源的记忆，
+     * 假扮场景产生的记忆（isNarrativeOnly=true 但非私聊来源）仍被排除。
      */
     @Query("""
         SELECT m.* FROM memories m
@@ -202,7 +209,7 @@ abstract class MemoryDao {
         WHERE fts.memories_fts MATCH :query
           AND m.characterId = :characterId
           AND m.scope = 'PERSONAL'
-          AND m.isNarrativeOnly = 0
+          AND (m.isNarrativeOnly = 0 OR m.sourceEventId LIKE 'private_chat:%')
         ORDER BY m.importance DESC, m.lastAccessedAt DESC
         LIMIT :limit
     """)

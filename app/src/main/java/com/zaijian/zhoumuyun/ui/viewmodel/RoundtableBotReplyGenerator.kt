@@ -69,6 +69,10 @@ internal val ROUNDTABLE_DISABLED_TOOL_NAMES = setOf(
     "agent_message",
     "roundtable_trigger",
     "task_delegate",
+    // 主聊天工具接入 · 角色间私聊（PrivateChatAgentTools.kt）：与 agent_message 同理，
+    // 圆桌场景下角色已经在同一个多角色频道里说话，不应该再额外触发一条独立私聊线程。
+    // private_chat_history（只读查询）不在此列——圆桌里角色引用自己过去的私聊记录无害。
+    "private_chat_send",
 )
 
 class RoundtableBotReplyGenerator(

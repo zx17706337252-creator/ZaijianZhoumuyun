@@ -19,7 +19,15 @@ import java.util.Locale
  * 这是本次设计上刻意接受的重复，不要因为看着像重复代码就自己重构成共享函数或抽象接口。
  *
  * v2.3 补充：interrupted 的会话照常导出，但标题上加"（未完成）"标记，
- * 不伪装成正常收尾的完整对话（对应 3.2.1 节的承诺）。
+ * 不伪装成正常收尾的完整对话（对应 3.2.1 节的承诺）。v2.7 同样补充
+ * disconnected（角色主动下线）的标记，见 statusSuffixFor()。
+ *
+ * 关于 appendRelationshipSection() 与类头"私聊与关系值体系双向隔离"的措辞：
+ * "双向隔离"指的是 PrivateChatEngine 运行时不读取/不写入 RelationshipEngine——
+ * 私聊内容本身不会被拿去改变信任/好感等数值，数值也不会反过来影响私聊生成
+ * （见 PrivateChatEngine 类头 2.1 节说明）。导出时附加的关系值快照是只读展示，
+ * 发生在会话结束之后、导出这个单独的动作里，不经过引擎、不影响会话本身，
+ * 与"运行时双向隔离"不是同一件事，两者不冲突。
  */
 class PrivateChatExporter(
     private val messageRepo: PrivateChatMessageRepository,
@@ -43,7 +51,7 @@ class PrivateChatExporter(
                 currentSession = msg.sessionId
                 val sessionStartMsg = messages.first { it.sessionId == currentSession }
                 val time = formatTimestamp(sessionStartMsg.timestamp)
-                val statusSuffix = if (sessions[currentSession]?.status == "interrupted") "（未完成）" else ""
+                val statusSuffix = statusSuffixFor(sessions[currentSession]?.status)
                 sb.appendLine("## 会话（$time）$statusSuffix")
                 sb.appendLine()
             }
@@ -72,7 +80,7 @@ class PrivateChatExporter(
                 currentSession = msg.sessionId
                 val sessionStartMsg = messages.first { it.sessionId == currentSession }
                 val time = formatTimestamp(sessionStartMsg.timestamp)
-                val statusSuffix = if (sessions[currentSession]?.status == "interrupted") "（未完成）" else ""
+                val statusSuffix = statusSuffixFor(sessions[currentSession]?.status)
                 sb.appendLine("--- 会话（$time）$statusSuffix ---")
                 sb.appendLine()
             }
@@ -141,5 +149,20 @@ class PrivateChatExporter(
     private fun formatTimestamp(timestamp: Long): String {
         val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.CHINA)
         return sdf.format(Date(timestamp))
+    }
+
+    /**
+     * 会话标题后缀，两种导出格式共用（v2.7 抽出，此前两处各自写一份相同的
+     * 三段式判断，容易改一处漏一处——正好和"10/12/无限制"三处数字对不上是
+     * 同一类风险）。
+     *
+     * interrupted：系统异常中断，标"（未完成）"，不伪装成完整对话。
+     * disconnected：角色主动下线导致会话结束，标"（对方中断）"——同样不是
+     * 双方自然聊完的结果，但也不是系统故障，用不同措辞区分这两种情形。
+     */
+    private fun statusSuffixFor(status: String?): String = when (status) {
+        "interrupted" -> "（未完成）"
+        "disconnected" -> "（对方中断）"
+        else -> ""
     }
 }

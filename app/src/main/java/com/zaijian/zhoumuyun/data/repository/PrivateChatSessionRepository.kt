@@ -16,8 +16,10 @@ class PrivateChatSessionRepository(private val dao: PrivateChatSessionDao) {
     suspend fun markInterrupted(sessionId: String, turnCount: Int, errorMessage: String) =
         dao.markInterrupted(sessionId, turnCount, errorMessage)
 
-    suspend fun markCompleted(sessionId: String, turnCount: Int) =
-        dao.markCompleted(sessionId, turnCount)
+    // v2.7：markCompleted 透传方法已删除（死代码，除自身定义外无任何调用方）。
+    // 真正生效的"标记完成"落库路径是 PrivateChatSessionAndPairDao.completeSessionAtomic，
+    // 它把 session 状态更新与 pair 计数 +1 绑在同一 @Transaction 内。这里保留过的
+    // markCompleted 会绕开那个原子事务保护，误导未来开发者以为它是安全可调用的。
 
     suspend fun get(sessionId: String): PrivateChatSessionEntity? = dao.get(sessionId)
 

@@ -41,31 +41,42 @@ fun NotificationAttentionSection(
     daughterNameMap: Map<String, String> = emptyMap(),
     onItemClick: (BriefingAttentionItem) -> Unit,
 ) {
-    // 空数据时不再用 isMilestone=true 的强调色卡片——那套配色是为"有事项需要
-    // 用户注意"设计的视觉警示，事项为空时继续用它，反而在传递错误的紧张感。
-    // 改用默认卡片样式，标题也换成柔和色，视觉上和"一切安好"的语义对上。
-    WorldCard(isMilestone = items.isNotEmpty()) {
-        Column(Modifier.padding(Spacing.cardPadding)) {
-            Text(
-                "需要关注",
-                style = ZaijianTheme.typography.cardTitle,
-                color = if (items.isNotEmpty()) Palette.Velvet else Palette.VelvetSoft,
-            )
-            if (items.isEmpty()) {
+    // UI 升级 v2.0（融合方案帧19：通知中心"需要关注"对齐简报页火漆角标卡）：
+    // 单卡多行改为「每条目一张火漆角标卡」，刻字按条目类型分配——
+    //   念 = 牵挂（久未联系/从未联系）   期 = 周期（孕育/排卵/经期）   隙 = 裂隙（关系紧张/恶化）
+    // 预算纪律：本区最多 3 处火漆（与简报页共用同一套刻字语义），
+    // 超过 3 条时多余的条目不再压印（仪式感滥用即贬值）。
+    Column {
+        Text(
+            "需要关注",
+            style = ZaijianTheme.typography.cardTitle,
+            color = if (items.isNotEmpty()) Palette.Velvet else Palette.VelvetSoft,
+        )
+        if (items.isEmpty()) {
+            WorldCard(modifier = Modifier.fillMaxWidth().padding(top = Spacing.sm)) {
                 EmptyStateView(
                     icon  = AppIcons.Notifications,
                     title = "暂无需要关注的事项 ✿",
                 )
             }
-            items.forEach { item ->
-                val isRead = item in readItems
-                val text = attentionItemText(item, daughterNameMap)
+        }
+        items.forEachIndexed { index, item ->
+            val isRead = item in readItems
+            val text = attentionItemText(item, daughterNameMap)
+            val waxChar = waxCharForItem(item)
 
+            WorldCard(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = Spacing.sm)
+                    .clickable { onItemClick(item) },
+                // 火漆预算：只给前 3 条压印，超出条目回落为素卡（金红不同卡）。
+                waxChar = if (index < 3) waxChar else null,
+            ) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clickable { onItemClick(item) }
-                        .padding(vertical = Spacing.xs),
+                        .padding(Spacing.cardPadding),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
@@ -83,6 +94,17 @@ fun NotificationAttentionSection(
             }
         }
     }
+}
+
+/** 火漆刻字映射，与 BriefingAttentionSection 完全一致（念/期/隙）。 */
+private fun waxCharForItem(item: BriefingAttentionItem): String = when (item) {
+    is BriefingAttentionItem.NoContact -> "念"
+    is BriefingAttentionItem.NeverContacted -> "念"
+    is BriefingAttentionItem.Pregnancy -> "期"
+    is BriefingAttentionItem.FertileAttention -> "期"
+    is BriefingAttentionItem.MenstrualAttention -> "期"
+    is BriefingAttentionItem.Tension -> "隙"
+    is BriefingAttentionItem.RelationWorsened -> "隙"
 }
 
 // 复用 BriefingAttentionSection.kt 已有的文案格式，原样照抄，

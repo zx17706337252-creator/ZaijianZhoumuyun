@@ -39,6 +39,7 @@ class PrivateChatWorker(
     companion object {
         const val KEY_PAIR_ID = "pair_id"
         const val KEY_INITIATOR_ID = "initiator_id"
+        const val KEY_DIRECTIVE = "directive"
         private const val TAG = "PrivateChatWorker"
         private const val CHANNEL_ID = "character_message"
     }
@@ -47,11 +48,12 @@ class PrivateChatWorker(
         val pairId = inputData.getString(KEY_PAIR_ID) ?: return Result.failure()
         val initiatorId = inputData.getInt(KEY_INITIATOR_ID, -1)
         if (initiatorId < 0) return Result.failure()
+        val directive = inputData.getString(KEY_DIRECTIVE)
 
         val engine = AppContainer.instance.privateChatEngine
 
         return try {
-            when (engine.runSession(pairId, initiatorId)) {
+            when (engine.runSession(pairId, initiatorId, directive = directive)) {
                 is PrivateChatSessionResult.Completed -> Result.success()
                 is PrivateChatSessionResult.Skipped -> Result.success()
             }
@@ -137,18 +139,22 @@ class PrivateChatWorker(
 /**
  * 触发私聊会话（方案_角色间私聊_v2-5 4.1 节）
  *
- * 触发源只有用户手动发起一种（2.1 节已确认）。不设 setInitialDelay——
+ * 触发源：原方案 2.1 节确认时只有用户在 PrivateChatScreen 手动发起一种；
+ * 主聊天工具接入（PrivateChatAgentTools.kt）后新增第二种——角色 A 在与用户的
+ * 日常对话里通过 <tool:private_chat_send/> 主动触发。两条入口共用本函数，
+ * 不设 setInitialDelay——
  * 与原方案 enqueueBackgroundRoundtableTurn() 的关键差异：那边每轮都等一个随机
  * 延时，这边立刻执行，"轮次间隔"全部发生在 runSession() 内部的同步循环里。
  *
  * ExistingWorkPolicy.KEEP：同一对角色的会话如果已经在跑，新的触发不应该打断正在执行的会话。
  */
-fun enqueuePrivateChatSession(context: Context, pairId: String, initiatorId: Int) {
+fun enqueuePrivateChatSession(context: Context, pairId: String, initiatorId: Int, directive: String? = null) {
     val request = OneTimeWorkRequestBuilder<PrivateChatWorker>()
         .setInputData(
             Data.Builder()
                 .putString(PrivateChatWorker.KEY_PAIR_ID, pairId)
                 .putInt(PrivateChatWorker.KEY_INITIATOR_ID, initiatorId)
+                .apply { if (!directive.isNullOrBlank()) putString(PrivateChatWorker.KEY_DIRECTIVE, directive) }
                 .build()
         )
         .setConstraints(

@@ -36,12 +36,16 @@ class CharacterTitleRelationViewModel(application: Application) : AndroidViewMod
 
     /**
      * 全部可配置角色（初代 + 运行时女儿/孙女），按 id 排序，供选择器 + 目标列表复用。
-     * DefaultCharacters 是编译期常量，只有女儿部分是运行时 Flow，用 map 拼接即可，
-     * 新增女儿后自动出现，不需要额外操作（方案一节）。
+     *
+     * daughterRepo.observeAllCharacterConfigs() 本身已返回"母亲(DefaultCharacters
+     * 中 isUnlocked=true 的项，9 位初代默认全部解锁) + 已注册女儿/孙女"完整列表，
+     * 这里只需排序即可，**不能再叠加 DefaultCharacters**——否则每位初代角色在列表
+     * 中出现两次，下游 LazyColumn 的 items(key = "char_${id}") 会因重复 key 抛
+     * IllegalArgumentException 导致闪退（修复"点击角色关系头衔闪退"bug）。
      */
     val allCharactersMerged: StateFlow<List<CharacterConfig>> =
         daughterRepo.observeAllCharacterConfigs()
-            .map { daughters -> (DefaultCharacters + daughters).sortedBy { it.id } }
+            .map { allCharacters -> allCharacters.sortedBy { it.id } }
             .stateIn(viewModelScope, SharingStarted.Eagerly, DefaultCharacters.sortedBy { it.id })
 
     /** 当前选中的角色 A（默认取第一个初代角色）。 */

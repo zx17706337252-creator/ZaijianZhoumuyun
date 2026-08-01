@@ -41,9 +41,13 @@ import com.zaijian.zhoumuyun.data.agent.TablePayload
 import com.zaijian.zhoumuyun.domain.ContentBlockParser
 import com.zaijian.zhoumuyun.ui.design.AppIcons
 import com.zaijian.zhoumuyun.ui.design.MatBadge
+import com.zaijian.zhoumuyun.ui.design.StreamingCursor
+import com.zaijian.zhoumuyun.ui.design.ToolStatus
+import com.zaijian.zhoumuyun.ui.design.ToolStatusIcon
 import com.zaijian.zhoumuyun.ui.design.WorldCard
 import com.zaijian.zhoumuyun.ui.design.WorldBubble
 import com.zaijian.zhoumuyun.ui.design.contentOnFill
+import com.zaijian.zhoumuyun.ui.design.shimmerEffect
 import androidx.compose.ui.unit.dp
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -297,6 +301,9 @@ internal fun MessageBubble(
                         accentColor   = accentColor,
                         characterName = characterName,
                         maxWidth      = maxBubbleWidth,
+                        // UI 升级 v2.0：流式消息（StreamingMessageItem 固定 id）进入
+                        // 思考进行态——标题行 shimmer 微光 + 旋转金圈，落库后恢复常态。
+                        streaming     = (message.id == "streaming"),
                     )
                 }
 
@@ -508,6 +515,17 @@ internal fun MessageBubble(
                                     }
                                 }
                             }
+
+                            // UI 升级 v2.0（融合方案 §4.1 流式光标）：生成中在气泡正文
+                            // 末尾跟一枚 ▍ 金色步进闪烁光标——"她还在写"的最小可视化。
+                            // 颜色沿用 bubbleTextColor（contentOnFill 派生），保证在
+                            // 任意角色纯色气泡底上都有对比度；落库后 id 变化自动消失。
+                            if (message.id == "streaming") {
+                                StreamingCursor(
+                                    color = bubbleTextColor,
+                                    modifier = Modifier.padding(top = 2.dp),
+                                )
+                            }
                         }
                         }
 
@@ -712,6 +730,11 @@ internal fun ThoughtCard(
     accentColor: Color,
     characterName: String,
     maxWidth: androidx.compose.ui.unit.Dp,
+    // UI 升级 v2.0（融合方案 §4.1 思考卡）：生成进行态。
+    // true 时标题行出 shimmer 微光 + 旋转金圈，隐藏字数徽标与复制按钮
+    // （内容还在生长，复制半成品无意义）。调用方用 message.id == "streaming"
+    // 判断，不改既有签名，全部旧调用点默认 false 零影响。
+    streaming: Boolean = false,
 ) {
     val colors = ZaijianTheme.colors
     val type   = ZaijianTheme.typography
@@ -733,11 +756,15 @@ internal fun ThoughtCard(
                 .padding(horizontal = Spacing.md, vertical = 10.dp),
         ) {
             Row(
+                // UI 升级 v2.0：思考进行态标题行扫过一道纸白微光（1.6s 循环），
+                // 生成结束后 streaming 变 false，微光自然消失。
+                modifier = if (streaming) Modifier.shimmerEffect() else Modifier,
                 verticalAlignment     = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(Spacing.xs),
             ) {
                 // 图标徽标：圆形浅底 + 居中图标，替代此前裸 Icon，
                 // 视觉上更像一枚"标签"而不是纯装饰性符号。
+                // UI 升级 v2.0：进行态换旋转金圈（运行中语义），完成态回到灯泡。
                 Box(
                     modifier          = Modifier
                         .size(18.dp)
@@ -745,12 +772,16 @@ internal fun ThoughtCard(
                         .background(accentColor.copy(alpha = 0.12f)),
                     contentAlignment  = Alignment.Center,
                 ) {
-                    Icon(
-                        imageVector        = AppIcons.Lightbulb,
-                        contentDescription = null,
-                        tint               = accentColor,
-                        modifier           = Modifier.size(11.dp),
-                    )
+                    if (streaming) {
+                        ToolStatusIcon(status = ToolStatus.RUNNING, size = 11.dp)
+                    } else {
+                        Icon(
+                            imageVector        = AppIcons.Lightbulb,
+                            contentDescription = null,
+                            tint               = accentColor,
+                            modifier           = Modifier.size(11.dp),
+                        )
+                    }
                 }
                 Text(
                     // v1.36 问题2：标题从"${characterName}的想法"改为固定文案"内心独白"，
@@ -764,17 +795,20 @@ internal fun ThoughtCard(
                     fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
                 )
                 // 字数徽标：折叠态就能预判内容量，不用点开才发现"好长"。
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(colors.textDisabled.copy(alpha = 0.15f))
-                        .padding(horizontal = 6.dp, vertical = 1.dp),
-                ) {
-                    Text(
-                        text  = "${thinkingText.length}字",
-                        style = type.caption,
-                        color = colors.textDisabled,
-                    )
+                // UI 升级 v2.0：进行态隐藏（内容还在长，字数与复制都无意义）。
+                if (!streaming) {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(colors.textDisabled.copy(alpha = 0.15f))
+                            .padding(horizontal = 6.dp, vertical = 1.dp),
+                    ) {
+                        Text(
+                            text  = "${thinkingText.length}字",
+                            style = type.caption,
+                            color = colors.textDisabled,
+                        )
+                    }
                 }
                 // Fix-ThoughtCopy（思考内容无法复制的根因修复）：此前整张卡只有
                 // "点击展开/收起"一个交互，正文是纯 Text，没有任何复制入口。
@@ -782,21 +816,23 @@ internal fun ThoughtCard(
                 // clickable 在最内层，事件不会冒泡到外层 Column 的"展开/收起"切换。
                 var justCopied by remember { mutableStateOf(false) }
                 val clipboard = LocalClipboardManager.current
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(accentColor.copy(alpha = 0.10f))
-                        .clickable {
-                            clipboard.setText(AnnotatedString(thinkingText))
-                            justCopied = true
-                        }
-                        .padding(horizontal = 6.dp, vertical = 2.dp),
-                ) {
-                    Text(
-                        text  = if (justCopied) "✓ 已复制" else "复制",
-                        style = type.caption,
-                        color = accentColor,
-                    )
+                if (!streaming) {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(accentColor.copy(alpha = 0.10f))
+                            .clickable {
+                                clipboard.setText(AnnotatedString(thinkingText))
+                                justCopied = true
+                            }
+                            .padding(horizontal = 6.dp, vertical = 2.dp),
+                    ) {
+                        Text(
+                            text  = if (justCopied) "✓ 已复制" else "复制",
+                            style = type.caption,
+                            color = accentColor,
+                        )
+                    }
                 }
                 // 复制反馈 1.2s 后自动复原
                 if (justCopied) {
@@ -1276,6 +1312,10 @@ internal fun ToolHintRow(
     val colors = ZaijianTheme.colors
     val type   = ZaijianTheme.typography
 
+    // UI 升级 v2.0（融合方案 §4.1 工具调用行）：纯文字行升级为「发丝边小行卡」——
+    // 静态 ⚙ 换成 1s 旋转金圈（运行中语义），文字用深金 accentDeep（纸底对比度
+    // ≥4.5:1，比原 0.55 alpha 的角色色更清晰），底 12% 金 + 0.5px 金发丝边。
+    // 签名不变（hint 原文直显），全部既有调用点零改动获得新视觉。
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -1288,10 +1328,21 @@ internal fun ToolHintRow(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.Start,
     ) {
-        Text(
-            text  = "⚙ $hint",
-            style = type.label,
-            color = accentColor.copy(alpha = 0.55f),
-        )
+        Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(12.dp))
+                .background(colors.accent.copy(alpha = 0.10f))
+                .border(0.5.dp, colors.accent.copy(alpha = 0.35f), RoundedCornerShape(12.dp))
+                .padding(horizontal = 10.dp, vertical = 5.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(7.dp),
+        ) {
+            ToolStatusIcon(status = ToolStatus.RUNNING, size = 11.dp)
+            Text(
+                text  = hint,
+                style = type.label,
+                color = colors.accentDeep,
+            )
+        }
     }
 }

@@ -30,32 +30,62 @@ fun BriefingAttentionSection(
     daughterNameMap: Map<String, String> = emptyMap(),
     modifier: Modifier = Modifier,
 ) {
-    WorldCard(modifier = modifier, isMilestone = true) {
-        Column(Modifier.padding(Spacing.cardPadding)) {
-            Text("需要关注", style = ZaijianTheme.typography.cardTitle, color = Palette.Velvet)
-            items.forEach { item ->
-                val text = when (item) {
-                    is BriefingAttentionItem.NoContact ->
-                        "${item.character.name}：已经 ${item.days} 天没有联系了"
-                    is BriefingAttentionItem.NeverContacted ->
-                        "${item.character.name}：还没有联系过"
-                    is BriefingAttentionItem.Pregnancy ->
-                        "${item.character.name}：怀孕中，记得多关心"
-                    // A6-1 修复: 新增排卵期/经期两类条目的展示文案，
-                    // 与 BriefingCharacterCard 的 chip 文案（排卵期/经期）保持口径一致。
-                    is BriefingAttentionItem.FertileAttention ->
-                        "${item.characterName}：排卵期中，留意易孕窗口"
-                    is BriefingAttentionItem.MenstrualAttention ->
-                        "${item.characterName}：经期中，记得多关心"
-                    is BriefingAttentionItem.Tension -> {
-                        val fromName = characterNameById(item.fromId, daughterNameMap)
-                        val toName = characterNameById(item.toId, daughterNameMap)
-                        "$fromName 和 $toName：关系紧张度较高（${item.tension}）"
-                    }
-                    is BriefingAttentionItem.RelationWorsened ->
-                        "${characterNameById(item.fromId, daughterNameMap)}：${item.description}"
+    // UI 升级 v2.0（融合方案帧02/19：需要关注 = 火漆角标卡，火漆刻字三种牵挂）：
+    // 单卡多行改为「每条目一张火漆角标卡」，刻字按条目类型分配——
+    //   念 = 牵挂（久未联系/从未联系）   期 = 周期（孕育/排卵/经期）   隙 = 裂隙（关系紧张/恶化）
+    // 预算纪律：本区最多 3 处火漆（与通知中心共用同一套刻字语义），
+    // 超过 3 条时多余的条目不再压印（仪式感滥用即贬值）。
+    Column(modifier = modifier) {
+        Text("需要关注", style = ZaijianTheme.typography.cardTitle, color = Palette.Velvet)
+        items.forEachIndexed { index, item ->
+            val text: String
+            val waxChar: String
+            when (item) {
+                is BriefingAttentionItem.NoContact -> {
+                    text = "${item.character.name}：已经 ${item.days} 天没有联系了"
+                    waxChar = "念"
                 }
-                Text(text, style = ZaijianTheme.typography.body, color = Palette.VelvetSoft)
+                is BriefingAttentionItem.NeverContacted -> {
+                    text = "${item.character.name}：还没有联系过"
+                    waxChar = "念"
+                }
+                is BriefingAttentionItem.Pregnancy -> {
+                    text = "${item.character.name}：怀孕中，记得多关心"
+                    waxChar = "期"
+                }
+                // A6-1 修复: 新增排卵期/经期两类条目的展示文案，
+                // 与 BriefingCharacterCard 的 chip 文案（排卵期/经期）保持口径一致。
+                is BriefingAttentionItem.FertileAttention -> {
+                    text = "${item.characterName}：排卵期中，留意易孕窗口"
+                    waxChar = "期"
+                }
+                is BriefingAttentionItem.MenstrualAttention -> {
+                    text = "${item.characterName}：经期中，记得多关心"
+                    waxChar = "期"
+                }
+                is BriefingAttentionItem.Tension -> {
+                    val fromName = characterNameById(item.fromId, daughterNameMap)
+                    val toName = characterNameById(item.toId, daughterNameMap)
+                    text = "$fromName 和 $toName：关系紧张度较高（${item.tension}）"
+                    waxChar = "隙"
+                }
+                is BriefingAttentionItem.RelationWorsened -> {
+                    text = "${characterNameById(item.fromId, daughterNameMap)}：${item.description}"
+                    waxChar = "隙"
+                }
+            }
+            WorldCard(
+                modifier = Modifier.padding(top = Spacing.sm),
+                // 火漆预算：只给前 3 条压印，超出条目回落为素卡（isMilestone 也不再使用，
+                // 金红不同卡——火漆卡内不再出现金色按钮/蜡封点）。
+                waxChar = if (index < 3) waxChar else null,
+            ) {
+                Text(
+                    text,
+                    style = ZaijianTheme.typography.body,
+                    color = Palette.VelvetSoft,
+                    modifier = Modifier.padding(Spacing.cardPadding),
+                )
             }
         }
     }

@@ -150,6 +150,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         skillRepo        = skillRepo,
         projectRepo      = projectRepo,
         agentStoreRepo   = agentStoreRepo,
+        privateChatPairRepo    = container.privateChatPairRepo,
+        privateChatMessageRepo = container.privateChatMessageRepo,
+        daughterCharacterRepo  = container.daughterCharacterRepo,
     )
 
     // ── 孕期 + 背景图 + 女儿注册 ────────────────────────────────

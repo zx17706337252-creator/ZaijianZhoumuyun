@@ -26,9 +26,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
@@ -57,6 +54,11 @@ import com.zaijian.zhoumuyun.data.db.entity.PrivateChatPairEntity
 import com.zaijian.zhoumuyun.data.db.entity.PrivateChatSessionEntity
 import com.zaijian.zhoumuyun.data.model.DefaultCharacters
 import com.zaijian.zhoumuyun.ui.component.DetailTopBar
+import com.zaijian.zhoumuyun.ui.design.DangerVelvetButton
+import com.zaijian.zhoumuyun.ui.design.GhostGoldButton
+import com.zaijian.zhoumuyun.ui.design.GoldPrimaryButton
+import com.zaijian.zhoumuyun.ui.design.SecondaryGoldButton
+import com.zaijian.zhoumuyun.ui.design.WorldCard
 import com.zaijian.zhoumuyun.ui.theme.Palette
 import com.zaijian.zhoumuyun.ui.theme.Spacing
 import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
@@ -161,16 +163,11 @@ fun PrivateChatScreen(
 
                 // ── 新建角色对 ──────────────────────────────────────
                 item {
-                    Button(
+                    GoldPrimaryButton(
+                        text = "新建角色对",
                         onClick = { showCreateDialog = true },
                         modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = colors.accent,
-                            contentColor = colors.bgBase,
-                        ),
-                    ) {
-                        Text("新建角色对")
-                    }
+                    )
                 }
 
                 // ── 配对列表 ────────────────────────────────────────
@@ -235,13 +232,11 @@ private fun PairRow(
     // A10-5 修复：删除配对二次确认 Dialog 状态
     var showDeleteDialog by remember { mutableStateOf(false) }
 
-    Card(
+    WorldCard(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick),
-        colors = CardDefaults.cardColors(containerColor = colors.bgCard),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-        shape = RoundedCornerShape(16.dp),
+        cornerRadius = 16.dp,
     ) {
         Column(modifier = Modifier.padding(Spacing.cardPadding)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -322,18 +317,14 @@ private fun PairRow(
                 )
             },
             confirmButton = {
-                Button(
+                DangerVelvetButton(
+                    text = "删除",
                     onClick = {
                         showDeleteDialog = false
                         viewModel.deletePair(pair.pairId)
                     },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = Palette.TaskFailed,
-                        contentColor = colors.bgBase,
-                    ),
-                ) {
-                    Text("删除")
-                }
+                    modifier = Modifier.fillMaxWidth(),
+                )
             },
             dismissButton = {
                 TextButton(onClick = { showDeleteDialog = false }) {
@@ -571,22 +562,16 @@ fun PrivateChatDetailScreen(
                             ) {
                                 Text("发起私聊")
                             }
-                            OutlinedButton(
+                            SecondaryGoldButton(
+                                text = "导出Markdown",
                                 onClick = { viewModel.exportMarkdown(pairId) },
-                                border = androidx.compose.foundation.BorderStroke(
-                                    0.5.dp, colors.accent.copy(alpha = 0.4f),
-                                ),
-                            ) {
-                                Text("导出Markdown", color = colors.accent)
-                            }
-                            OutlinedButton(
+                                modifier = Modifier.weight(1f),
+                            )
+                            SecondaryGoldButton(
+                                text = "导出纯文本",
                                 onClick = { viewModel.exportPlainText(pairId) },
-                                border = androidx.compose.foundation.BorderStroke(
-                                    0.5.dp, colors.accent.copy(alpha = 0.4f),
-                                ),
-                            ) {
-                                Text("导出纯文本", color = colors.accent)
-                            }
+                                modifier = Modifier.weight(1f),
+                            )
                         }
                     }
                 }
@@ -612,25 +597,18 @@ fun PrivateChatDetailScreen(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
                             ) {
-                                Button(
+                                SecondaryGoldButton(
+                                    text = "复制到剪贴板",
                                     onClick = {
                                         clipboardManager.setText(AnnotatedString(exportText))
                                     },
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = colors.accent,
-                                        contentColor = colors.bgBase,
-                                    ),
-                                ) {
-                                    Text("复制到剪贴板")
-                                }
-                                OutlinedButton(
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                                GhostGoldButton(
+                                    text = "关闭",
                                     onClick = { viewModel.clearExportResult() },
-                                    border = androidx.compose.foundation.BorderStroke(
-                                        0.5.dp, colors.border,
-                                    ),
-                                ) {
-                                    Text("关闭", color = colors.textSecondary)
-                                }
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
                             }
                         }
                     }
@@ -640,7 +618,7 @@ fun PrivateChatDetailScreen(
                 item {
                     SectionCard(title = "参数设置") {
                         ParamField(
-                            label = "每轮最大对话数",
+                            label = "每轮最大对话数（2-20）",
                             value = maxTurns,
                             onValueChange = { if (it.all(Char::isDigit)) maxTurns = it },
                         )
@@ -657,23 +635,22 @@ fun PrivateChatDetailScreen(
                             onValueChange = { if (it.all(Char::isDigit)) cooldown = it },
                         )
                         Spacer(Modifier.height(Spacing.md))
-                        Button(
+                        GoldPrimaryButton(
+                            text = "保存参数",
                             onClick = {
-                                val mt = maxTurns.toIntOrNull()
+                                val mt = maxTurns.toIntOrNull()?.coerceIn(
+                                    PrivateChatViewModel.MIN_TURNS_LOWER_BOUND,
+                                    PrivateChatViewModel.MAX_TURNS_UPPER_BOUND,
+                                )
                                 val ms = maxSessions.toIntOrNull()
                                 val cd = cooldown.toIntOrNull()
                                 if (mt != null && ms != null && cd != null) {
+                                    maxTurns = mt.toString()
                                     viewModel.updateParams(pairId, mt, ms, cd)
                                 }
                             },
                             modifier = Modifier.fillMaxWidth(),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = colors.accent,
-                                contentColor = colors.bgBase,
-                            ),
-                        ) {
-                            Text("保存参数")
-                        }
+                        )
                     }
                 }
 
@@ -721,9 +698,9 @@ fun PrivateChatDetailScreen(
             idB = pair.characterIdB,
             nameB = nameB,
             onDismiss = { showTriggerDialog = false },
-            onConfirm = { initiatorId ->
+            onConfirm = { initiatorId, directive ->
                 showTriggerDialog = false
-                viewModel.triggerSession(pairId, initiatorId)
+                viewModel.triggerSession(pairId, initiatorId, directive)
             },
         )
     }
@@ -751,6 +728,12 @@ private fun SessionHeader(
         "completed" -> "已完成" to colors.taskDone
         "in_progress" -> "进行中" to colors.taskPaused
         "interrupted" -> "已中断" to colors.taskFailed
+        // v2.7 新增：区分"角色主动下线"与系统异常中断。owner 在管理面板本就
+        // 有权限看到真实状态，这里用"对方中断"而非"角色自主下线"这种技术
+        // 措辞，与角色扮演的叙事口吻保持一致（不影响 6.4 节对角色本身隐藏
+        // 下线状态的设计——那是对私聊对方视角的隐藏，跟这里 owner 查看自己
+        // 的会话历史是两回事）。
+        "disconnected" -> "对方中断" to colors.taskFailed
         else -> "会话" to colors.textSecondary
     }
 
@@ -846,10 +829,11 @@ private fun TriggerSessionDialog(
     idB: Int,
     nameB: String,
     onDismiss: () -> Unit,
-    onConfirm: (Int) -> Unit,
+    onConfirm: (Int, String?) -> Unit,
 ) {
     val colors = ZaijianTheme.colors
     val type = ZaijianTheme.typography
+    var directiveText by remember { mutableStateOf("") }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -860,6 +844,28 @@ private fun TriggerSessionDialog(
         },
         text = {
             Column {
+                // 可选：让先说的角色带着这个目的去聊，不填则自然对话不设目的。
+                // 只对"先说"的那位生效——对方仍按自然反应应对，不知道这是任务。
+                Text(
+                    text = "想让先开口的角色带着什么目的聊？（可不填）",
+                    style = type.caption,
+                    color = colors.textSecondary,
+                )
+                Spacer(Modifier.height(Spacing.xs))
+                OutlinedTextField(
+                    value = directiveText,
+                    onValueChange = { directiveText = it },
+                    placeholder = { Text("比如：去试探一下对方对你的态度") },
+                    modifier = Modifier.fillMaxWidth(),
+                    minLines = 2,
+                    maxLines = 4,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = colors.accent,
+                        unfocusedBorderColor = colors.border,
+                        cursorColor = colors.accent,
+                    ),
+                )
+                Spacer(Modifier.height(Spacing.md))
                 Text(
                     text = "选择谁先开口：",
                     style = type.caption,
@@ -868,12 +874,12 @@ private fun TriggerSessionDialog(
                 Spacer(Modifier.height(Spacing.sm))
                 TriggerOption(
                     text = "$nameA 先说",
-                    onClick = { onConfirm(idA) },
+                    onClick = { onConfirm(idA, directiveText.trim().ifBlank { null }) },
                 )
                 Spacer(Modifier.height(Spacing.xs))
                 TriggerOption(
                     text = "$nameB 先说",
-                    onClick = { onConfirm(idB) },
+                    onClick = { onConfirm(idB, directiveText.trim().ifBlank { null }) },
                 )
             }
         },
@@ -945,12 +951,7 @@ private fun SectionCard(
     val colors = ZaijianTheme.colors
     val type = ZaijianTheme.typography
 
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = colors.bgCard),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-        shape = RoundedCornerShape(16.dp),
-    ) {
+    WorldCard(modifier = Modifier.fillMaxWidth(), cornerRadius = 16.dp) {
         Column(modifier = Modifier.padding(Spacing.cardPadding)) {
             if (title != null) {
                 Text(title, style = type.cardTitle, color = colors.textPrimary)

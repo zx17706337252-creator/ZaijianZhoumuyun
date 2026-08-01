@@ -37,11 +37,13 @@ import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.zaijian.zhoumuyun.domain.MoodType
 import com.zaijian.zhoumuyun.data.model.StatusType
 import com.zaijian.zhoumuyun.ui.component.BreathingAvatar
+import com.zaijian.zhoumuyun.ui.theme.AppBrushes
 import com.zaijian.zhoumuyun.ui.theme.AvatarSize
 import com.zaijian.zhoumuyun.ui.theme.Palette
 import com.zaijian.zhoumuyun.ui.theme.Radius
@@ -113,6 +115,12 @@ fun WorldCard(
     // 且 ownerAccent != null 时生效，模拟纸面渗染质感（双层不同扩散半径叠加），
     // 而不是单层平铺色块。目前只有 BriefingCharacterCard 打开这个开关。
     accentWash: Boolean = false,
+    // UI 升级 v2.0（融合方案 §4.2 L4 仪式层）：火漆刻字角标。
+    // 传一个字（如 "珍"/"念"/"期"/"隙"/"缔"）即在右上角压一枚火漆印
+    // （WaxSealBadge，径向高光三档 + 内圈刻痕 + 随机感微旋转）。
+    // 预算纪律：全 App ≤8 处，仅置顶/需要关注/升阶时刻使用；
+    // 与 isMilestone 的 6px 蜡封点互斥使用，不同时出现（金红不同卡同理）。
+    waxChar: String? = null,
     content: @Composable () -> Unit,
 ) {
     val colors = ZaijianTheme.colors
@@ -220,25 +228,30 @@ fun WorldCard(
                     Modifier
                 }
             )
+            // UI 升级 v2.0（鎏金纸梦融合方案 §4.2 L2 描边层）：
+            // 1px 黄铜描边从「单色半透明」升级为「135° 三段渐变描边」——
+            // 两端亮、中段收敛，视线自然落在卡的左上。Compose 原生支持
+            // Brush border，零新增依赖。暗色模式整体降 alpha（AppBrushes 内处理）。
             .border(
                 width = 1.dp,
-                color = colors.accent.copy(alpha = l2Alpha),
+                brush = AppBrushes.cardBorderGradient(isDark),
                 shape = RoundedCornerShape(cornerRadius),
             )
     ) {
         content()
 
-        // 卡片顶部极细 accent 高光线：模拟卡片"立起来"的边缘反光。
-        // 仅在 ownerAccent 非空时画（无主色时没有可用的高光颜色来源，
-        // 沿用 L3 身份脊同样的"仅角色专属卡片显示"范围，不影响无 ownerAccent
-        // 的调用点，如 BriefingAttentionSection/BriefingRankingSection）。
-        if (ownerAccent != null) {
-            Box(
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .fillMaxWidth()
-                    .height(1.dp)
-                    .background(
+        // UI 升级 v2.0（融合方案 §4.2 L2 顶高光线）：卡内顶部 1px 纸面高光
+        // 从「仅 ownerAccent 卡显示」扩展为「全卡常态存在」——无 ownerAccent 时
+        // 用纸白高光（亮 .9 / 暗 .16），有 ownerAccent 时沿用角色色高光（更丰富，
+        // 保留 v1.3 既有观感）。左右各缩进 14dp，与卡内边距对齐。
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp)
+                .height(1.dp)
+                .background(
+                    if (ownerAccent != null) {
                         Brush.horizontalGradient(
                             colors = listOf(
                                 ownerAccent.copy(alpha = 0f),
@@ -246,17 +259,23 @@ fun WorldCard(
                                 ownerAccent.copy(alpha = 0f),
                             ),
                         )
-                    )
-            )
-        }
+                    } else {
+                        AppBrushes.topHighlight(isDark)
+                    }
+                )
+        )
 
-        // L3 身份脊：从纯色改为上深下浅渐变 + 一点投影，不再是死板的纯色 2px 线。
+        // L3 身份脊：从纯色改为上深下浅渐变 + 一点投影，不再是死板的纯色线。
+        // UI 升级 v2.0（融合方案 §4.2 L3 身份层）：2dp → 3dp，上下各缩进 14dp，
+        // 与卡内边距对齐（此前通高，视觉上把卡片切成两半）。
         if (ownerAccent != null) {
             Box(
                 modifier = Modifier
                     .align(Alignment.CenterStart)
                     .fillMaxHeight()
-                    .width(2.dp)
+                    .padding(vertical = 14.dp)
+                    .width(3.dp)
+                    .clip(RoundedCornerShape(2.dp))
                     .background(
                         Brush.verticalGradient(
                             colors = listOf(
@@ -308,6 +327,18 @@ fun WorldCard(
                     .clip(CircleShape)
                     .background(velvet)
                     .border(0.5.dp, velvet.copy(alpha = 0.4f), CircleShape)
+            )
+        }
+
+        // UI 升级 v2.0：L4 火漆刻字角标（融合方案 §4.2）。
+        // 组件本体在 AgentVisibility.kt，半枚压出卡片上缘（-9dp 偏移），
+        // 与 isMilestone 蜡封点互斥（waxChar 优先，见参数注释）。
+        waxChar?.let { ch ->
+            WaxSealBadge(
+                char = ch,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .offset(x = (-9).dp, y = (-9).dp),
             )
         }
     }
@@ -632,12 +663,23 @@ private fun SingleRowGridTabBar(
             if (targetFraction > 0f) {
                 Spacer(modifier = Modifier.weight(targetFraction))
             }
+            // UI 升级 v2.0（融合方案 §4.5 页内 Tab）：满格 2dp 单色下划线改为
+            // 22×2.5dp 黄铜渐变圆角下划线（居中于选中格）——指示器收敛为
+            // 「一小段烫金刻度」，与渲染稿 ptabs 一致；滑动动画保持不变。
             Box(
                 modifier = Modifier
                     .weight(1f / itemCount)
-                    .height(2.dp)
-                    .background(colors.accent)
-            )
+                    .height(2.5.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Box(
+                    modifier = Modifier
+                        .width(22.dp)
+                        .height(2.5.dp)
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(AppBrushes.goldGradient()),
+                )
+            }
             val remaining = 1f - targetFraction - (1f / itemCount)
             if (remaining > 0f) {
                 Spacer(modifier = Modifier.weight(remaining))
@@ -689,18 +731,102 @@ private fun GridTabCell(
         horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        // UI 升级 v2.0（融合方案 §4.5）：选中态文字从金色改为墨色（渲染稿
+        // ptabs 选中=ink+金下划线；小字号纯金文字在纸底对比度不足 4.5:1，
+        // 选中语义由下划线承担，文字只负责读）。
         Text(
             text = item.label,
             style = type.cardTitle,
-            color = if (isSelected) colors.accent else colors.textSecondary,
+            color = if (isSelected) colors.textPrimary else colors.textSecondary,
         )
         if (item.count != null) {
             Spacer(Modifier.width(Spacing.xs))
             Text(
                 text = item.count.toString(),
                 style = type.labelMono,
-                color = if (isSelected) colors.accent else colors.textDisabled,
+                color = if (isSelected) colors.accentDeep else colors.textDisabled,
             )
+        }
+    }
+}
+
+
+// ═════════════════════════════════════════════════════════════
+//  GoldPillSegmentedControl — 金药丸分段控件（UI 升级 v2.0 新增）
+// ═════════════════════════════════════════════════════════════
+
+/**
+ * 金药丸分段控件（融合方案 §4.4）：米灰底胶囊槽（#EDE4D2）+ 黄铜渐变
+ * 药丸选中（滑动动画）+ 选中白字 / 未选次级字。
+ *
+ * 用于 IA 合并后的页内三段切换（事务=任务/日程/项目，成长=目标/专长/竞赛）。
+ * 与 GridTabBar（下划线页内 Tab）语义不同：分段控件是「视图切换」，
+ * GridTabBar 是「同视图内的筛选标签」——两者并存，不互相替代。
+ *
+ * 分段状态保留规则（v1.1 决策3）：调用方用 rememberSaveable 持有选中段，
+ * 切走再切回时记住上次选中（组件本身不持久化，进程内保留即可）。
+ */
+@Composable
+fun GoldPillSegmentedControl(
+    items: List<String>,
+    selectedIndex: Int,
+    onSelect: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = ZaijianTheme.colors
+    val type = ZaijianTheme.typography
+    val safeIndex = selectedIndex.coerceIn(0, items.lastIndex.coerceAtLeast(0))
+    val itemCount = items.size.coerceAtLeast(1)
+    // 药丸滑动：与 GridTabBar 同一套 weight 占位法，不依赖像素宽度。
+    val targetFraction by animateFloatAsState(
+        targetValue = safeIndex.toFloat() / itemCount,
+        animationSpec = appSpring,
+        label = "goldPillSlide",
+    )
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(Color(0xFFEDE4D2))
+            .border(0.5.dp, colors.border, RoundedCornerShape(999.dp))
+            .padding(3.dp),
+    ) {
+        // 滑动药丸（先声明=底层：weight 占位定位 + 黄铜渐变）
+        Row(modifier = Modifier.fillMaxWidth()) {
+            if (targetFraction > 0f) {
+                Spacer(modifier = Modifier.weight(targetFraction))
+            }
+            Box(
+                modifier = Modifier
+                    .weight(1f / itemCount)
+                    .height(30.dp)
+                    .clip(RoundedCornerShape(999.dp))
+                    .background(AppBrushes.goldGradient()),
+            )
+            val remaining = 1f - targetFraction - (1f / itemCount)
+            if (remaining > 0f) {
+                Spacer(modifier = Modifier.weight(remaining))
+            }
+        }
+        // 槽内文字行（后声明=上层：文字始终在药丸之上可读）
+        Row(modifier = Modifier.fillMaxWidth()) {
+            items.forEachIndexed { index, label ->
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(30.dp)
+                        .clip(RoundedCornerShape(999.dp))
+                        .clickable { onSelect(index) }
+                        .padding(vertical = 5.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = label,
+                        style = type.body,
+                        fontWeight = if (index == safeIndex) FontWeight.SemiBold else FontWeight.Normal,
+                        color = if (index == safeIndex) Color.White else colors.textSecondary,
+                    )
+                }
+            }
         }
     }
 }

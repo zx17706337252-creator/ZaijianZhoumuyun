@@ -285,21 +285,16 @@ internal fun CharacterHeroCard(
         Spacer(Modifier.height(Spacing.lg))
 
         // 「发起对话」全宽按钮
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(Radius.md))
-                .background(accentColor)
-                .clickable { onStartChat() }
-                .padding(vertical = 13.dp),
-            contentAlignment = Alignment.Center,
-        ) {
-            Text(
-                text  = "发起对话",
-                style = type.button,
-                color = Color.White,
-            )
-        }
+        // UI 升级 v2.0（融合方案 §4.1 角色主按钮）：纯色 accentColor 平涂升级为
+        // RolePrimaryButton——角色色渐变底 + 白字 + inset 顶高光 + 按压 0.97 下沉，
+        // 本页唯一主行动（Primary Action），材质权重与书架预览弹窗的按钮分级一致。
+        com.zaijian.zhoumuyun.ui.design.RolePrimaryButton(
+            text = "发起对话",
+            roleColor = accentColor,
+            onClick = onStartChat,
+            modifier = Modifier.fillMaxWidth(),
+            height = 48.dp,
+        )
     }
 }
 

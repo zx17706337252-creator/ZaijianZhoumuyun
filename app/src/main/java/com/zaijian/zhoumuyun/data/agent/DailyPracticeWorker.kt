@@ -46,6 +46,9 @@ class DailyPracticeWorker(
     params: WorkerParameters,
 ) : CoroutineWorker(context, params) {
 
+    // A5-4 修复：companion object 原为 private，导致 ZaijianApp.setupNotificationChannels()
+    // 无法访问 CHANNEL_ID/CHANNEL_NAME 统一注册通知渠道；参照 CiCdPipelineWorker /
+    // BuildApkDownloadTool 的写法改为公开 companion object。
     companion object {
         const val PRACTICE_EXPORT_DIR = "specialty_practices"
         val UNSAFE_CHARS = Regex("[/\\\\:*?\"<>|]")

@@ -16,8 +16,9 @@ interface PrivateChatSessionDao {
     @Query("UPDATE private_chat_sessions SET status = 'interrupted', turnCount = :turnCount, errorMessage = :errorMessage WHERE sessionId = :sessionId")
     suspend fun markInterrupted(sessionId: String, turnCount: Int, errorMessage: String)
 
-    @Query("UPDATE private_chat_sessions SET status = 'completed', turnCount = :turnCount WHERE sessionId = :sessionId")
-    suspend fun markCompleted(sessionId: String, turnCount: Int)
+    // v2.7：markCompleted 已删除（死代码）。唯一调用方 PrivateChatSessionRepository.markCompleted
+    // 已一并删除。真正生效的落库路径是 PrivateChatSessionAndPairDao 自己定义的
+    // markCompleted/markDisconnected，走 @Transaction 原子方法，不经过这个接口。
 
     @Query("SELECT * FROM private_chat_sessions WHERE sessionId = :sessionId")
     suspend fun get(sessionId: String): PrivateChatSessionEntity?

@@ -43,6 +43,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import com.zaijian.zhoumuyun.ui.component.BookCard
 import com.zaijian.zhoumuyun.ui.component.CalibrationProbeOverlay
 import com.zaijian.zhoumuyun.ui.component.CharacterPreviewSheet
+import com.zaijian.zhoumuyun.ui.design.RolePrimaryButton
 import com.zaijian.zhoumuyun.ui.theme.AppTheme
 import com.zaijian.zhoumuyun.ui.theme.Palette
 import com.zaijian.zhoumuyun.ui.theme.Spacing
@@ -58,8 +59,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.width
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.draw.shadow
@@ -613,17 +612,11 @@ private fun TaskCompletionToast(
                     )
                 }
                 Spacer(Modifier.width(Spacing.sm))
-                Button(
+                RolePrimaryButton(
+                    text = "立即查看 →",
+                    roleColor = accentColor,
                     onClick = { onViewResult(message.jobResultId) },
-                    colors  = ButtonDefaults.buttonColors(containerColor = accentColor),
-                    shape   = RoundedCornerShape(20.dp),
-                ) {
-                    Text(
-                        text  = "立即查看 →",
-                        style = type.label,
-                        color = Color.White,
-                    )
-                }
+                )
             }
         }
     }

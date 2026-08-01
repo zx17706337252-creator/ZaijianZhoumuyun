@@ -41,6 +41,22 @@ object Palette {
     val Gold     = Color(0xFFC4A46A)
     val GoldSoft = Color(0xFFF0E8D0)
 
+    // ── UI 升级 v2.0（鎏金纸梦融合方案）：金色系统补全 ──────────────
+    // 此前只有 Gold/AccentSoft 两档，融合方案的三段黄铜渐变与金色文字
+    // 都缺 token。补：深金（文字/强调，纸底对比度 ≥4.5:1）、亮金（渐变
+    // 高光端）、发丝金线（45% 透明度，卷草/页框/分隔带共用）。
+    val GoldDeep   = Color(0xFFA8894E)  // 金色文字/强调（accentDeep）
+    val GoldBright = Color(0xFFDCC08A)  // 黄铜渐变高光端
+    val GoldLine   = Gold.copy(alpha = 0.45f)  // 1px 发丝金线
+
+    // ── UI 升级 v2.0：火漆刻字印章（方案C刻字火漆，替代部分 Velvet 场景）──
+    // 与 Velvet（蜡封点/危险文字）语义不同：Wax 系专用于「仪式印章」——
+    // 置顶记忆「珍」、需要关注「念/期/隙」、升阶「缔」，全册预算 ≤8 处。
+    // 径向高光三档：circle at 36% 30% 高光 → 主体 → 底部深边。
+    val Wax     = Color(0xFF8A2B3D)   // 火漆主体
+    val WaxHi   = Color(0xFFB8546A)   // 火漆高光（36% 30% 光点）
+    val WaxDeep = Color(0xFF6E1F2F)   // 火漆底部深边
+
     // 文件类型图标重设计（icon_redesign_renders 新配色方案）：此前 PDF/文档/
     // 压缩包全部落在 Ink600 同一色上，观感单一。现按类型分派独立暖色系色相，
     // 降过饱和度，彼此有区分度又不出戏（非 Material 默认红蓝绿黄撞色）。
@@ -161,6 +177,10 @@ data class AppColors(
     val textDisabled: Color,
     val accent: Color,
     val accentSoft: Color,
+    // UI 升级 v2.0：深金文字/强调色（融合方案 --gold-deep #A8894E）。
+    // 浅色模式 = Palette.GoldDeep；暗色模式提亮半档保证金色文字在暗底上的
+    // 对比度（暗底禁用纯 GoldDeep，会糊）。仅追加字段，全部具名构造不受影响。
+    val accentDeep: Color,
     val statusActive: Color,
     val statusIdle: Color,
     val statusFocused: Color,
@@ -192,6 +212,7 @@ val LightColors = AppColors(
     textDisabled  = Palette.Ink300,
     accent        = Palette.Gold,
     accentSoft    = Palette.AccentSoft,
+    accentDeep    = Palette.GoldDeep,
     statusActive  = Palette.Online,
     statusIdle    = Palette.Idle,
     statusFocused = Palette.Focused,
@@ -214,6 +235,7 @@ val DarkColors = AppColors(
     textDisabled  = Palette.Ink600,
     accent        = Palette.Gold,
     accentSoft    = Palette.Gold.copy(alpha = 0.15f),
+    accentDeep    = Palette.GoldBright,
     statusActive  = Palette.Online,
     statusIdle    = Palette.Idle,
     statusFocused = Palette.Focused,

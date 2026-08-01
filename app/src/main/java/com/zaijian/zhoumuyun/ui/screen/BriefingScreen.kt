@@ -11,11 +11,10 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import com.zaijian.zhoumuyun.ui.design.GhostGoldButton
+import com.zaijian.zhoumuyun.ui.design.GoldPrimaryButton
 import androidx.compose.runtime.Composable
 // P3-35 修复：升级为 lifecycle-aware 版本
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -92,20 +91,17 @@ fun BriefingScreen(
                         textAlign = TextAlign.Center,
                     )
                     Spacer(Modifier.height(20.dp))
-                    Button(
+                    GoldPrimaryButton(
+                        text = "重新加载",
                         onClick = { viewModel.refresh() },
                         modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.buttonColors(containerColor = colors.accent),
-                    ) {
-                        Text("重新加载")
-                    }
+                    )
                     Spacer(Modifier.height(12.dp))
-                    OutlinedButton(
+                    GhostGoldButton(
+                        text = "跳过，直接进入公馆",
                         onClick = onEnterWorld,
                         modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text("跳过，直接进入公馆")
-                    }
+                    )
                 }
             }
 
@@ -155,17 +151,16 @@ fun BriefingScreen(
                     }
 
                     item {
-                        Button(
+                        // UI 升级 v2.0（融合方案 §4.1 + 帧02）：全页唯一 Primary
+                        // 从 Material3 纯色 accent 平涂（违反金色军规 §1）迁移到
+                        // GoldPrimaryButton（黄铜三段渐变 + 顶高光 + 金影 + 按压下沉）。
+                        GoldPrimaryButton(
+                            text = "推门进入公馆",
                             onClick = onEnterWorld,
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(Spacing.screenHorizontal),
-                            // P3-54 修复（重做）："推门进入公馆" 是主操作 CTA，语义上是强调/引导操作，
-                            // 不应使用 error（红色/危险语义）。改用 colors.accent 作为主强调色。
-                            colors = ButtonDefaults.buttonColors(containerColor = colors.accent),
-                        ) {
-                            Text("推门进入公馆")
-                        }
+                        )
                     }
                 }
             }

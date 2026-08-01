@@ -83,6 +83,7 @@ import com.zaijian.zhoumuyun.data.model.DefaultPresenceStates
 import com.zaijian.zhoumuyun.domain.PresenceEngine
 import com.zaijian.zhoumuyun.ui.component.BreathingAvatar
 import com.zaijian.zhoumuyun.ui.component.FertileWindowConsentDialog
+import com.zaijian.zhoumuyun.ui.design.AiStatePill
 import com.zaijian.zhoumuyun.ui.theme.AnimDuration
 import com.zaijian.zhoumuyun.ui.theme.AppTheme
 import com.zaijian.zhoumuyun.ui.theme.GlassOpacity
@@ -906,6 +907,27 @@ fun ChatScreen(
                             modifier = Modifier.padding(horizontal = Spacing.screenHorizontal, vertical = Spacing.xs),
                         )
                     }
+                }
+            }
+
+            // ── AI 状态胶囊（帧21 AiStatePill）：流式生成/工具执行期间在顶栏下沿
+            // 显示当前 AI 状态，由 ChatUiState.streamingHint 驱动（"正在生成回复…"
+            // / 工具特定提示如"正在生成PDF…"）。streamingHint 生命周期与 isTyping
+            // 一致（流式开始设值、结束清 null），二者同时成立才显示。──
+            AnimatedVisibility(
+                visible = isTyping && streamingHint != null,
+                enter = fadeIn(tween(AnimDuration.fast)) +
+                    slideInVertically(tween(AnimDuration.fast)) { -it },
+                exit = fadeOut(tween(AnimDuration.fast)) +
+                    slideOutVertically(tween(AnimDuration.fast)) { -it },
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = Spacing.screenHorizontal, vertical = Spacing.xs),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    AiStatePill(text = streamingHint.orEmpty())
                 }
             }
         }

@@ -2,6 +2,7 @@ package com.zaijian.zhoumuyun.ui.screen
 
 import android.widget.Toast
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -21,8 +22,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
@@ -40,6 +39,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -48,6 +48,8 @@ import com.zaijian.zhoumuyun.data.db.entity.CharacterTitleRelationEntity
 import com.zaijian.zhoumuyun.data.db.entity.ImpersonationPresetEntity
 import com.zaijian.zhoumuyun.data.model.CharacterConfig
 import com.zaijian.zhoumuyun.ui.component.DetailTopBar
+import com.zaijian.zhoumuyun.ui.design.WorldCard
+import com.zaijian.zhoumuyun.ui.theme.AppBrushes
 import com.zaijian.zhoumuyun.ui.theme.Spacing
 import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
 import com.zaijian.zhoumuyun.ui.viewmodel.CharacterTitleRelationViewModel
@@ -217,14 +219,22 @@ private fun CharacterChip(
     Box(
         modifier = Modifier
             .clip(RoundedCornerShape(999.dp))
-            .background(if (selected) colors.accent else colors.bgCard)
+            // 选中态：黄铜三段渐变（金色军规 §1，禁纯色平涂）；未选：纸底 + 金发丝边
+            .background(if (selected) AppBrushes.goldGradient() else colors.bgCard)
+            .then(
+                if (!selected) {
+                    Modifier.border(0.5.dp, colors.accent.copy(alpha = 0.30f), RoundedCornerShape(999.dp))
+                } else {
+                    Modifier
+                },
+            )
             .clickable(onClick = onClick)
             .padding(horizontal = Spacing.md, vertical = Spacing.sm),
     ) {
         Text(
             text = name,
             style = type.body,
-            color = if (selected) colors.bgBase else colors.textPrimary,
+            color = if (selected) Color.White else colors.textPrimary,
         )
     }
 }
@@ -247,11 +257,9 @@ private fun TitleEditRow(
     var text by remember(initialTitle) { mutableStateOf(initialTitle) }
     var lastSaved by remember(initialTitle) { mutableStateOf(initialTitle) }
 
-    Card(
+    WorldCard(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = colors.bgCard),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-        shape = RoundedCornerShape(12.dp),
+        cornerRadius = 12.dp,
     ) {
         Row(
             modifier = Modifier
@@ -415,11 +423,9 @@ private fun SectionCard(
     val colors = ZaijianTheme.colors
     val type = ZaijianTheme.typography
 
-    Card(
+    WorldCard(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = colors.bgCard),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-        shape = RoundedCornerShape(16.dp),
+        cornerRadius = 16.dp,
     ) {
         Column(modifier = Modifier.padding(Spacing.cardPadding)) {
             if (title != null) {

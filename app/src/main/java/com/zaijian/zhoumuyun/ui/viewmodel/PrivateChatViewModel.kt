@@ -101,23 +101,48 @@ class PrivateChatViewModel(application: Application) : AndroidViewModel(applicat
         }
     }
 
+    companion object {
+        // 与 PrivateChatEngine.generateReply() 里 getRecentBySession(limit = 20) 对齐——
+        // 超过 20 的部分喂给 LLM 的历史会被截断，允许用户设置比这更大的轮数没有意义，
+        // 反而会导致长会话里角色"失忆"（忘记更早聊过什么）。
+        const val MAX_TURNS_UPPER_BOUND = 20
+        // 至少 2 轮：开场白 + 至少一次回应，才算"发生过一次真实交流"——
+        // 与 PrivateChatEngine.runSession() 里"turnIndex >= 2 才生成记忆"的判断
+        // 使用同一门槛，避免出现"只有开场白、对方从未回应"的空会话。
+        const val MIN_TURNS_LOWER_BOUND = 2
+    }
+
     fun updateParams(pairId: String, maxTurns: Int, maxSessions: Int, cooldown: Int) {
         viewModelScope.launch {
-            pairRepo.updateParams(pairId, maxTurns, maxSessions, cooldown)
-            _toast.value = "参数已更新"
+            val clampedTurns = maxTurns.coerceIn(MIN_TURNS_LOWER_BOUND, MAX_TURNS_UPPER_BOUND)
+            val clampedSessions = maxSessions.coerceAtLeast(1)
+            val clampedCooldown = cooldown.coerceAtLeast(0)
+            pairRepo.updateParams(pairId, clampedTurns, clampedSessions, clampedCooldown)
+            _toast.value = if (clampedTurns != maxTurns || clampedSessions != maxSessions || clampedCooldown != cooldown) {
+                "参数已更新（每轮对话数已限制在 $MIN_TURNS_LOWER_BOUND-$MAX_TURNS_UPPER_BOUND 之间，其余数值已按最小有效值调整）"
+            } else {
+                "参数已更新"
+            }
         }
     }
 
-    fun triggerSession(pairId: String, initiatorId: Int) {
+    fun triggerSession(pairId: String, initiatorId: Int, directive: String? = null) {
         viewModelScope.launch {
-            val pair = pairRepo.get(pairId)
+            var pair = pairRepo.get(pairId)
             if (pair == null) {
                 _toast.value = "配对不存在"
                 return@launch
             }
+            // v2.7 统一：此前这里遇到未开启会拒绝并提示"该角色对私聊未开启"，
+            // 但 PrivateChatSendTool（角色在对话里主动发起私聊）遇到同样情况是
+            // 自动打开——同一件事两个入口行为不一致。按用户确认的方向统一为
+            // "自动开启"：不再拦截，直接打开开关后继续往下走，跟工具入口对齐。
             if (!pair.enabled) {
-                _toast.value = "该角色对私聊未开启"
-                return@launch
+                pairRepo.updateEnabled(pairId, true)
+                pair = pairRepo.get(pairId) ?: run {
+                    _toast.value = "配对不存在"
+                    return@launch
+                }
             }
             if (PrivateChatEngine.isKillSwitchOn(getApplication())) {
                 _toast.value = "全局私聊开关已关闭"
@@ -144,7 +169,7 @@ class PrivateChatViewModel(application: Application) : AndroidViewModel(applicat
                 _toast.value = "该角色已自主下线，暂不会再回复"
                 return@launch
             }
-            enqueuePrivateChatSession(getApplication(), pairId, initiatorId)
+            enqueuePrivateChatSession(getApplication(), pairId, initiatorId, directive)
             _toast.value = "已发起私聊，请稍候"
         }
     }

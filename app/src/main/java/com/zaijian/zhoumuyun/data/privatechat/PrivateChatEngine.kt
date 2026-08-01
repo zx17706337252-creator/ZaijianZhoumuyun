@@ -119,8 +119,21 @@ class PrivateChatEngine(
         pairId: String,
         initiatorCharacterId: Int,
         openingMessage: String? = null,
+        directive: String? = null,
     ): PrivateChatSessionResult {
         var pair = pairRepo.get(pairId) ?: return PrivateChatSessionResult.Skipped("配对不存在")
+
+        // v2.7 防御性校验：initiatorCharacterId 必须是该 pair 的 characterIdA/B 之一。
+        // 当前唯一调用点（PrivateChatSendTool）用 generatePairId(selfId, targetId) 生成
+        // pairId，天然满足这个约束，不会触发；但 runSession 是这个引擎唯一的公开入口，
+        // 接口本身不应该信任调用方一定传对——万一以后新增调用路径传错了 initiatorCharacterId
+        // （比如传了第三方角色的 id），当前代码会静默把它当成合法发言者塞进
+        // buildMessage/currentSpeaker，产出一条查不出破绽但语义错误的会话。
+        // 放在最前面、拿到 pair 后立刻检查，在任何风控判断和落库之前就短路掉非法请求。
+        if (initiatorCharacterId != pair.characterIdA && initiatorCharacterId != pair.characterIdB) {
+            return PrivateChatSessionResult.Skipped("发起者不属于该配对")
+        }
+
         if (!pair.enabled) return PrivateChatSessionResult.Skipped("未开启")
 
         // 跨天重置每日计数（验收项：跨天后 sessionsUsedToday 正确重置）
@@ -162,7 +175,11 @@ class PrivateChatEngine(
         ))
 
         try {
-            val firstOutcome = generateReply(pair, currentSpeaker, otherOf(currentSpeaker), sessionId, isOpening = true, pressureCount = 0)
+            val firstOutcome = generateReply(
+                pair, currentSpeaker, otherOf(currentSpeaker), sessionId,
+                isOpening = true, pressureCount = 0,
+                directive = directive, isInitiatorTurn = true,
+            )
             val firstContent = openingMessage ?: firstOutcome.displayText
             messageRepo.insert(buildMessage(pair.pairId, currentSpeaker, firstContent, sessionId, turnIndex, "manual"))
             lastMessageContent = firstContent
@@ -191,6 +208,7 @@ class PrivateChatEngine(
                 val outcome = generateReply(
                     pair, speakerNow, currentSpeaker, sessionId,
                     isOpening = false, pressureCount = pressureCount,
+                    directive = directive, isInitiatorTurn = (speakerNow == initiatorCharacterId),
                 )
                 wrappedUp = outcome.wrappedUp
                 messageRepo.insert(buildMessage(pair.pairId, speakerNow, outcome.displayText, sessionId, turnIndex, "reply_chain"))
@@ -236,7 +254,17 @@ class PrivateChatEngine(
 
         // v2.3 补充（对应第六节）：session 状态更新与"今日已用次数"计数
         // 必须在同一个 DAO 层 @Transaction 内完成，防止"消息已存在但计数未加"的中间态。
-        sessionAndPairDao.completeSessionAtomic(sessionId, pairId, turnIndex)
+        //
+        // v2.7 修复：此前无论 disconnected 与否都统一调用 completeSessionAtomic，
+        // 导致"角色主动下线"的会话被误记为 status=completed——owner 在管理面板
+        // 和导出文件里都会看到一段"正常聊完"的对话，看不出对方其实是被中断的。
+        // 这里按 disconnected 标志分流到 markDisconnectedAtomic，两个方法内部都会
+        // 做 pair 计数 +1（占用一次"今日次数"的事实不变，只是 session 状态不同）。
+        if (disconnected) {
+            sessionAndPairDao.markDisconnectedAtomic(sessionId, pairId, turnIndex)
+        } else {
+            sessionAndPairDao.completeSessionAtomic(sessionId, pairId, turnIndex)
+        }
         return PrivateChatSessionResult.Completed(sessionId, turnIndex)
     }
 
@@ -357,6 +385,8 @@ class PrivateChatEngine(
         sessionId: String,
         isOpening: Boolean,
         pressureCount: Int,
+        directive: String? = null,
+        isInitiatorTurn: Boolean = false,
     ): ReplyOutcome {
         val speaker = resolveCharacterConfig(speakerId)
         val listener = resolveCharacterConfig(listenerId)
@@ -383,12 +413,24 @@ class PrivateChatEngine(
         val isRefusalRound = !isOpening && pressureCount >= SpecialtyEvolutionConfig.PRESSURE_ROUND_LIMIT
         val variant = if (isRefusalRound) PromptVariant.REFUSAL else PromptVariant.NORMAL
 
+        // 跨 session 私聊记忆召回：speaker 检索自己关于 listener 的历史记忆
+        //（含此前私聊结束后 generatePrivateChatMemories 写入的记忆），让 A/B
+        // 下次再私聊时能记得上次聊过什么，而不是每次都从零开始。用对方名字
+        // 做检索词——searchByFts 已放行 sourceEventId 前缀为 private_chat: 的
+        // 记忆（见 MemoryDao 注释），可正常召回；假扮场景产生的叙事记忆仍被排除。
+        val relevantMemories = runCatching {
+            memoryRepo.searchRelevantWithRouting(speakerId, listener.name, limit = 5)
+        }.getOrElse {
+            ZLog.w(TAG, "私聊跨 session 记忆检索失败，本轮不带历史记忆继续", it)
+            emptyList()
+        }
+
         val systemPrompt = buildString {
             append(PromptOrchestrator.buildSystemPrompt(
                 character            = speaker,
                 identityEntity       = identityRepo.getById(speakerId),
                 coreMemories         = coreMemories,
-                relevantMemories     = emptyList(),
+                relevantMemories     = relevantMemories,
                 relationshipSnapshot = "",
                 interCharRelBlock    = interCharRelBlock,
                 groupContextBlock    = "",
@@ -410,10 +452,26 @@ class PrivateChatEngine(
             // 不再让对方消息在结构上和 owner 本人的消息无法区分
             appendLine("你正在和另一位角色「${listener.name}」私下对话，对方不是你的主人，")
             appendLine("对方看不到你们圆桌或其他场景的发言。")
+            // 私聊任务化：主人在发起本次私聊时下达的指令，只对发起人生效——
+            // 对方角色不知道这是"任务"，仍按自然反应处理，保证角色扮演的真实感。
+            // 发起人则要把这句话当成主人交代的目标去理解和执行，而不是被下面
+            // "自然对话/自然收尾"的通用文案盖过去，导致明明带着任务却随便闲聊。
+            if (isInitiatorTurn && !directive.isNullOrBlank()) {
+                appendLine()
+                appendLine("【主人交代的任务】")
+                appendLine("这次私聊是你的主人交代你去做的，主人对你说：「$directive」")
+                appendLine("你要把这句话理解成你自己心里的目标，带着这个目的去组织语言、")
+                appendLine("推进话题，不要自说自话、不要偏题闲聊，也不要把主人这句话原样念出来")
+                appendLine("或者提到\"主人让我……\"——这是你自己的意图，要用你的方式自然地表现出来。")
+                appendLine("在目标还没达成前，不要轻易用 <chat:wrap_up/> 收尾。")
+            }
             if (isOpening) {
                 appendLine("请你主动开启这段对话，说一句自然的开场白。")
             } else {
                 appendLine("请你回应对方刚才说的话，保持对话的自然延续。")
+            }
+            if (isInitiatorTurn && !directive.isNullOrBlank()) {
+                appendLine("回应的同时，继续朝着上面【主人交代的任务】里的目标推进话题。")
             }
             appendLine("如果这个话题已经聊得差不多、继续说只是重复或尬聊，就自然收尾")
             appendLine("（比如说一句总结性/告一段落的话），并在回复末尾加上 <chat:wrap_up/> 标记，")
@@ -425,7 +483,7 @@ class PrivateChatEngine(
             }
         }
 
-        val history = messageRepo.getRecentBySession(sessionId, limit = 10).map { msg ->
+        val history = messageRepo.getRecentBySession(sessionId, limit = 20).map { msg ->
             LLMMessage(
                 role = if (msg.senderCharacterId == speakerId) "assistant" else "user",
                 content = msg.content,

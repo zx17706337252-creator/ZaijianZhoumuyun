@@ -528,7 +528,10 @@ fun AppNavigation(
                             Text(
                                 text  = item.label,
                                 style = type.label,
-                                color = iconTint,
+                                // UI 升级 v2.0（金色军规 §2）：选中态文字从 accent 纯金
+                                // 改为 accentDeep 深金——11sp 小字号纯金文字在纸底
+                                // 对比度不足 4.5:1，金色文字只用 GoldDeep。
+                                color = if (selected) colors.accentDeep else colors.textSecondary,
                             )
                             // 选中指示点：4dp 圆点 fade+scale 动画，紧贴文字下方
                             androidx.compose.animation.AnimatedVisibility(

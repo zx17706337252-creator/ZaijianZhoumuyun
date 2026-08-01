@@ -45,6 +45,8 @@ import com.zaijian.zhoumuyun.data.agent.HeartbeatSetTool
 import com.zaijian.zhoumuyun.data.agent.HeartbeatUpdateTool
 import com.zaijian.zhoumuyun.data.agent.HeartbeatDeleteTool
 import com.zaijian.zhoumuyun.data.agent.ReminderTool
+import com.zaijian.zhoumuyun.data.agent.PrivateChatSendTool
+import com.zaijian.zhoumuyun.data.agent.PrivateChatHistoryTool
 import com.zaijian.zhoumuyun.data.agent.registerSoulMemoryUserTools
 import com.zaijian.zhoumuyun.data.agent.CalendarSyncHelper
 import com.zaijian.zhoumuyun.data.repository.ScheduleRepository
@@ -68,6 +70,9 @@ import com.zaijian.zhoumuyun.data.repository.WorkflowRepository
 import com.zaijian.zhoumuyun.data.repository.ChainRunRepository
 import com.zaijian.zhoumuyun.data.repository.ProjectRepository
 import com.zaijian.zhoumuyun.data.repository.AgentStoreRepository
+import com.zaijian.zhoumuyun.data.repository.PrivateChatPairRepository
+import com.zaijian.zhoumuyun.data.repository.PrivateChatMessageRepository
+import com.zaijian.zhoumuyun.data.repository.DaughterCharacterRepository
 
 /**
  * 封装 Agent 工具注册逻辑，从 ChatViewModel 中提取。
@@ -100,6 +105,12 @@ class ChatToolRegistrar(
     // Agent 结构化存储（方案_Agent结构化存储_最终版）：与上方各 repo 同款由
     // ChatViewModel 显式传入，供本类 registerCharacterTools() 第②处覆盖注册使用。
     private val agentStoreRepo: AgentStoreRepository,
+    // 主聊天工具接入 · 角色间私聊（ChatScreen 场景，见 PrivateChatAgentTools.kt）：
+    // 三者均取自 AppContainer 共享单例（与 PrivateChatEngine/PrivateChatExporter/
+    // ProactiveMessageNotifier 同款复用，不在此处/工具内部另起一份实例）。
+    private val privateChatPairRepo: PrivateChatPairRepository,
+    private val privateChatMessageRepo: PrivateChatMessageRepository,
+    private val daughterCharacterRepo: DaughterCharacterRepository,
 ) {
     private var toolsRegisteredForCharacterId: Int? = null
 
@@ -262,6 +273,22 @@ class ChatToolRegistrar(
             ScheduleGetTool(
                 scheduleRepository  = scheduleRepo,
                 projectRepository   = projectRepo,
+                characterIdProvider = { currentCharacterId },
+            ),
+            // 主聊天工具接入 · 角色间私聊（详见 PrivateChatAgentTools.kt 顶部说明）：
+            // A 在与用户的日常对话里识别"去找 B 聊聊"类意图时吐出
+            // <tool:private_chat_send target="B" directive="..."/>，
+            // 之后用户追问"你们聊了什么"由 private_chat_history 提供逐字原文。
+            PrivateChatSendTool(
+                context             = getApplication(),
+                pairRepo            = privateChatPairRepo,
+                daughterRepo        = daughterCharacterRepo,
+                characterIdProvider = { currentCharacterId },
+            ),
+            PrivateChatHistoryTool(
+                pairRepo            = privateChatPairRepo,
+                messageRepo         = privateChatMessageRepo,
+                daughterRepo        = daughterCharacterRepo,
                 characterIdProvider = { currentCharacterId },
             ),
             HeartbeatSetTool(
