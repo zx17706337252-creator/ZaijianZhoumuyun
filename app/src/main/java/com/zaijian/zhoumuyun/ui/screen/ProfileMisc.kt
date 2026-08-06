@@ -78,6 +78,42 @@ import kotlinx.coroutines.launch
 
 
 // ─────────────────────────────────────────────────────────────
+//  ProfileMiscRow — 折叠跳转入口行（UI 升级 v2.0 帧20 我的页）
+//  「外观 · 昼夜跟随系统 ›」「通知 · 简报与牵挂 ›」这类单行导航，
+//  替代原先完整展开的设置面板，点击后由调用方弹层承载具体设置。
+// ─────────────────────────────────────────────────────────────
+
+@Composable
+internal fun ProfileMiscRow(
+    icon: @Composable () -> Unit,
+    title: String,
+    subtitle: String,
+    trailing: String,
+    onClick: () -> Unit,
+) {
+    val colors = ZaijianTheme.colors
+    val type   = ZaijianTheme.typography
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = Spacing.screenHorizontal, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        icon()
+        Spacer(Modifier.width(Spacing.sm))
+        Text(text = title, style = type.body, color = colors.textPrimary)
+        if (subtitle.isNotBlank()) {
+            Spacer(Modifier.width(4.dp))
+            Text(text = "· $subtitle", style = type.caption, color = colors.textSecondary)
+        }
+        Spacer(Modifier.weight(1f))
+        Text(text = trailing, style = type.cardTitle, color = colors.textDisabled)
+    }
+}
+
+
+// ─────────────────────────────────────────────────────────────
 //  AppearanceSection — 外观设置（主题/字体/背景风格，可点击）
 // ─────────────────────────────────────────────────────────────
 
@@ -220,7 +256,7 @@ internal fun NotificationSection(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = Spacing.md, vertical = 10.dp),
+                    .padding(horizontal = Spacing.md, vertical = 14.dp),
                 verticalAlignment     = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
@@ -246,7 +282,7 @@ internal fun NotificationSection(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = Spacing.md, vertical = 10.dp),
+                    .padding(horizontal = Spacing.md, vertical = 14.dp),
                 verticalAlignment     = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
@@ -272,7 +308,7 @@ internal fun NotificationSection(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = Spacing.md, vertical = 10.dp),
+                    .padding(horizontal = Spacing.md, vertical = 14.dp),
                 verticalAlignment     = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
@@ -333,7 +369,7 @@ internal fun PregnancySettingsSection(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = Spacing.md, vertical = 10.dp),
+                    .padding(horizontal = Spacing.md, vertical = 14.dp),
                 verticalAlignment     = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {

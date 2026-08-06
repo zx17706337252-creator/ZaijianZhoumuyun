@@ -1,9 +1,14 @@
 package com.zaijian.zhoumuyun.ui.screen.briefing
 
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.text.style.TextAlign
+import com.zaijian.zhoumuyun.ui.design.WorldCard
+import com.zaijian.zhoumuyun.ui.theme.Radius
 import com.zaijian.zhoumuyun.ui.theme.Spacing
 import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
 
@@ -20,9 +25,15 @@ import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
 fun BriefingIntroSection(periodStart: Long, periodEnd: Long, modifier: Modifier = Modifier) {
     val days = ((periodEnd - periodStart) / 86_400_000L).coerceAtLeast(0)
     val text = if (days == 0L) "你刚离开不久，公馆里一切如常" else "你离开的这 $days 天里，公馆发生了这些事"
-    Text(
-        text = text,
-        style = ZaijianTheme.typography.cardTitle,
-        modifier = modifier.padding(Spacing.screenHorizontal),
-    )
+    WorldCard(
+        modifier = modifier.fillMaxWidth().padding(horizontal = Spacing.screenHorizontal),
+        cornerRadius = Radius.sm,
+    ) {
+        Text(
+            text = text,
+            style = ZaijianTheme.typography.cardTitle,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth().padding(vertical = Spacing.sm),
+        )
+    }
 }

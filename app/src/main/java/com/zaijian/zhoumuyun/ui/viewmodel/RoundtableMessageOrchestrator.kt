@@ -297,9 +297,16 @@ $digest
                 // P0-02 修复：原先 generationStatus=DONE 写在 try-catch 之后，
                 // CancellationException rethrow 会跳过这行，导致 Bot 状态指示器
                 // 永远卡在 GENERATING（幽灵消息问题的外层表现）。改用 finally 确保
-                // 无论正常完成、异常、还是被取消，状态都会被推进到 DONE。
+                // 无论正常完成、异常、还是被取消，状态都会被推进到终态。
+                //
+                // P1-3 修复：常规回复路径此前无条件置 DONE，`INTERRUPTED` 终态只在
+                // 自发路径产生（死代码）。这里在 finally 里按 isInterruptedRef() 判定：
+                // 用户打断（interrupt() 置 isInterrupted=true 并取消 roundJob）时，被
+                // 截断的 Bot 置为 INTERRUPTED 而非 DONE，UI 才能区分"完整回复"与
+                // "被截断回复"（RoundtableMemberStrip/Overlays 渲染 ✗/灰点）。
                 _uiState.update { s ->
-                    s.copy(generationStatus = (s.generationStatus + (bot.id to BotGenerationStatus.DONE)).toImmutableMap())
+                    val status = if (isInterruptedRef()) BotGenerationStatus.INTERRUPTED else BotGenerationStatus.DONE
+                    s.copy(generationStatus = (s.generationStatus + (bot.id to status)).toImmutableMap())
                 }
             }
         }
@@ -348,6 +355,10 @@ $digest
     fun interrupt() {
         isInterruptedSetter(true)
         getRoundJob()?.cancel()
+        // P1-4 修复：原先只取消 roundJob，自发互动（自发发言运行在 idleWatchJob 内）
+        // 无法被 interrupt() 打断——用户正在打字时角色仍会强行插话到流式结束。
+        // 这里一并取消 idleWatchJob，让自发发言的流式收集在下一个安全点终止。
+        getIdleWatchJob()?.cancel()
     }
 
     // ──────────────────────────────────────────────────────────
@@ -586,6 +597,12 @@ $digest
                 ZLog.e("RoundtableViewModel", "圆桌讨论异常", e)
                 _uiState.update { it.copy(error = "发生错误，请重试") }
             } finally {
+                // P1-4 修复：isInterrupted 此前只在 sendMessage 开头复位。若用户打字触发
+                // interrupt() 后又只删字不发消息，isInterrupted 会一直为 true，下一次
+                // 自发互动会因 isInterruptedRef()==true 产出空气泡。这里在本轮收尾统一
+                // 复位（本轮无论正常结束 / 被打断 / 异常都会走到这个 finally），
+                // 让下轮自发互动从干净状态开始。
+                isInterruptedSetter(false)
                 _uiState.update {
                     it.copy(
                         isScheduling    = false,

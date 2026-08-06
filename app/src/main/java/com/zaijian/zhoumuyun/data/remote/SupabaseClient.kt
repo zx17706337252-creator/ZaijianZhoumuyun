@@ -100,11 +100,19 @@ object SupabaseClient {
     suspend fun fetchUnreadResults(characterId: Int): FetchResult =
         withTimeout(SUPABASE_TOTAL_TIMEOUT_MS) {
         withContext(Dispatchers.IO) {
-            val conn = openConnection(
-                "GET",
-                "/rest/v1/job_results?character_id=eq.${urlEncode(characterId.toString())}&is_read=eq.false&order=created_at.desc&limit=20"
-            )
+            // #8 修复：openConnection(...) 此前在 try 块外调用——base 缺协议头等
+            // 场景下它会抛 MalformedURLException，未被下面的 catch 覆盖，直接
+            // 冒泡到调用方 ScheduleRepository.syncCloudResults() 再到
+            // ZaijianApp 冷启动的 `for (charId in 1..9) { syncCloudResults(charId) }`
+            // 循环，中断整个循环并跳过后续 charId 和 runLocalCompensation()。
+            // 声明为可空并挪进 try，让 openConnection 本身的异常也走同一套
+            // catch/FetchResult.Failed 路径，调用方的 for 循环不再被打断。
+            var conn: HttpURLConnection? = null
             try {
+                conn = openConnection(
+                    "GET",
+                    "/rest/v1/job_results?character_id=eq.${urlEncode(characterId.toString())}&is_read=eq.false&order=created_at.desc&limit=20"
+                )
                 val code = conn.responseCode
                 if (code !in 200..299) {
                     // C7#27 修复：HTTP 非 2xx 是拉取失败，不是"云端没有数据"，
@@ -147,7 +155,7 @@ object SupabaseClient {
                 ZLog.e("SupabaseClient", "fetchUnreadResults failed，本次同步未执行", e)
                 FetchResult.Failed
             } finally {
-                conn.disconnect()
+                conn?.disconnect()
             }
         }
         }
@@ -159,8 +167,12 @@ object SupabaseClient {
         withTimeout(SUPABASE_TOTAL_TIMEOUT_MS) {
         withContext(Dispatchers.IO) {
             val body = JSONObject().put("is_read", true)
-            val conn = openConnection("PATCH", "/rest/v1/job_results?id=eq.${urlEncode(resultId)}")
+            // #8 修复：同一处遗留问题——openConnection(...) 原先在 try 外调用。
+            // 这里的两个调用方（syncCloudResults/retryPendingCloudMarkRead）都是
+            // for 循环逐条调用，未捕获异常会中断循环、跳过剩余条目。挪进 try。
+            var conn: HttpURLConnection? = null
             try {
+                conn = openConnection("PATCH", "/rest/v1/job_results?id=eq.${urlEncode(resultId)}")
                 OutputStreamWriter(conn.outputStream).use { it.write(body.toString()) }
                 val code = conn.responseCode
                 code in 200..299
@@ -170,7 +182,7 @@ object SupabaseClient {
                 ZLog.w("SupabaseClient", "markResultRead failed", e)
                 false
             } finally {
-                conn.disconnect()
+                conn?.disconnect()
             }
         }
         }
@@ -180,8 +192,13 @@ object SupabaseClient {
      */
     suspend fun deleteScheduledJob(id: String): Boolean = withTimeout(SUPABASE_TOTAL_TIMEOUT_MS) {
         withContext(Dispatchers.IO) {
-        val conn = openConnection("DELETE", "/rest/v1/scheduled_jobs?id=eq.${urlEncode(id)}")
+        // #8 修复：与 fetchUnreadResults 同一处遗留问题——openConnection(...)
+        // 原先在 try 块外调用，MalformedURLException 等会不经 catch 直接冒泡。
+        // 这里的调用方 ScheduleRepository.deleteJob() 本身也没有 try-catch，
+        // 异常会继续冒泡到发起删除操作的 UI/ViewModel 层。挪进 try 统一兜底。
+        var conn: HttpURLConnection? = null
         try {
+            conn = openConnection("DELETE", "/rest/v1/scheduled_jobs?id=eq.${urlEncode(id)}")
             val code = conn.responseCode
             code in 200..299
         } catch (e: kotlinx.coroutines.CancellationException) {
@@ -190,7 +207,7 @@ object SupabaseClient {
             ZLog.w("SupabaseClient", "deleteScheduledJob failed", e)
             false
         } finally {
-            conn.disconnect()
+            conn?.disconnect()
         }
         }
     }
@@ -216,6 +233,11 @@ object SupabaseClient {
         nextRunAt: Long,
         description: String? = null,
         projectId: String? = null,
+        // P2-2-2 修复：toggleJobWithFullSync 禁用日程时此前只改本地 Room + 取消 WorkManager，
+        // 从未把 enabled=false 同步到云端 scheduled_jobs 表（upsertScheduledJob 恒写 enabled=true，
+        // updateScheduledJob 又从不写 enabled 列）→ 云端仍认为任务启用、可能继续执行。
+        // 新增此参数，null 表示"不更新该列"（保持既有调用点行为不变），false 用于禁用同步。
+        enabled: Boolean? = null,
     ): Boolean = withTimeout(SUPABASE_TOTAL_TIMEOUT_MS) {
         withContext(Dispatchers.IO) {
         try {
@@ -228,6 +250,8 @@ object SupabaseClient {
                 put("description", description)
                 // 日程系统第七节：与 upsertScheduledJob 对称追加。
                 put("project_id", projectId)
+                // P2-2-2 修复：仅在显式传入时写 enabled，避免覆盖未同步的既有行为。
+                if (enabled != null) put("enabled", enabled)
             }
             val conn = openConnection("PATCH", "/rest/v1/scheduled_jobs?id=eq.${urlEncode(id)}")
             try {
@@ -294,7 +318,24 @@ object SupabaseClient {
     private fun urlEncode(value: String): String = URLEncoder.encode(value, "UTF-8")
 
     private fun openConnection(method: String, path: String): HttpURLConnection {
-        val url = URL("$SUPABASE_URL$path")
+        val base = SUPABASE_URL.trim().trimEnd('/')
+        // 修复：SUPABASE_URL 未配置时，URL("$base$path") 会拼出无协议路径
+        // （如 "/rest/v1/job_results?..."），抛晦涩的 MalformedURLException: no protocol。
+        // 提前明确拦截，给出可直接执行的诊断信息。调用方 catch Throwable 后
+        //　会把该提示写入日志，避免误判为"网络/服务端问题"。
+        require(base.isNotEmpty()) {
+            "SUPABASE_URL 未配置（BuildConfig.SUPABASE_URL 为空）。请在项目 local.properties 或 -P 参数中配置 SUPABASE_URL 与 SUPABASE_ANON_KEY 后重新构建，否则云同步/本地补偿无法工作。"
+        }
+        // #8 修复：base 非空但缺协议头时（如误配成 "你的项目ID.supabase.co"，
+        // 漏了 "https://"），上面的 require 不拦截，URL("$base$path") 仍会拼出
+        // 无协议地址，抛同样晦涩的 MalformedURLException: no protocol。
+        // 提前显式校验协议头，给出与上面同等清晰的诊断信息，而不是让调用方在
+        // 日志里看到一个"看似网络问题"的 MalformedURLException。
+        require(base.startsWith("http://") || base.startsWith("https://")) {
+            "SUPABASE_URL 配置缺少协议头（当前值：\"$base\"）。请配置为完整地址，如 " +
+                "\"https://你的项目ID.supabase.co\"（需以 http:// 或 https:// 开头）。"
+        }
+        val url = URL("$base$path")
         return (url.openConnection() as HttpURLConnection).apply {
             requestMethod = method
             connectTimeout = TIMEOUT_MS

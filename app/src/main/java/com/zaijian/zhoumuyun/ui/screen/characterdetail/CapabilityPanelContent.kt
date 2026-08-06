@@ -42,7 +42,9 @@ import com.zaijian.zhoumuyun.ui.theme.Spacing
 import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
 import com.zaijian.zhoumuyun.ui.viewmodel.CapabilityPanelViewModel
 import com.zaijian.zhoumuyun.util.TimeFormatUtils
+import com.zaijian.zhoumuyun.ui.component.EmptyStateView
 import com.zaijian.zhoumuyun.ui.design.AppIcons
+import com.zaijian.zhoumuyun.ui.design.WorldCard
 
 // ═══════════════════════════════════════════════════════════════
 //  CapabilityPanelContent（Window D-4 · 能力面板 UI）
@@ -154,7 +156,12 @@ private fun CapabilityPanelBody(
     Spacer(Modifier.height(Spacing.xs))
 
     if (snapshot.enabledToolNames.isEmpty()) {
-        EmptyHint(text = "尚未注册任何工具")
+        // UI 升级 v2.0（帧22）：裸 Text 收口为 EmptyStateView 统一空态组件
+        EmptyStateView(
+            icon     = AppIcons.Build,
+            title    = "尚未注册任何工具",
+            modifier = Modifier.fillMaxWidth(),
+        )
     } else {
         ToolChipFlowRow(tools = snapshot.enabledToolNames, accentColor = accentColor)
     }
@@ -166,7 +173,13 @@ private fun CapabilityPanelBody(
     Spacer(Modifier.height(Spacing.xs))
 
     if (snapshot.recentActivity.isEmpty()) {
-        EmptyHint(text = "还没有活动记录，试试和她聊聊天")
+        // UI 升级 v2.0（帧22）：裸 Text 收口为 EmptyStateView 统一空态组件
+        EmptyStateView(
+            icon     = AppIcons.SmartToy,
+            title    = "暂无活动记录",
+            subtitle = "Agent开始工作后会在这里显示",
+            modifier = Modifier.fillMaxWidth(),
+        )
     } else {
         Column(verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
             snapshot.recentActivity.forEach { event ->
@@ -186,86 +199,90 @@ private fun RunningWorkflowCard(
     val colors = ZaijianTheme.colors
     val type = ZaijianTheme.typography
 
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(Radius.sm))
-            .background(colors.bgElevated)
-            .border(0.5.dp, accentColor.copy(alpha = 0.3f), RoundedCornerShape(Radius.sm))
-            .padding(Spacing.md),
+    // UI 升级 v2.0（帧22）：裸 Column+background+border 收口为 WorldCard，
+    // L0-L2 常态层 + L3 身份脊（ownerAccent=角色色）由 WorldCard 承担，内部内容不变。
+    WorldCard(
+        modifier = Modifier.fillMaxWidth(),
+        ownerAccent = accentColor,
+        cornerRadius = Radius.sm,
+        accentWash = true,
     ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(Spacing.xs),
+        Column(
+            modifier = Modifier.padding(Spacing.md),
         ) {
-            Icon(
-                imageVector = AppIcons.PlayArrow,
-                contentDescription = null,
-                tint = accentColor,
-                modifier = Modifier.size(16.dp),
-            )
-            Text(
-                text = "正在执行任务",
-                style = type.bodyBold,
-                color = accentColor,
-            )
-        }
-        Spacer(Modifier.height(Spacing.xs))
-        Text(
-            text = job.goal,
-            style = type.body,
-            color = colors.textPrimary,
-            maxLines = 3,
-            overflow = TextOverflow.Ellipsis,
-        )
-        Spacer(Modifier.height(Spacing.sm))
-
-        // 进度条
-        val progress = if (job.maxSteps > 0) {
-            job.currentStep.toFloat() / job.maxSteps.toFloat()
-        } else 0f
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
-        ) {
-            Text(
-                text = "进度 ${job.currentStep}/${job.maxSteps}",
-                style = type.caption,
-                color = colors.textSecondary,
-            )
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .height(4.dp)
-                    .clip(RoundedCornerShape(2.dp))
-                    .background(colors.borderSubtle),
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Spacing.xs),
             ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth(progress)
-                        .height(4.dp)
-                        .clip(RoundedCornerShape(2.dp))
-                        .background(accentColor),
+                Icon(
+                    imageVector = AppIcons.PlayArrow,
+                    contentDescription = null,
+                    tint = accentColor,
+                    modifier = Modifier.size(16.dp),
+                )
+                Text(
+                    text = "正在执行任务",
+                    style = type.bodyBold,
+                    color = accentColor,
                 )
             }
-        }
-        Spacer(Modifier.height(Spacing.xs))
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(Spacing.xs),
-        ) {
-            Icon(
-                imageVector = AppIcons.Schedule,
-                contentDescription = null,
-                tint = colors.textDisabled,
-                modifier = Modifier.size(12.dp),
-            )
+            Spacer(Modifier.height(Spacing.xs))
             Text(
-                text = "截止 ${TimeFormatUtils.formatDateTime(job.deadlineAt)}",
-                style = type.label,
-                color = colors.textDisabled,
+                text = job.goal,
+                style = type.body,
+                color = colors.textPrimary,
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis,
             )
+            Spacer(Modifier.height(Spacing.sm))
+
+            // 进度条
+            val progress = if (job.maxSteps > 0) {
+                job.currentStep.toFloat() / job.maxSteps.toFloat()
+            } else 0f
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
+            ) {
+                Text(
+                    text = "进度 ${job.currentStep}/${job.maxSteps}",
+                    style = type.caption,
+                    color = colors.textSecondary,
+                )
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(4.dp)
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(colors.borderSubtle),
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth(progress)
+                            .height(4.dp)
+                            .clip(RoundedCornerShape(2.dp))
+                            .background(accentColor),
+                    )
+                }
+            }
+            Spacer(Modifier.height(Spacing.xs))
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Spacing.xs),
+            ) {
+                Icon(
+                    imageVector = AppIcons.Schedule,
+                    contentDescription = null,
+                    tint = colors.textDisabled,
+                    modifier = Modifier.size(12.dp),
+                )
+                Text(
+                    text = "截止 ${TimeFormatUtils.formatDateTime(job.deadlineAt)}",
+                    style = type.label,
+                    color = colors.textDisabled,
+                )
+            }
         }
     }
 }
@@ -367,63 +384,68 @@ private fun ActivityRow(
         else -> event.outcome to colors.textDisabled
     }
 
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(Radius.xs))
-            .background(colors.bgElevated.copy(alpha = 0.5f))
-            .padding(horizontal = Spacing.sm, vertical = Spacing.xs),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
+    // UI 升级 v2.0（帧22）：裸 Row+background 收口为 WorldCard(cornerRadius=Radius.sm)，
+    // L0-L2 常态层由 WorldCard 承担，内部内容不变。
+    WorldCard(
+        modifier = Modifier.fillMaxWidth(),
+        cornerRadius = Radius.sm,
     ) {
-        Icon(
-            imageVector = eventIcon,
-            contentDescription = null,
-            tint = eventTint,
-            modifier = Modifier.size(14.dp),
-        )
-        Column(modifier = Modifier.weight(1f)) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(Spacing.xs),
-            ) {
-                Text(
-                    text = eventLabel,
-                    style = type.caption.copy(fontWeight = FontWeight.Medium),
-                    color = colors.textPrimary,
-                )
-                event.toolName?.let { tool ->
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = Spacing.sm, vertical = Spacing.xs),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
+        ) {
+            Icon(
+                imageVector = eventIcon,
+                contentDescription = null,
+                tint = eventTint,
+                modifier = Modifier.size(14.dp),
+            )
+            Column(modifier = Modifier.weight(1f)) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(Spacing.xs),
+                ) {
                     Text(
-                        text = "· $tool",
+                        text = eventLabel,
+                        style = type.caption.copy(fontWeight = FontWeight.Medium),
+                        color = colors.textPrimary,
+                    )
+                    event.toolName?.let { tool ->
+                        Text(
+                            text = "· $tool",
+                            style = type.label,
+                            color = colors.textSecondary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+                event.outputSummary?.takeIf { it.isNotBlank() }?.let { summary ->
+                    Text(
+                        text = summary,
                         style = type.label,
-                        color = colors.textSecondary,
-                        maxLines = 1,
+                        color = colors.textDisabled,
+                        maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(top = 2.dp),
                     )
                 }
             }
-            event.outputSummary?.takeIf { it.isNotBlank() }?.let { summary ->
+            Column(horizontalAlignment = Alignment.End) {
                 Text(
-                    text = summary,
+                    text = outcomeLabel,
+                    style = type.label.copy(fontWeight = FontWeight.Medium),
+                    color = outcomeTint,
+                )
+                Text(
+                    text = formatRelativeTime(event.createdAt),
                     style = type.label,
                     color = colors.textDisabled,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.padding(top = 2.dp),
                 )
             }
-        }
-        Column(horizontalAlignment = Alignment.End) {
-            Text(
-                text = outcomeLabel,
-                style = type.label.copy(fontWeight = FontWeight.Medium),
-                color = outcomeTint,
-            )
-            Text(
-                text = formatRelativeTime(event.createdAt),
-                style = type.label,
-                color = colors.textDisabled,
-            )
         }
     }
 }
@@ -438,17 +460,6 @@ private fun SectionTitle(text: String) {
         text = text,
         style = type.cardTitle,
         color = colors.textPrimary,
-    )
-}
-
-@Composable
-private fun EmptyHint(text: String) {
-    val colors = ZaijianTheme.colors
-    val type = ZaijianTheme.typography
-    Text(
-        text = text,
-        style = type.caption,
-        color = colors.textDisabled,
     )
 }
 

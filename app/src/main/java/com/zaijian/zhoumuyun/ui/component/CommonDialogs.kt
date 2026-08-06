@@ -16,7 +16,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -24,6 +23,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.input.ImeAction
@@ -32,6 +32,8 @@ import com.zaijian.zhoumuyun.ui.theme.Radius
 import com.zaijian.zhoumuyun.ui.theme.Spacing
 import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
 import com.zaijian.zhoumuyun.ui.design.AppIcons
+import com.zaijian.zhoumuyun.ui.design.GhostGoldButton
+import com.zaijian.zhoumuyun.ui.design.GoldPrimaryButton
 
 /**
  * 通用 Dialog 组件（架构瘦身 Phase 1 - 第4项）
@@ -102,16 +104,20 @@ fun SingleInputDialog(
         },
         confirmButton = {
             var isConfirming by remember { mutableStateOf(false) }
-            TextButton(
+            GoldPrimaryButton(
+                text = "确定",
                 onClick = {
-                    if (isConfirming || text.isBlank()) return@TextButton
+                    if (isConfirming || text.isBlank()) return@GoldPrimaryButton
                     isConfirming = true
                     onConfirm(text.trim())
                 },
-            ) { Text("确定", color = colors.accent) }
+            )
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("取消", color = colors.textPrimary.copy(alpha = 0.5f)) }
+            GhostGoldButton(
+                text    = "取消",
+                onClick = onDismiss,
+            )
         },
         containerColor = colors.bgCard,
     )
@@ -178,9 +184,10 @@ fun OptionPickerDialog(
         },
         confirmButton = {},
         dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text(text = "取消", color = colors.textSecondary)
-            }
+            GhostGoldButton(
+                text    = "取消",
+                onClick = onDismiss,
+            )
         },
     )
 }

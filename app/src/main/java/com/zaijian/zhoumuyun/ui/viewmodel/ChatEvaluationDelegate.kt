@@ -82,9 +82,13 @@ class ChatEvaluationDelegate(
                 val session = db.evaluationSessionDao().getById(sessionId) ?: return@launch
                 val goalId = session.goalId ?: return@launch
 
+                // P1-8 修复：规则提炼必须作用于【评分 Session 所属的角色】，而非提交评分时
+                // 的实时 currentCharacterId。评分卡是跨角色共享状态，用户可能在角色 A 回复后
+                // 弹出评分卡、切到角色 B 才提交打分——若用 getCurrentCharacterId() 会对 B 的
+                // 目标做提炼，结果落错角色产生脏数据。Session 自带 characterId，用它。
                 val distillResult = try {
                     distillationEngine?.maybeDistill(
-                        characterId = getCurrentCharacterId(),
+                        characterId = session.characterId,
                         goalId      = goalId,
                     )
                 } catch (e: kotlinx.coroutines.CancellationException) {

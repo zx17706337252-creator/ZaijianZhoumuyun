@@ -42,6 +42,9 @@ import com.zaijian.zhoumuyun.ui.viewmodel.TaskKind
 import com.zaijian.zhoumuyun.ui.viewmodel.repeatLabel
 import com.zaijian.zhoumuyun.util.TimeFormatUtils
 import com.zaijian.zhoumuyun.ui.design.AppIcons
+import com.zaijian.zhoumuyun.ui.design.DangerVelvetButton
+import com.zaijian.zhoumuyun.ui.design.GhostGoldButton
+import com.zaijian.zhoumuyun.ui.design.SecondaryGoldButton
 
 // ─────────────────────────────────────────────────────────────
 //  PersonalScheduleScreen — Stage C + D；独立路由见下方 U2 修复
@@ -179,7 +182,7 @@ fun PersonalScheduleTabContent(
             }
         }
 
-        // ── 新增按钮 ─────────────────────────────────────────
+        // ── 新增按钮（UI v2.0：标准金色药丸 chip）─────────────
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -192,22 +195,25 @@ fun PersonalScheduleTabContent(
                 style = type.label,
                 color = colors.textSecondary,
             )
+            // UI 升级 v2.0（帧26）：手搓 accentColor 按钮升级为标准金色药丸——
+            // 12% 金底 + 0.5px 金边 + 深金文字，与 AiStatePill / SecondaryGoldButton 同源。
             Row(
                 modifier = Modifier
-                    .clip(RoundedCornerShape(Radius.xs))
-                    .background(accentColor.copy(alpha = 0.12f))
+                    .clip(RoundedCornerShape(999.dp))
+                    .background(colors.accent.copy(alpha = 0.12f))
+                    .border(0.5.dp, colors.accent.copy(alpha = 0.40f), RoundedCornerShape(999.dp))
                     .clickable { viewModel.openNewDraft() }
-                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 Icon(
                     imageVector        = AppIcons.Add,
                     contentDescription = "新增日程",
-                    tint               = accentColor,
-                    modifier           = Modifier.size(16.dp),
+                    tint               = colors.accentDeep,
+                    modifier           = Modifier.size(14.dp),
                 )
-                Spacer(Modifier.width(Spacing.xs))
-                Text(text = "新增日程", style = type.label, color = accentColor)
+                Text(text = "新增日程", style = type.label, color = colors.accentDeep)
             }
         }
 
@@ -278,15 +284,16 @@ fun PersonalScheduleTabContent(
             title = { Text("删除日程") },
             text  = { Text("确认删除「${job.title}」？此操作不可撤销。") },
             confirmButton = {
-                TextButton(onClick = {
-                    viewModel.deleteJob(job.id)
-                    jobToDelete = null
-                }) {
-                    Text("删除", color = Palette.SemanticDanger)  // P3-53 修复：colorScheme.error → Palette.SemanticDanger
-                }
+                DangerVelvetButton(
+                    text = "删除",
+                    onClick = {
+                        viewModel.deleteJob(job.id)
+                        jobToDelete = null
+                    },
+                )
             },
             dismissButton = {
-                TextButton(onClick = { jobToDelete = null }) { Text("取消") }
+                GhostGoldButton(text = "取消", onClick = { jobToDelete = null })
             },
         )
     }
@@ -328,13 +335,35 @@ private fun PersonalScheduleCard(
         headerContent = {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text     = job.title,
-                        style    = type.label.copy(fontWeight = FontWeight.SemiBold, fontSize = 13.sp),
-                        color    = if (isDisabled) colors.textDisabled else colors.textPrimary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Text(
+                            text     = job.title,
+                            style    = type.label.copy(fontWeight = FontWeight.SemiBold, fontSize = 13.sp),
+                            color    = if (isDisabled) colors.textDisabled else colors.textPrimary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        // UI 升级 v2.0（帧26）：Agent 自主创建的工单追加金色「Agent」标记，
+                        // 让用户一眼区分 AI 自主调度 vs 手动配置的日程。
+                        if (job.toolName == AgentTaskJobExecutor.SENTINEL) {
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(999.dp))
+                                    .background(AppBrushes.goldGradient())
+                                    .padding(horizontal = 5.dp, vertical = 1.dp),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Text(
+                                    text  = "Agent",
+                                    style = type.label.copy(fontSize = 9.sp, fontWeight = FontWeight.Bold),
+                                    color = Palette.Parchment,
+                                )
+                            }
+                        }
+                    }
                     Spacer(Modifier.height(2.dp))
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -397,9 +426,7 @@ private fun PersonalScheduleCard(
             }
         },
         expandedActions = {
-            TextButton(onClick = onEdit) {
-                Text(text = "编辑", style = type.label, color = accentColor)
-            }
+            SecondaryGoldButton(text = "编辑", onClick = onEdit)
             ScheduleToggleButton(isDisabled = isDisabled, accentColor = accentColor, onToggle = onToggle)
             ScheduleDeleteButton(onDelete = onDelete)
         },

@@ -3,6 +3,7 @@ package com.zaijian.zhoumuyun.ui.screen
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -102,21 +103,13 @@ internal fun CharacterManagementSection(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = Spacing.screenHorizontal),
-        verticalArrangement = Arrangement.spacedBy(Spacing.sm),
     ) {
-        Row(
-            modifier              = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment     = Alignment.CenterVertically,
-        ) {
-            Text(text = "角色管理", style = type.cardTitle, color = colors.textPrimary)
-            Text(text = "点击编辑人设与目标", style = type.caption, color = colors.textDisabled)
-        }
-
+        // 标题与其他分区统一：type.label + FontWeight.Medium，无副标题、无描述行
         Text(
-            text  = "在角色详情页可编辑人设（性格/风格/禁忌/信念）和目标，编辑后下次对话立即生效。",
-            style = type.caption,
-            color = colors.textSecondary,
+            text     = "角色管理",
+            style    = type.label.copy(fontWeight = FontWeight.Medium),
+            color    = colors.textSecondary,
+            modifier = Modifier.padding(start = Spacing.xs, bottom = Spacing.xs),
         )
 
         DefaultCharacters.chunked(3).forEach { rowChars ->
@@ -130,6 +123,11 @@ internal fun CharacterManagementSection(
                             .weight(1f)
                             .clickable { onNavigateToCharacter(char.id) },
                         ownerAccent = char.breathColor,
+                        // UI 升级 v2.0（帧20 九宫格微染）：开启 10% 水彩晕染，
+                        // ownerAccent=角色色（breathColor）触发双层径向渗染，纸面质感。
+                        // 圆心按 HTML 帧20 要求 `at 50% 0%` 顶部居中（非默认右上角）。
+                        accentWash         = true,
+                        washCenterFraction = Offset(0.5f, 0f),
                     ) {
                         Column(
                             modifier = Modifier

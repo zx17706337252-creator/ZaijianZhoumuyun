@@ -44,6 +44,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -56,9 +58,11 @@ import com.zaijian.zhoumuyun.data.model.accentLight
 import com.zaijian.zhoumuyun.ui.component.DetailTopBar
 import com.zaijian.zhoumuyun.ui.component.EmptyStateView
 import com.zaijian.zhoumuyun.ui.screen.PersonalScheduleTabContent
+import com.zaijian.zhoumuyun.ui.theme.AppBrushes
 import com.zaijian.zhoumuyun.ui.theme.AppTheme
 import com.zaijian.zhoumuyun.ui.theme.GlassOpacity
 import com.zaijian.zhoumuyun.ui.theme.Spacing
+import com.zaijian.zhoumuyun.ui.theme.WcAlpha
 import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
 import com.zaijian.zhoumuyun.util.ZLog
 import kotlinx.coroutines.launch
@@ -391,7 +395,17 @@ fun CharacterDetailScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(colors.bgBase),
+            .background(colors.bgBase)
+            .drawBehind {
+                drawRect(
+                    brush = AppBrushes.watercolorWash(
+                        color = character.accentColor,
+                        alpha = WcAlpha.page,
+                        center = Offset(size.width * 0.9f, 0f),
+                        radius = size.maxDimension * 0.8f,
+                    ),
+                )
+            },
     ) {
         LazyColumn(
             modifier       = Modifier

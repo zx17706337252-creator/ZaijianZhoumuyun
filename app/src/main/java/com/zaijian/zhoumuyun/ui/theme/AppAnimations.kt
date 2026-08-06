@@ -58,7 +58,7 @@ val bookOpenTween = tween<Float>(AnimDuration.bookOpen, easing = FastOutSlowInEa
 
 // ─────────────────────────────────────────────────────────────
 //  Breathing animation spec (avatar glow)
-//  scale: 1.00 → 1.04 → 1.00, full cycle = 8000ms
+//  scale: 1.00 → 1.04 → 1.00, full cycle = 4000ms
 // ─────────────────────────────────────────────────────────────
 
 val breathScaleSpec = infiniteRepeatable<Float>(

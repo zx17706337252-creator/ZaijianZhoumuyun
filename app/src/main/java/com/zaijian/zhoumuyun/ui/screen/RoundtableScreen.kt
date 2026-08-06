@@ -118,9 +118,11 @@ import com.zaijian.zhoumuyun.ui.viewmodel.RoundtableMessage
 import com.zaijian.zhoumuyun.ui.viewmodel.RoundtableViewModel
 import com.zaijian.zhoumuyun.ui.viewmodel.ScheduleMode
 import com.zaijian.zhoumuyun.util.TimeFormatUtils
+import com.zaijian.zhoumuyun.util.safeAnimateScrollToItem
 import kotlinx.coroutines.launch
 import androidx.compose.runtime.snapshotFlow
 import com.zaijian.zhoumuyun.ui.design.AppIcons
+import com.zaijian.zhoumuyun.ui.design.TypingDots
 
 
 // ─────────────────────────────────────────────────────────────
@@ -228,10 +230,11 @@ fun RoundtableScreen(
     }
 
     // 新消息/轮次变化时滚到底部（带动画，触发频率低）
+    // P1 崩溃修复：改用 safeAnimateScrollToItem，理由同 ChatScreen.kt。
     LaunchedEffect(uiState.messages.size, uiState.waitingForUser) {
         val size = uiState.messages.size
         if (size > 0) {
-            listState.animateScrollToItem(size - 1)
+            listState.safeAnimateScrollToItem(size - 1, tag = "RoundtableScreen")
         }
     }
     // UI M14 修复：流式输出期间 messages.size 不变但末条 content 持续增长，
@@ -493,6 +496,23 @@ fun RoundtableScreen(
             ),
             verticalArrangement = Arrangement.spacedBy(Spacing.sm),
         ) {
+            // P2-7-11 修复：新圆桌无历史消息时 LazyColumn 为空 → 中间整块空白。
+            // 空列表渲染空态文案，避免白屏。
+            if (uiState.messages.isEmpty()) {
+                item {
+                    Box(
+                        modifier = Modifier.fillParentMaxSize(),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            text  = "圆桌里还没有消息，说点什么开始讨论吧",
+                            style = type.body,
+                            color = colors.textDisabled,
+                        )
+                    }
+                }
+            }
+
             itemsIndexed(
                 items = uiState.messages,
                 key   = { _, msg -> msg.id },
@@ -540,6 +560,44 @@ fun RoundtableScreen(
                     )
                 }
             }
+
+            // UI 升级 v2.0（§4.1 AI过程可视化）：圆桌生成期间，若当前无流式消息
+            // 在显示（即所有 bot 均处于"思考中"尚未输出），在列表末尾追加 TypingDots。
+            val lastMsg = uiState.messages.lastOrNull()
+            val showTyping = anyGenerating && members.isNotEmpty() &&
+                (lastMsg == null || !lastMsg.isStreaming)
+            if (showTyping) {
+                val generatingBot = members.firstOrNull { member ->
+                    val st = uiState.generationStatus[member.id]
+                    st == BotGenerationStatus.GENERATING || st == BotGenerationStatus.WAITING
+                }
+                val typingColor = generatingBot?.accentColor ?: colors.accent
+                item(key = "typing_indicator") {
+                    Row(
+                        modifier              = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.Start,
+                        verticalAlignment     = Alignment.Bottom,
+                    ) {
+                        AsyncImage(
+                            model = ImageRequest.Builder(LocalContext.current)
+                                .data(generatingBot?.avatarUrl)
+                                .crossfade(true)
+                                .memoryCachePolicy(CachePolicy.ENABLED)
+                                .diskCachePolicy(CachePolicy.ENABLED)
+                                .build(),
+                            contentDescription = generatingBot?.name,
+                            modifier           = Modifier
+                                .size(AvatarSize.bubble)
+                                .clip(CircleShape)
+                                .background(typingColor.copy(alpha = 0.25f))
+                                .border(1.dp, typingColor.copy(alpha = 0.3f), CircleShape),
+                            error              = rememberVectorPainter(AppIcons.Person),
+                        )
+                        Spacer(Modifier.width(Spacing.sm))
+                        TypingDots(dotColor = typingColor)
+                    }
+                }
+            }
         }
 
         // ── [2] 顶部栏 ────────────────────────────────────────
@@ -583,6 +641,23 @@ fun RoundtableScreen(
                 .padding(top = Spacing.topBarHeight),
         )
 
+        // ── AI 状态胶囊（UI 升级 v2.0）：圆桌生成期间显示状态
+        AnimatedVisibility(
+            visible  = anyGenerating && members.isNotEmpty(),
+            enter    = fadeIn(tween(AnimDuration.fast)) + slideInVertically { -it },
+            exit     = fadeOut(tween(AnimDuration.fast)),
+            modifier = Modifier
+                .fillMaxWidth()
+                .align(Alignment.TopCenter)
+                .statusBarsPadding()
+                .padding(top = Spacing.topBarHeight + 40.dp),
+        ) {
+            com.zaijian.zhoumuyun.ui.design.AiStatePill(
+                text = "圆桌讨论进行中…",
+                modifier = Modifier.padding(horizontal = Spacing.screenHorizontal),
+            )
+        }
+
         // ── [4] 序贯进度指示器
         AnimatedVisibility(
             visible  = anyGenerating && members.isNotEmpty(),
@@ -614,7 +689,10 @@ fun RoundtableScreen(
                 .fillMaxWidth()
                 .align(Alignment.TopCenter)
                 .statusBarsPadding()
-                .padding(top = Spacing.topBarHeight + 64.dp),
+                // P2-7-12 修复：序贯进度条与讨论横幅原都定位在 topBarHeight+64.dp，
+                // anyGenerating 与 isAutoDiscussing 同时为真时两者重叠。横幅在进度条
+                // 可见时下移到 +96dp 让位；进度条不可见时仍用 +64dp，避免留出空隙。
+                .padding(top = Spacing.topBarHeight + if (anyGenerating) 96.dp else 64.dp),
         ) {
             DiscussionRoundBanner(
                 round    = uiState.discussionRound,
@@ -670,7 +748,12 @@ fun RoundtableScreen(
                 if (text.isNotEmpty()) {
                     viewModel.sendMessage(text)
                     inputText = ""
-                    scope.launch { listState.animateScrollToItem(uiState.messages.size) }
+                    // P1 崩溃修复：删除了原本的
+                    // `scope.launch { listState.animateScrollToItem(uiState.messages.size) }`，
+                    // 理由同 ChatScreen.kt 的 onSend 修复——sendMessage() 异步生效前
+                    // uiState.messages.size 是发送前的旧长度，直接当下标传会越界。
+                    // 上方的 LaunchedEffect(uiState.messages.size, uiState.waitingForUser)
+                    // 已经在响应式地处理自动滚动，这里不再需要手动触发。
                 }
             },
             // 修复：navigationBarsPadding() 挪到 RoundtableInputBar 内部（背景/边框

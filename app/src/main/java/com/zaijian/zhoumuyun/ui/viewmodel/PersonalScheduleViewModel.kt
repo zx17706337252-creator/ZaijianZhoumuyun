@@ -191,6 +191,11 @@ class PersonalScheduleViewModel(application: Application) : AndroidViewModel(app
 
     /** 新增/编辑草稿；null = 编辑面板未打开 */
     private val _draft = MutableStateFlow<ScheduleDraft?>(null)
+    // P1-21 修复：保存进行中守卫。createJobWithFullSync 涉及本地 DB + 日历 + WorkManager
+    // + Supabase 网络，耗时秒级；此期间 _draft 仍非空，快速连点保存按钮会重复创建同一条日程。
+    // 用该标志在保存期间忽略重复点击（失败时保留草稿供重试，成功后才清空草稿）。
+    @Volatile
+    private var isSaving = false
     val draft: StateFlow<ScheduleDraft?> = _draft.asStateFlow()
 
     /** 已注册的 Agent 工具名列表，供「执行工具」选择器使用 */
@@ -387,6 +392,8 @@ class PersonalScheduleViewModel(application: Application) : AndroidViewModel(app
 
     fun saveDraft() {
         val d = _draft.value ?: return
+        // P1-21 修复：保存进行中，忽略重复点击（避免重复创建同一条日程）。
+        if (isSaving) return
         val title = d.title.trim()
         if (title.isEmpty()) return
         if (d.delayHoursError != null) {
@@ -446,6 +453,8 @@ class PersonalScheduleViewModel(application: Application) : AndroidViewModel(app
             System.currentTimeMillis() + (d.delayHours * 60 * 60 * 1000L).toLong()
         }
 
+        // P1-21 修复：校验全部通过后置位保存标志，才开始异步保存。
+        isSaving = true
         viewModelScope.launch {
             try {
                 if (d.id == null) {
@@ -492,6 +501,9 @@ class PersonalScheduleViewModel(application: Application) : AndroidViewModel(app
                 // 避免辛苦填写的日程参数因为一次网络错误就永久丢失。
                 ZLog.w("PersonalScheduleVM", "saveDraft 失败", e)
                 _uiState.update { it.copy(error = "保存失败：${e.message}") }
+            } finally {
+                // P1-21 修复：无论成功/失败/取消都复位保存标志，允许下一次保存。
+                isSaving = false
             }
         }
     }

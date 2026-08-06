@@ -78,7 +78,7 @@ fun BriefingCharacterCard(entry: BriefingCharacterEntry, modifier: Modifier = Mo
 
                 Spacer(Modifier.width(Spacing.sm))
 
-                Column(Modifier.fillMaxWidth()) {
+                Column(Modifier.weight(1f)) {
                     // 名字行：名字 + 排卵期/怀孕 chip（右上角）
                     Row(
                         modifier = Modifier.fillMaxWidth(),

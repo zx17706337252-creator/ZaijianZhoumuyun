@@ -359,13 +359,32 @@ class AppContainer private constructor(context: Context) {
             // 消息在用户明明已退到后台时仍被误判为"正在聊天页"而不弹通知，只有重新
             // 打开 App 才能看到。现改为角色匹配 且 App 确实在前台（isAppInForeground，
             // 由 ZaijianApp 的 ActivityLifecycleCallbacks 维护）两个条件同时成立才抑制。
-            val suppress = msg.characterId == PresenceEngine.foregroundChatCharacterId &&
-                PresenceEngine.isAppInForeground
+            val suppress = msg.characterId == foregroundChatCharacterId &&
+                isAppInForeground
             proactiveMessageNotifier.persistAndNotify(msg, suppressNotification = suppress)
         },
         messageDao            = messageRepo,
         daughterCharacterRepo  = daughterCharacterRepo, // 批次9 9-3修复：改引用共享字段
     )
+
+    // ── P0-2 收敛：全局聊天状态访问统一入口 ──────────────────
+    // 原逻辑分散在 ChatSessionDelegate/ChatScreen/ChatViewModel/Worker 等文件直接
+    // 读写 PresenceEngine 的全局状态，无单一权威入口。这里收敛为 AppContainer 的方法，
+    // 调用方不再直接 import PresenceEngine。isAppInForeground 写入端（ZaijianApp 的
+    // ActivityLifecycleCallbacks）也改为走 setAppInForeground，保证 grep 收敛。
+    fun enterChatScreen(characterId: Int) {
+        PresenceEngine.foregroundChatCharacterId = characterId
+    }
+
+    fun exitChatScreen(characterId: Int): Boolean =
+        PresenceEngine.clearForegroundChatCharacterIdIfMatches(characterId)
+
+    fun setAppInForeground(foreground: Boolean) {
+        PresenceEngine.isAppInForeground = foreground
+    }
+
+    val isAppInForeground: Boolean get() = PresenceEngine.isAppInForeground
+    val foregroundChatCharacterId: Int? get() = PresenceEngine.foregroundChatCharacterId
 
     // 离线简报（Briefing）聚合层。只读，见《再见公馆》UI/UX 整合方案 v2.1 第四节。
     // menstrualCycleRepo 此前无任何 ViewModel 持有共享实例（BookCard 指示点尚未接入

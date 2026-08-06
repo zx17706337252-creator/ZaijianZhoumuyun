@@ -37,11 +37,15 @@ import androidx.compose.ui.graphics.Color
 import com.zaijian.zhoumuyun.data.db.entity.ProjectEntity
 import com.zaijian.zhoumuyun.ui.theme.GlassOpacity
 import com.zaijian.zhoumuyun.ui.theme.Palette
+import com.zaijian.zhoumuyun.ui.theme.Radius
 import com.zaijian.zhoumuyun.ui.theme.Spacing
 import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
 
 import com.zaijian.zhoumuyun.ui.viewmodel.KnowledgeInjectMode
 import com.zaijian.zhoumuyun.ui.design.AppIcons
+import com.zaijian.zhoumuyun.ui.design.DangerVelvetButton
+import com.zaijian.zhoumuyun.ui.design.GhostGoldButton
+import com.zaijian.zhoumuyun.ui.design.WorldCard
 
 
 
@@ -126,278 +130,310 @@ internal fun ChatSettingsSheet(
                 ),
             )
 
-            HorizontalDivider(color = colors.border)
-
-            // 条目：角色档案
-            Row(
+            // ════════════════════════════════════════════════
+            //  Zone 1：导航区 — 角色相关页面跳转
+            // ════════════════════════════════════════════════
+            SectionLabel("角色")
+            WorldCard(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable {
-                        onNavigateToDetail()
-                        onDismiss()
-                    }
-                    .padding(
-                        horizontal = Spacing.screenHorizontal,
-                        vertical   = Spacing.md,
-                    ),
-                verticalAlignment          = Alignment.CenterVertically,
-                horizontalArrangement      = Arrangement.spacedBy(Spacing.md),
+                    .padding(horizontal = Spacing.screenHorizontal),
+                cornerRadius = Radius.sm,
             ) {
-                com.zaijian.zhoumuyun.ui.design.IconBadge(
-                    icon               = AppIcons.AccountCircle,
-                    contentDescription = null,
-                    tint               = accentColor,
-                    background         = accentColor.copy(alpha = 0.12f),
-                    size               = 20.dp,
-                )
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(text = "查看角色档案", style = type.body, color = colors.textPrimary)
-                    Text(text = "记忆 · 人设 · 目标 · 关系", style = type.caption, color = colors.textSecondary)
-                }
-            }
-
-            HorizontalDivider(color = colors.border)
-
-            // 批次4新增条目：日程
-            // 照抄上方"角色档案"条目的写法（Row + IconBadge + Column 主副标题），
-            // 点击触发 onNavigateToSchedule 并关闭 Sheet——与"角色档案"条目
-            // onNavigateToDetail() + onDismiss() 的范式严格一致。
-            // 副标题"定时任务 · 工单提醒"同时覆盖工具型（定时任务）和工单型（工单提醒）
-            // 两种模式，让用户一眼知道这里能管理两类日程。
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable {
-                        onNavigateToSchedule()
-                        onDismiss()
-                    }
-                    .padding(
-                        horizontal = Spacing.screenHorizontal,
-                        vertical   = Spacing.md,
-                    ),
-                verticalAlignment          = Alignment.CenterVertically,
-                horizontalArrangement      = Arrangement.spacedBy(Spacing.md),
-            ) {
-                com.zaijian.zhoumuyun.ui.design.IconBadge(
-                    icon               = AppIcons.Event,
-                    contentDescription = null,
-                    tint               = accentColor,
-                    background         = accentColor.copy(alpha = 0.12f),
-                    size               = 20.dp,
-                )
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(text = "日程", style = type.body, color = colors.textPrimary)
-                    Text(text = "定时任务 · 工单提醒", style = type.caption, color = colors.textSecondary)
-                }
-            }
-
-            HorizontalDivider(color = colors.border, modifier = Modifier.padding(horizontal = Spacing.screenHorizontal))
-
-            // v147（文件保险库改造）：文件条目，紧邻"日程"。
-            // 视觉范式与"日程"/"角色档案"严格一致：Row + IconBadge + Column(主副标题)。
-            // 点击触发 onNavigateToVault 并关闭 Sheet——与"日程"条目 onNavigateToSchedule()
-            // + onDismiss() 的范式严格一致。副标题根据 vaultFileCount 显示数量或引导文案。
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable {
-                        onNavigateToVault()
-                        onDismiss()
-                    }
-                    .padding(
-                        horizontal = Spacing.screenHorizontal,
-                        vertical   = Spacing.md,
-                    ),
-                verticalAlignment     = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(Spacing.md),
-            ) {
-                com.zaijian.zhoumuyun.ui.design.IconBadge(
-                    icon               = AppIcons.FolderOpen,
-                    contentDescription = null,
-                    tint               = accentColor,
-                    background         = accentColor.copy(alpha = 0.12f),
-                    size               = 20.dp,
-                )
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(text = "文件", style = type.body, color = colors.textPrimary)
-                    Text(
-                        text  = if (vaultFileCount > 0) "$vaultFileCount 个文件 · 预览/下载/编辑"
-                                else "角色生成的文件在此管理",
-                        style = type.caption,
-                        color = colors.textSecondary,
+                Column {
+                    SettingsNavRow(
+                        icon = AppIcons.AccountCircle,
+                        title = "查看角色档案",
+                        subtitle = "记忆 · 人设 · 目标 · 关系",
+                        onClick = { onNavigateToDetail(); onDismiss() },
+                    )
+                    SettingsNavRow(
+                        icon = AppIcons.Event,
+                        title = "日程",
+                        subtitle = "定时任务 · 工单提醒",
+                        onClick = { onNavigateToSchedule(); onDismiss() },
+                    )
+                    SettingsNavRow(
+                        icon = AppIcons.FolderOpen,
+                        title = "文件",
+                        subtitle = if (vaultFileCount > 0) "$vaultFileCount 个文件 · 预览/下载/编辑"
+                                   else "角色生成的文件在此管理",
+                        onClick = { onNavigateToVault(); onDismiss() },
+                    )
+                    SettingsNavRow(
+                        icon = AppIcons.PrivateChat,
+                        title = "角色私聊",
+                        subtitle = "让角色之间私下聊天",
+                        onClick = { onNavigateToPrivateChat(); onDismiss() },
                     )
                 }
             }
 
-            HorizontalDivider(color = colors.border, modifier = Modifier.padding(horizontal = Spacing.screenHorizontal))
-
-            // 角色间私聊入口：视觉范式与"文件"/"日程"/"角色档案"严格一致。
-            // 点击触发 onNavigateToPrivateChat 并关闭 Sheet。这里不带 characterId——
-            // PrivateChatScreen 本身是全局配对管理面板（列出全部角色对），
-            // 不是当前角色专属页面，用户进去后自己选谁跟谁配对。
-            Row(
+            // ════════════════════════════════════════════════
+            //  Zone 2：聊天设置区
+            // ════════════════════════════════════════════════
+            SectionLabel("聊天设置")
+            WorldCard(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable {
-                        onNavigateToPrivateChat()
-                        onDismiss()
-                    }
-                    .padding(
-                        horizontal = Spacing.screenHorizontal,
-                        vertical   = Spacing.md,
-                    ),
-                verticalAlignment     = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(Spacing.md),
+                    .padding(horizontal = Spacing.screenHorizontal),
+                cornerRadius = Radius.sm,
             ) {
-                com.zaijian.zhoumuyun.ui.design.IconBadge(
-                    icon               = AppIcons.PrivateChat,
-                    contentDescription = null,
-                    tint               = accentColor,
-                    background         = accentColor.copy(alpha = 0.12f),
-                    size               = 20.dp,
-                )
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(text = "角色私聊", style = type.body, color = colors.textPrimary)
-                    Text(text = "让角色之间私下聊天", style = type.caption, color = colors.textSecondary)
-                }
-            }
-
-            HorizontalDivider(color = colors.border, modifier = Modifier.padding(horizontal = Spacing.screenHorizontal))
-
-            // 条目：聊天背景图
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { onSetBackground() }
-                    .padding(
-                        horizontal = Spacing.screenHorizontal,
-                        vertical   = Spacing.md,
-                    ),
-                verticalAlignment     = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(Spacing.md),
-            ) {
-                com.zaijian.zhoumuyun.ui.design.IconBadge(
-                    icon               = AppIcons.Wallpaper,
-                    contentDescription = null,
-                    tint               = accentColor,
-                    background         = accentColor.copy(alpha = 0.12f),
-                    size               = 20.dp,
-                )
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(text = "更换聊天背景", style = type.body, color = colors.textPrimary)
-                    Text(
-                        text  = if (hasCustomBackground) "已设置自定义背景 · 点击更换" else "从相册选择背景图片",
-                        style = type.caption,
-                        color = colors.textSecondary,
-                    )
-                }
-                if (hasCustomBackground) {
-                    androidx.compose.material3.TextButton(onClick = onClearBackground) {
-                        Text("恢复默认", style = type.caption, color = accentColor)
-                    }
-                }
-            }
-
-            HorizontalDivider(color = colors.border, modifier = Modifier.padding(horizontal = Spacing.screenHorizontal))
-
-            // 条目：导出本次对话（2.4）
-            // 照抄"角色档案"/"日程"条目的 Row + IconBadge + Column 范式，
-            // 点击触发 onExportConversation 并关闭 Sheet——不需要确认弹窗
-            // （不是破坏性操作，导出失败会走 ChatScreen 已有的 snackbar 反馈）。
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable {
-                        onExportConversation()
-                        onDismiss()
-                    }
-                    .padding(
-                        horizontal = Spacing.screenHorizontal,
-                        vertical   = Spacing.md,
-                    ),
-                verticalAlignment     = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(Spacing.md),
-            ) {
-                com.zaijian.zhoumuyun.ui.design.IconBadge(
-                    icon               = AppIcons.Download,
-                    contentDescription = null,
-                    tint               = accentColor,
-                    background         = accentColor.copy(alpha = 0.12f),
-                    size               = 20.dp,
-                )
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(text = "导出本次对话", style = type.body, color = colors.textPrimary)
-                    Text(text = "生成文本文件，可在「文件」中下载分享", style = type.caption, color = colors.textSecondary)
-                }
-            }
-
-            HorizontalDivider(color = colors.border, modifier = Modifier.padding(horizontal = Spacing.screenHorizontal))
-
-            // 条目：文档发送方式——角色用工具产出文件时，文件卡片是跟文字合并
-            // 进同一个气泡（默认），还是像旧版一样各自独立成一张气泡/卡片。
-            // 布局照抄下方"项目知识库"两选项横排范式，保持视觉一致。
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = Spacing.screenHorizontal, vertical = Spacing.md),
-                verticalArrangement = Arrangement.spacedBy(Spacing.sm),
-            ) {
-                Text(text = "文档发送方式", style = type.body, color = colors.textPrimary)
-                Text(
-                    text  = if (attachFilesTogether) "一起发 — 文件随文字合并成一个气泡"
-                            else "分开发 — 文件单独成一张卡片",
-                    style = type.caption,
-                    color = colors.textSecondary,
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
-                    listOf(true to "一起发", false to "分开发").forEach { (together, label) ->
-                        val selected = attachFilesTogether == together
-                        Box(
-                            contentAlignment = Alignment.Center,
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(
-                                    if (selected) accentColor
-                                    else colors.surface.copy(alpha = GlassOpacity.low)
-                                )
-                                .clickable { onAttachFilesTogetherChange(together) }
-                                .padding(horizontal = 16.dp, vertical = 8.dp),
-                        ) {
+                Column {
+                    // 聊天背景图
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onSetBackground() }
+                            .padding(horizontal = Spacing.screenHorizontal, vertical = Spacing.md),
+                        verticalAlignment     = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(Spacing.md),
+                    ) {
+                        com.zaijian.zhoumuyun.ui.design.IconBadge(
+                            icon               = AppIcons.Wallpaper,
+                            contentDescription = null,
+                            tint               = colors.accentDeep,
+                            background         = colors.accent.copy(alpha = 0.12f),
+                            size               = 20.dp,
+                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(text = "更换聊天背景", style = type.body, color = colors.textPrimary)
                             Text(
-                                text  = label,
-                                style = type.label,
-                                color = if (selected) Color.White else colors.textSecondary,
+                                text  = if (hasCustomBackground) "已设置自定义背景 · 点击更换" else "从相册选择背景图片",
+                                style = type.caption,
+                                color = colors.textSecondary,
                             )
+                        }
+                        if (hasCustomBackground) {
+                            GhostGoldButton(text = "恢复默认", onClick = onClearBackground)
+                        }
+                    }
+
+                    // 导出本次对话
+                    SettingsNavRow(
+                        icon = AppIcons.Download,
+                        title = "导出本次对话",
+                        subtitle = "生成文本文件，可在「文件」中下载分享",
+                        onClick = { onExportConversation(); onDismiss() },
+                    )
+
+                    // 文档发送方式
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = Spacing.screenHorizontal, vertical = Spacing.md),
+                        verticalArrangement = Arrangement.spacedBy(Spacing.sm),
+                    ) {
+                        Text(text = "文档发送方式", style = type.body, color = colors.textPrimary)
+                        Text(
+                            text  = if (attachFilesTogether) "一起发 — 文件随文字合并成一个气泡"
+                                    else "分开发 — 文件单独成一张卡片",
+                            style = type.caption,
+                            color = colors.textSecondary,
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
+                            listOf(true to "一起发", false to "分开发").forEach { (together, label) ->
+                                val selected = attachFilesTogether == together
+                                Box(
+                                    contentAlignment = Alignment.Center,
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(
+                                            if (selected) colors.accent
+                                            else colors.surface.copy(alpha = GlassOpacity.low)
+                                        )
+                                        .clickable { onAttachFilesTogetherChange(together) }
+                                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                                ) {
+                                    Text(
+                                        text  = label,
+                                        style = type.label,
+                                        color = if (selected) Palette.White else colors.textSecondary,
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // 关联项目选择器
+                    if (activeProjects.isNotEmpty()) {
+                        var projectDropdown by remember { mutableStateOf(false) }
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { projectDropdown = true }
+                                .padding(horizontal = Spacing.screenHorizontal, vertical = Spacing.md),
+                            verticalAlignment     = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(Spacing.md),
+                        ) {
+                            com.zaijian.zhoumuyun.ui.design.IconBadge(
+                                icon               = AppIcons.FolderOpen,
+                                contentDescription = null,
+                                tint               = colors.accentDeep,
+                                background         = colors.accent.copy(alpha = 0.12f),
+                                size               = 20.dp,
+                            )
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(text = "关联项目", style = type.body, color = colors.textPrimary)
+                                Text(
+                                    text  = activeProjects.firstOrNull { it.id == currentProjectId }?.title
+                                                ?: "未关联",
+                                    style = type.caption,
+                                    color = colors.textSecondary,
+                                )
+                            }
+                            Icon(
+                                imageVector        = AppIcons.KeyboardArrowDown,
+                                contentDescription = null,
+                                tint               = colors.textDisabled,
+                                modifier           = Modifier.size(18.dp),
+                            )
+                            DropdownMenu(
+                                expanded         = projectDropdown,
+                                onDismissRequest = { projectDropdown = false },
+                            ) {
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            text  = "不关联",
+                                            style = type.body,
+                                            color = if (currentProjectId == null) colors.accent else colors.textPrimary,
+                                        )
+                                    },
+                                    trailingIcon = if (currentProjectId == null) ({
+                                        Icon(
+                                            imageVector = AppIcons.Check,
+                                            contentDescription = null,
+                                            tint = colors.accent,
+                                            modifier = Modifier.size(16.dp),
+                                        )
+                                    }) else null,
+                                    onClick = {
+                                        onSetProject(null)
+                                        projectDropdown = false
+                                    },
+                                )
+                                androidx.compose.material3.HorizontalDivider(color = colors.border)
+                                activeProjects.forEach { project ->
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                text  = project.title,
+                                                style = type.body,
+                                                color = if (project.id == currentProjectId) colors.accent
+                                                        else colors.textPrimary,
+                                            )
+                                        },
+                                        trailingIcon = if (project.id == currentProjectId) ({
+                                            Icon(
+                                                imageVector = AppIcons.Check,
+                                                contentDescription = null,
+                                                tint = colors.accent,
+                                                modifier = Modifier.size(16.dp),
+                                            )
+                                        }) else null,
+                                        onClick = {
+                                            onSetProject(project.id)
+                                            projectDropdown = false
+                                        },
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // 项目知识库
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = Spacing.screenHorizontal, vertical = Spacing.md),
+                        verticalArrangement = Arrangement.spacedBy(Spacing.sm),
+                    ) {
+                        Text(text = "项目知识库", style = type.body, color = colors.textPrimary)
+                        val modeLabel = when (knowledgeMode) {
+                            KnowledgeInjectMode.AUTO -> "自动 — 检测到关键词时注入"
+                            KnowledgeInjectMode.MANUAL -> "手动"
+                        }
+                        Text(text = modeLabel, style = type.caption, color = colors.textSecondary)
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
+                        ) {
+                            listOf(
+                                KnowledgeInjectMode.AUTO to "自动",
+                                KnowledgeInjectMode.MANUAL to "手动",
+                            ).forEach { (mode, label) ->
+                                val selected = knowledgeMode == mode
+                                Box(
+                                    contentAlignment = Alignment.Center,
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(
+                                            if (selected) colors.accent
+                                            else colors.surface.copy(alpha = GlassOpacity.low)
+                                        )
+                                        .clickable { onKnowledgeModeChange(mode) }
+                                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                                ) {
+                                    Text(
+                                        text  = label,
+                                        style = type.label,
+                                        color = if (selected) Palette.White else colors.textSecondary,
+                                    )
+                                }
+                            }
+                        }
+                        if (knowledgeMode == KnowledgeInjectMode.MANUAL) {
+                            Box(
+                                contentAlignment = Alignment.Center,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(colors.accent.copy(alpha = 0.15f))
+                                    .clickable { onManualKnowledgeTrigger() }
+                                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                            ) {
+                                Text(
+                                    text  = "注入知识库（下一条消息生效）",
+                                    style = type.label,
+                                    color = colors.accentDeep,
+                                )
+                            }
                         }
                     }
                 }
             }
 
-            HorizontalDivider(color = colors.border, modifier = Modifier.padding(horizontal = Spacing.screenHorizontal))
-
-            // 条目：清空对话（含确认 Dialog）
+            // ════════════════════════════════════════════════
+            //  Zone 3：危险操作区
+            // ════════════════════════════════════════════════
+            SectionLabel("管理")
             var showClearConfirm by remember { mutableStateOf(false) }
-            Row(
+            WorldCard(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable { showClearConfirm = true }
-                    .padding(
-                        horizontal = Spacing.screenHorizontal,
-                        vertical   = Spacing.md,
-                    ),
-                verticalAlignment     = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(Spacing.md),
+                    .padding(horizontal = Spacing.screenHorizontal),
+                cornerRadius = Radius.sm,
             ) {
-                com.zaijian.zhoumuyun.ui.design.IconBadge(
-                    icon               = AppIcons.DeleteSweep,
-                    contentDescription = null,
-                    tint               = Palette.SemanticDanger,
-                    background         = Palette.SemanticDanger.copy(alpha = 0.10f),
-                    size               = 20.dp,
-                )
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(text = "清空对话记录", style = type.body, color = colors.textPrimary)
-                    Text(text = "不影响长期记忆与关系", style = type.caption, color = colors.textSecondary)
+                Column {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { showClearConfirm = true }
+                            .padding(horizontal = Spacing.screenHorizontal, vertical = Spacing.md),
+                        verticalAlignment     = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(Spacing.md),
+                    ) {
+                        com.zaijian.zhoumuyun.ui.design.IconBadge(
+                            icon               = AppIcons.DeleteSweep,
+                            contentDescription = null,
+                            tint               = Palette.SemanticDanger,
+                            background         = Palette.SemanticDanger.copy(alpha = 0.10f),
+                            size               = 20.dp,
+                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(text = "清空对话记录", style = type.body, color = colors.textPrimary)
+                            Text(text = "不影响长期记忆与关系", style = type.caption, color = colors.textSecondary)
+                        }
+                    }
                 }
             }
             if (showClearConfirm) {
@@ -415,177 +451,73 @@ internal fun ChatSettingsSheet(
                         )
                     },
                     confirmButton = {
-                        androidx.compose.material3.TextButton(
+                        DangerVelvetButton(
+                            text = "确认清空",
                             onClick = {
                                 onClearMessages()
                                 showClearConfirm = false
                                 onDismiss()
-                            }
-                        ) { Text("确认清空", color = Palette.SemanticDanger) }
+                            },
+                        )
                     },
                     dismissButton = {
-                        androidx.compose.material3.TextButton(
-                            onClick = { showClearConfirm = false }
-                        ) { Text("取消", color = colors.textSecondary) }
+                        GhostGoldButton(
+                            text = "取消",
+                            onClick = { showClearConfirm = false },
+                        )
                     },
                 )
             }
-
-            HorizontalDivider(color = colors.border, modifier = Modifier.padding(horizontal = Spacing.screenHorizontal))
-
-            // ── 关联项目选择器 ────────────────────────────────
-            if (activeProjects.isNotEmpty()) {
-                var projectDropdown by remember { mutableStateOf(false) }
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { projectDropdown = true }
-                        .padding(
-                            horizontal = Spacing.screenHorizontal,
-                            vertical   = Spacing.md,
-                        ),
-                    verticalAlignment     = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(Spacing.md),
-                ) {
-                    com.zaijian.zhoumuyun.ui.design.IconBadge(
-                        icon               = AppIcons.FolderOpen,
-                        contentDescription = null,
-                        tint               = accentColor,
-                        background         = accentColor.copy(alpha = 0.12f),
-                        size               = 20.dp,
-                    )
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(text = "关联项目", style = type.body, color = colors.textPrimary)
-                        Text(
-                            text  = activeProjects.firstOrNull { it.id == currentProjectId }?.title
-                                        ?: "未关联",
-                            style = type.caption,
-                            color = colors.textSecondary,
-                        )
-                    }
-                    Icon(
-                        imageVector        = AppIcons.KeyboardArrowDown,
-                        contentDescription = null,
-                        tint               = colors.textDisabled,
-                        modifier           = Modifier.size(18.dp),
-                    )
-                    // P3-20 修复：移除 DropdownMenu 的 Modifier.background() 双层叠加，
-                    // DropdownMenu 自身已有 Surface 背景，额外 background 导致视觉重叠。
-                    DropdownMenu(
-                        expanded         = projectDropdown,
-                        onDismissRequest = { projectDropdown = false },
-                    ) {
-                        // "不关联"选项
-                        DropdownMenuItem(
-                            text = {
-                                Text(
-                                    text  = "不关联",
-                                    style = type.body,
-                                    color = if (currentProjectId == null) colors.accent else colors.textPrimary,
-                                )
-                            },
-                            trailingIcon = if (currentProjectId == null) ({
-                                Icon(
-                                    imageVector = AppIcons.Check,
-                                    contentDescription = null,
-                                    tint = colors.accent,
-                                    modifier = Modifier.size(16.dp),
-                                )
-                            }) else null,
-                            onClick = {
-                                onSetProject(null)
-                                projectDropdown = false
-                            },
-                        )
-                        androidx.compose.material3.HorizontalDivider(color = colors.border)
-                        activeProjects.forEach { project ->
-                            DropdownMenuItem(
-                                text = {
-                                    Text(
-                                        text  = project.title,
-                                        style = type.body,
-                                        color = if (project.id == currentProjectId) colors.accent
-                                                else colors.textPrimary,
-                                    )
-                                },
-                                trailingIcon = if (project.id == currentProjectId) ({
-                                    Icon(
-                                        imageVector = AppIcons.Check,
-                                        contentDescription = null,
-                                        tint = colors.accent,
-                                        modifier = Modifier.size(16.dp),
-                                    )
-                                }) else null,
-                                onClick = {
-                                    onSetProject(project.id)
-                                    projectDropdown = false
-                                },
-                            )
-                        }
-                    }
-                }
-                HorizontalDivider(color = colors.border, modifier = Modifier.padding(horizontal = Spacing.screenHorizontal))
-            }
-
-            // ── Phase 31：知识库注入模式 ──────────────────────
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = Spacing.screenHorizontal, vertical = Spacing.md),
-                verticalArrangement = Arrangement.spacedBy(Spacing.sm),
-            ) {
-                    Text(text = "项目知识库", style = type.body, color = colors.textPrimary)
-                    val modeLabel = when (knowledgeMode) {
-                        KnowledgeInjectMode.AUTO -> "自动 — 检测到关键词时注入"
-                        KnowledgeInjectMode.MANUAL -> "手动"
-                    }
-                    Text(text = modeLabel, style = type.caption, color = colors.textSecondary)
-                    // 两个选项横排
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
-                    ) {
-                        listOf(
-                            KnowledgeInjectMode.AUTO to "自动",
-                            KnowledgeInjectMode.MANUAL to "手动",
-                        ).forEach { (mode, label) ->
-                            val selected = knowledgeMode == mode
-                            Box(
-                                contentAlignment = Alignment.Center,
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(
-                                        if (selected) accentColor
-                                        else colors.surface.copy(alpha = GlassOpacity.low)
-                                    )
-                                    .clickable { onKnowledgeModeChange(mode) }
-                                    .padding(horizontal = 16.dp, vertical = 8.dp),
-                            ) {
-                                Text(
-                                    text  = label,
-                                    style = type.label,
-                                    color = if (selected) Color.White else colors.textSecondary,
-                                )
-                            }
-                        }
-                    }
-                    // MANUAL 模式：显示"注入知识库"一次性触发按钮
-                    if (knowledgeMode == KnowledgeInjectMode.MANUAL) {
-                        Box(
-                            contentAlignment = Alignment.Center,
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(accentColor.copy(alpha = 0.15f))
-                                .clickable { onManualKnowledgeTrigger() }
-                                .padding(horizontal = 16.dp, vertical = 8.dp),
-                        ) {
-                            Text(
-                                text  = "注入知识库（下一条消息生效）",
-                                style = type.label,
-                                color = accentColor,
-                            )
-                        }
-                    }
-                }
-            }
         }
     }
+}
+
+// ─────────────────────────────────────────────────────────────
+//  UI v2.0 三区结构辅助组件
+// ─────────────────────────────────────────────────────────────
+
+@Composable
+private fun SectionLabel(text: String) {
+    val colors = ZaijianTheme.colors
+    val type   = ZaijianTheme.typography
+    Text(
+        text      = text,
+        style     = type.label.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Medium),
+        color     = colors.textSecondary,
+        modifier  = Modifier.padding(
+            horizontal = Spacing.screenHorizontal,
+            vertical   = Spacing.sm,
+        ),
+    )
+}
+
+@Composable
+private fun SettingsNavRow(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    title: String,
+    subtitle: String,
+    onClick: () -> Unit,
+) {
+    val colors = ZaijianTheme.colors
+    val type   = ZaijianTheme.typography
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onClick() }
+            .padding(horizontal = Spacing.screenHorizontal, vertical = Spacing.md),
+        verticalAlignment     = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Spacing.md),
+    ) {
+        com.zaijian.zhoumuyun.ui.design.IconBadge(
+            icon               = icon,
+            contentDescription = null,
+            tint               = colors.accentDeep,
+            background         = colors.accent.copy(alpha = 0.12f),
+            size               = 20.dp,
+        )
+        Column(modifier = Modifier.weight(1f)) {
+            Text(text = title, style = type.body, color = colors.textPrimary)
+            Text(text = subtitle, style = type.caption, color = colors.textSecondary)
+        }
+    }
+}

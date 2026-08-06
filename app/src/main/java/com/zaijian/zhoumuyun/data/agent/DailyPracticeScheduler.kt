@@ -94,9 +94,20 @@ object DailyPracticeScheduler {
         val request = OneTimeWorkRequestBuilder<DailyPracticeWorker>()
             .setConstraints(constraints)
             .build()
+        // P1-2 修复：原先用 REPLACE——若前一天触发时设备离线，
+        // Worker 会因 NetworkType.CONNECTED 约束挂起等待网络；次日闹钟
+        // 再次调用本方法时，REPLACE 会直接取消并删除这个仍在等待中的
+        // 旧 Worker，前一天的修炼永久丢失、无任何记录，也没有补跑路径。
+        // 改为 KEEP：官方语义是"若同名 work 存在且尚未跑完（unfinished），
+        // 保留旧的、忽略新请求"——旧 Worker 仍挂着等网时，今天这次
+        // 调用不会打断它，网络恢复后它会正常继续执行；而如果旧 Worker
+        // 已经跑到终态（成功或失败），KEEP 视为无冲突，新请求正常入队，
+        // 当天修炼照常进行。两种情况都不需要额外的"当天是否已完成"
+        // 状态记录，行为随 WorkManager 对 unique work 生命周期的
+        // 判断自然正确。
         WorkManager.getInstance(context).enqueueUniqueWork(
             WORK_NAME,
-            ExistingWorkPolicy.REPLACE,
+            ExistingWorkPolicy.KEEP,
             request,
         )
     }

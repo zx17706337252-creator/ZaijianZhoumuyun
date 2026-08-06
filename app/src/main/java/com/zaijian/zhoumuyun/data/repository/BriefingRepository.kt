@@ -157,7 +157,15 @@ class BriefingRepository(
             }
         }
 
-        val attentionItems = buildAttentionList(perCharacter, interMatrix, worsenedMilestones)
+        val attentionItems = buildAttentionList(perCharacter, interMatrix, worsenedMilestones).toMutableList()
+        // 叙事类：对话引用 + 约定事项（帧02/19「需要关注」补叙事，不只健康/关系状态）。
+        // 限量：各自至多取 3 条（按最近时间），避免每个角色都塞一条把列表刷爆。
+        // 对话引用 = 该角色最近一条有内容的用户消息片段；约定事项 = 进行中(RUNNING)任务。
+        val narratives = buildNarrativeItems(perCharacter)
+        val quoteItems = narratives.first.sortedByDescending { it.sourceMessageAt }.take(3)
+        val agreementItems = narratives.second.take(3)
+        attentionItems += quoteItems
+        attentionItems += agreementItems
         val ranking = perCharacter.sortedByDescending { it.relation?.affection ?: 0 }
 
         return BriefingData(
@@ -385,6 +393,44 @@ class BriefingRepository(
     }
 
     /**
+     * 叙事类「需要关注」条目（帧02/19）：对话引用 + 约定事项。
+     *
+     * 对话引用（QuoteReference）= 该角色最近一条有内容的用户消息片段，让"需要关注"
+     * 带上对话的温度；约定事项（AgreementDue）= 该角色进行中(RUNNING)的任务标题，
+     * 作为"约定/待办"关注点。TaskEntity 无截止日期字段，故不编造"今天验收"这类
+     * 时间措辞，只安全透出真实存在的任务标题。
+     *
+     * 生成逻辑独立于 buildAttentionList()，不改变原有健康/关系条目的判定；
+     * 调用方在 buildAttentionList() 结果上附加并限量（各取 3 条）。
+     */
+    private suspend fun buildNarrativeItems(
+        entries: List<BriefingCharacterEntry>,
+    ): Pair<List<BriefingAttentionItem.QuoteReference>, List<BriefingAttentionItem.AgreementDue>> {
+        val quotes = mutableListOf<BriefingAttentionItem.QuoteReference>()
+        val agreements = mutableListOf<BriefingAttentionItem.AgreementDue>()
+        entries.forEach { entry ->
+            val config = entry.character
+            try {
+                val recentMsg = messageDao.getByCharacter(config.id, limit = 1).firstOrNull()
+                if (recentMsg != null && recentMsg.content.isNotBlank()) {
+                    val snippet = recentMsg.content.trim().replace(Regex("\\s+"), " ").take(24)
+                    quotes += BriefingAttentionItem.QuoteReference(config, snippet, recentMsg.createdAt)
+                }
+                val runningTask = taskDao.getByCharacter(config.id, limit = 10)
+                    .firstOrNull { it.status == com.zaijian.zhoumuyun.data.db.entity.TaskStatus.RUNNING.name }
+                if (runningTask != null) {
+                    agreements += BriefingAttentionItem.AgreementDue(config, runningTask.title)
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                ZLog.w("BriefingRepository", "characterId=${config.id} 叙事聚合失败，跳过", e)
+            }
+        }
+        return quotes to agreements
+    }
+
+    /**
      * 「需要关注」排序规则（v2.1 补充，原方案未规定顺序，仅明确了
      * NeverContacted 语义上比 NoContact 更紧急这一条相对关系）。
      *
@@ -413,6 +459,9 @@ class BriefingRepository(
                 is BriefingAttentionItem.Tension            -> 4
                 is BriefingAttentionItem.NeverContacted     -> 5
                 is BriefingAttentionItem.NoContact          -> 6
+                // 叙事类：排在健康/关系条目之后，不抢占关键关注位。
+                is BriefingAttentionItem.QuoteReference     -> 7
+                is BriefingAttentionItem.AgreementDue       -> 8
             }
         }.thenByDescending { item ->
             when (item) {
@@ -423,6 +472,8 @@ class BriefingRepository(
                 is BriefingAttentionItem.MenstrualAttention -> 0L
                 is BriefingAttentionItem.RelationWorsened   -> 0L
                 is BriefingAttentionItem.NeverContacted     -> 0L
+                is BriefingAttentionItem.QuoteReference     -> 0L
+                is BriefingAttentionItem.AgreementDue       -> 0L
             }
         }
 }

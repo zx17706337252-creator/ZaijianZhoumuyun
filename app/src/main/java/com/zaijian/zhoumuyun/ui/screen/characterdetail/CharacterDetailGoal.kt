@@ -42,7 +42,6 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ModalBottomSheet
@@ -83,11 +82,19 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import com.zaijian.zhoumuyun.data.model.CharacterConfig
 import com.zaijian.zhoumuyun.data.model.DefaultCharacters
 import com.zaijian.zhoumuyun.data.model.DefaultPresenceStates
@@ -96,6 +103,7 @@ import com.zaijian.zhoumuyun.data.model.StatusType
 import com.zaijian.zhoumuyun.data.model.accentLight
 import com.zaijian.zhoumuyun.ui.component.BreathingAvatar
 import com.zaijian.zhoumuyun.ui.design.WorldCard
+import com.zaijian.zhoumuyun.ui.theme.AppBrushes
 import com.zaijian.zhoumuyun.ui.theme.AppTheme
 import com.zaijian.zhoumuyun.ui.theme.AppColors
 import com.zaijian.zhoumuyun.ui.theme.AppTypography
@@ -117,6 +125,8 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 import androidx.compose.material3.FilterChip
 import com.zaijian.zhoumuyun.ui.design.AppIcons
+import com.zaijian.zhoumuyun.ui.design.DangerVelvetButton
+import com.zaijian.zhoumuyun.ui.design.GhostGoldButton
 
 @Composable
 internal fun GoalPanel(
@@ -153,10 +163,42 @@ internal fun GoalPanel(
                 modifier = Modifier.fillMaxWidth().height(80.dp),
                 contentAlignment = Alignment.Center,
             ) {
-                CircularProgressIndicator(
-                    color       = accentColor,
-                    strokeWidth = 2.dp,
-                    modifier    = Modifier.size(24.dp),
+                // UI 升级 v2.0（帧10 黄铜进度环）：加载态自绘黄铜环，替代 Material3
+                // CircularProgressIndicator。底层灰色轨道 + 上层黄铜渐变弧（圆角端），
+                // 整环匀速旋转表达「进行中」。此处为不确定态加载、无具体进度值，
+                // 故不显示百分比文字（避免给用户假进度）；黄铜渐变 + 灰轨道 + 圆角端
+                // 即设计要求的黄铜进度环视觉。
+                val ringTransition = rememberInfiniteTransition(label = "brassRing")
+                val ringRotation by ringTransition.animateFloat(
+                    initialValue = 0f,
+                    targetValue = 360f,
+                    animationSpec = infiniteRepeatable(
+                        animation = tween(durationMillis = 1000, easing = LinearEasing),
+                        repeatMode = RepeatMode.Restart,
+                    ),
+                    label = "brassRingRotation",
+                )
+                Box(
+                    modifier = Modifier
+                        .size(28.dp)
+                        .drawBehind {
+                            // 底层灰色轨道
+                            drawArc(
+                                color = colors.border,
+                                startAngle = -90f,
+                                sweepAngle = 360f,
+                                useCenter = false,
+                                style = Stroke(width = 4.dp.toPx(), cap = StrokeCap.Round),
+                            )
+                            // 黄铜渐变弧（270° 扫角，随 ringRotation 匀速旋转）
+                            drawArc(
+                                brush = AppBrushes.goldGradient(),
+                                startAngle = -90f + ringRotation,
+                                sweepAngle = 270f,
+                                useCenter = false,
+                                style = Stroke(width = 4.dp.toPx(), cap = StrokeCap.Round),
+                            )
+                        },
                 )
             }
         } else {
@@ -173,7 +215,39 @@ internal fun GoalPanel(
                     )
                 }
             } else {
-                state.goals.forEach { goal ->
+                // UI 升级 v2.0（帧10 缩略条）：目标进度概览条——
+                // 所有目标压缩成一行迷你进度条，黄铜渐变填充，一眼扫完全局进展。
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(Radius.sm))
+                        .background(colors.bgCard)
+                        .border(0.5.dp, colors.border, RoundedCornerShape(Radius.sm))
+                        .padding(horizontal = Spacing.sm, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(3.dp),
+                ) {
+                    state.goals.forEach { goal ->
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(5.dp)
+                                .clip(RoundedCornerShape(2.5.dp))
+                                .drawBehind {
+                                    drawRect(colors.accent.copy(alpha = 0.15f))
+                                    val progress = goal.progress.coerceIn(0f, 1f)
+                                    if (progress > 0f) {
+                                        drawRect(
+                                            brush = AppBrushes.goldGradient(),
+                                            size = Size(size.width * progress, size.height),
+                                        )
+                                    }
+                                },
+                        )
+                    }
+                }
+                Spacer(Modifier.height(Spacing.sm))
+
+                state.goals.forEachIndexed { index, goal ->
                     GoalCard(
                         goal        = goal,
                         accentColor = accentColor,
@@ -182,6 +256,36 @@ internal fun GoalPanel(
                         onDeactivate = { onDeactivate(goal.id) },
                         onProgressChange = { p -> onProgressChange(goal.id, p) },
                     )
+                    // UI 升级 v2.0（帧10 故事金链）：目标卡片之间以金色链节相连——
+                    // 一根 1px 金色渐变线 + 中心 4px 金圆点，暗示目标之间的叙事递进。
+                    if (index < state.goals.lastIndex) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 2.dp),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(1.dp)
+                                    .background(AppBrushes.goldGradient()),
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .size(5.dp)
+                                    .clip(CircleShape)
+                                    .background(Palette.Gold),
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(1.dp)
+                                    .background(AppBrushes.goldGradient()),
+                            )
+                        }
+                    }
                 }
             }
 
@@ -211,7 +315,7 @@ internal fun GoalPanel(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(Radius.sm))
-                    .background(accentColor.copy(alpha = 0.08f))
+                    .background(colors.accent.copy(alpha = 0.08f))
                     .clickable { onNavigateToGoals() }
                     .padding(vertical = 10.dp, horizontal = Spacing.md),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -237,7 +341,7 @@ internal fun GoalPanel(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(Radius.sm))
-                    .background(accentColor.copy(alpha = 0.08f))
+                    .background(colors.accent.copy(alpha = 0.08f))
                     .clickable { onNavigateToSpecialty() }
                     .padding(vertical = 10.dp, horizontal = Spacing.md),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -301,15 +405,19 @@ private fun GoalCard(
                 )
             },
             confirmButton = {
-                TextButton(onClick = {
-                    showDeleteConfirm = false
-                    onDelete()
-                }) { Text(text = "删除", color = colors.textDisabled) }
+                DangerVelvetButton(
+                    text    = "删除",
+                    onClick = {
+                        showDeleteConfirm = false
+                        onDelete()
+                    },
+                )
             },
             dismissButton = {
-                TextButton(onClick = { showDeleteConfirm = false }) {
-                    Text(text = "取消", color = accentColor)
-                }
+                GhostGoldButton(
+                    text    = "取消",
+                    onClick = { showDeleteConfirm = false },
+                )
             },
         )
     }
@@ -320,6 +428,7 @@ private fun GoalCard(
     com.zaijian.zhoumuyun.ui.design.WorldCard(
         modifier = Modifier.fillMaxWidth(),
         ownerAccent = accentColor,
+        accentWash = true,
     ) {
     Column(
         modifier = Modifier
@@ -359,7 +468,7 @@ private fun GoalCard(
             Box(
                 modifier = Modifier
                     .clip(RoundedCornerShape(Radius.xs))
-                    .background(accentColor.copy(alpha = 0.12f))
+                    .background(colors.accent.copy(alpha = 0.12f))
                     .padding(horizontal = 6.dp, vertical = 2.dp),
             ) {
                 Text(text = horizonLabel, style = type.caption, color = accentColor)
@@ -426,7 +535,7 @@ private fun GoalCard(
                         .drawBehind {
                             barWidthPx = size.width
                             // 轨道底色
-                            drawRect(accentColor.copy(alpha = 0.15f))
+                            drawRect(colors.accent.copy(alpha = 0.15f))
                             // 渐变填充（角色色 → Gold）
                             if (progressFraction > 0f) {
                                 drawRect(
@@ -635,9 +744,9 @@ internal fun GoalDraftSheet(
                     onValueChange = onProgressChange,
                     valueRange   = 0f..1f,
                     colors = SliderDefaults.colors(
-                        thumbColor         = accentColor,
-                        activeTrackColor   = accentColor,
-                        inactiveTrackColor = accentColor.copy(alpha = 0.15f),
+                        thumbColor         = colors.accent,
+                        activeTrackColor   = colors.accent,
+                        inactiveTrackColor = colors.accent.copy(alpha = 0.15f),
                     ),
                 )
             }

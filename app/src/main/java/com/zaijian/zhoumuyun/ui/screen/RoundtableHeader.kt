@@ -107,6 +107,7 @@ import coil.request.ImageRequest
 import com.zaijian.zhoumuyun.data.model.CharacterConfig
 import com.zaijian.zhoumuyun.data.model.DefaultCharacters
 import com.zaijian.zhoumuyun.ui.theme.AnimDuration
+import com.zaijian.zhoumuyun.ui.theme.AppBrushes
 import com.zaijian.zhoumuyun.ui.theme.AppTheme
 import com.zaijian.zhoumuyun.ui.theme.AvatarSize
 import com.zaijian.zhoumuyun.ui.theme.BubbleDimen
@@ -207,5 +208,13 @@ internal fun RoundtableHeader(
                 )
             }
         }
+        // v2.0 金色视觉：底部 1dp 金色渐变线（叠加在原有 borderSubtle 衬底之上）
+        Box(
+            Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .height(1.dp)
+                .background(AppBrushes.cardBorderGradient(colors.isDark)),
+        )
     }
 }

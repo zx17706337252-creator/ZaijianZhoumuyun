@@ -45,8 +45,9 @@ class MessageRepository(private val dao: MessageDao) {
     suspend fun getRecentByCharacter(characterId: Int, limit: Int = 6): List<MessageEntity> =
         dao.getRecentByCharacter(characterId, limit)
 
-    fun observeByCharacter(characterId: Int): Flow<List<MessageEntity>> =
-        dao.observeByCharacter(characterId)
+    /** limit 默认值需与 [MessageDao.observeByCharacter] 保持一致，这里显式透传而非再定义一份默认值，避免以后改一处漏改另一处。 */
+    fun observeByCharacter(characterId: Int, limit: Int = 500): Flow<List<MessageEntity>> =
+        dao.observeByCharacter(characterId, limit)
 
     suspend fun getLatest(limit: Int = 20): List<MessageEntity> = dao.getLatest(limit)
 

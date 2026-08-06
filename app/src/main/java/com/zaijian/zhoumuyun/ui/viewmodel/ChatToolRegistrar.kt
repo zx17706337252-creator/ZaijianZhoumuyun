@@ -2,7 +2,6 @@ package com.zaijian.zhoumuyun.ui.viewmodel
 
 import android.app.Application
 import com.zaijian.zhoumuyun.data.agent.AgentToolRegistry
-import com.zaijian.zhoumuyun.data.agent.AgentMessageTool
 import com.zaijian.zhoumuyun.data.agent.registerAgentStoreTools
 import com.zaijian.zhoumuyun.data.agent.ChainCreateTool
 import com.zaijian.zhoumuyun.data.agent.CiCdStartTool
@@ -13,7 +12,6 @@ import com.zaijian.zhoumuyun.data.agent.MediaInfoTool
 import com.zaijian.zhoumuyun.data.agent.PdfReadTool
 import com.zaijian.zhoumuyun.data.agent.GoalUpdateTool
 import com.zaijian.zhoumuyun.data.agent.ProgressReportTool
-import com.zaijian.zhoumuyun.data.agent.RoundtableTriggerTool
 import com.zaijian.zhoumuyun.data.agent.RuleConflictCheckTool
 import com.zaijian.zhoumuyun.data.agent.SessionCompareTool
 import com.zaijian.zhoumuyun.data.agent.TaskDelegateTool
@@ -64,7 +62,6 @@ import com.zaijian.zhoumuyun.data.repository.IdentityRepository
 import com.zaijian.zhoumuyun.data.repository.LearningGoalRepository
 import com.zaijian.zhoumuyun.data.repository.MemoryRepository
 import com.zaijian.zhoumuyun.data.repository.SkillRepository
-import com.zaijian.zhoumuyun.data.repository.MessageRepository
 import com.zaijian.zhoumuyun.data.repository.TaskRepository
 import com.zaijian.zhoumuyun.data.repository.WorkflowRepository
 import com.zaijian.zhoumuyun.data.repository.ChainRunRepository
@@ -73,6 +70,12 @@ import com.zaijian.zhoumuyun.data.repository.AgentStoreRepository
 import com.zaijian.zhoumuyun.data.repository.PrivateChatPairRepository
 import com.zaijian.zhoumuyun.data.repository.PrivateChatMessageRepository
 import com.zaijian.zhoumuyun.data.repository.DaughterCharacterRepository
+import com.zaijian.zhoumuyun.util.ZLog
+import com.zaijian.zhoumuyun.util.AgentLog
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 /**
  * 封装 Agent 工具注册逻辑，从 ChatViewModel 中提取。
@@ -167,25 +170,27 @@ class ChatToolRegistrar(
         toolsRegisteredForCharacterId = currentCharacterId
 
         val providerFn = { ProviderManager.instance.activeProvider }
-        // 批次2 2-1修复：AgentMetaTools 的6个角色相关工具（rule_conflict_check /
-        // session_compare / progress_report / agent_message / roundtable_trigger /
-        // task_delegate）在 ZaijianApp.registerAgentMetaTools() 里以
-        // characterIdProvider={-1} 静态注册，从未在此处被覆盖。后果：
-        // - RoundtableTriggerTool 无 charId<0 校验，-1.coerceAtLeast(0)=0，
-        //   消息静默写入 characterId=0（不存在的角色），工具仍返回 success=true
-        //   ——假装成功+数据落脏。
-        // - 其余4个有 charId<0 校验的工具在私聊里100%返回"角色未初始化"。
+        // 批次2 2-1修复：AgentMetaTools 的角色相关工具（rule_conflict_check /
+        // session_compare / progress_report / task_delegate）在
+        // ZaijianApp.registerAgentMetaTools() 里以 characterIdProvider={-1}
+        // 静态注册，从未在此处被覆盖。后果：有 charId<0 校验的工具在私聊里
+        // 100%返回"角色未初始化"。
         // 此处用 currentCharacterId 动态覆盖，与 SelfReflectTool/RuleReviewTool
         // 同一覆盖范式。依赖来源对齐 ZaijianApp.registerAgentMetaTools() 调用处
         // （ZaijianApp.kt 第813-821行），勿与 registerStaticTools() 里
         // ProjectDailyPlannerTool 用的 db.characterGoalDao() 混用——这里要用
         // db.learningGoalDao()。
-        val agentMessageRepo = MessageRepository(db.messageDao())
         val agentSessionDao  = db.evaluationSessionDao()
         val agentGoalDao     = db.learningGoalDao()
         val agentTaskDao     = db.taskDao()
         val agentFileExport  = FileExportTool.getInstance(getApplication())
-        AgentToolRegistry.registerAll(
+
+        // 附1：分组错误隔离（v10 方案，7 组 + 末尾 3 独立调用）。只改错误处理外壳，
+        // 不改任何工具构造参数。任一组失败只记日志，其余组照常注册，避免单一构造器
+        // 异常导致整批 35 个工具全灭（Kotlin vararg 求值规则：registerAll 参数列表里
+        // 任意一个构造器抛错，整个 registerAll 调用都不会执行到，所以保险丝必须按组包）。
+        runCatching {
+            AgentToolRegistry.registerAll(
             PlanSaveTool(agentPlanDao = agentPlanRepo, characterId = { currentCharacterId }),
             MemoryWriteTool(memoryRepository = memoryRepo, characterId = { currentCharacterId }),
             MemoryQueryTool(memoryRepo = memoryRepo, characterId = { currentCharacterId }),
@@ -196,6 +201,10 @@ class ChatToolRegistrar(
             SkillDeprecateTool(repo = skillRepo, characterId = { currentCharacterId }),
             SkillExpandTool(repo = skillRepo, characterId = { currentCharacterId }),
             SkillFeedbackTool(repo = skillRepo, characterId = { currentCharacterId }),
+            )
+        }.onFailure { logGroupFailure("Plan/Memory/Skill", it) }
+        runCatching {
+            AgentToolRegistry.registerAll(
             GoalUpdateTool(goalRepo = learningGoalRepo, characterId = { currentCharacterId }),
             WorkflowStartTool(
                 context = getApplication(),
@@ -212,6 +221,10 @@ class ChatToolRegistrar(
                 chainRunRepository = chainRunRepository,
                 characterId = { currentCharacterId },
             ),
+            )
+        }.onFailure { logGroupFailure("Goal/Workflow/Chain", it) }
+        runCatching {
+            AgentToolRegistry.registerAll(
             // ── 2.3 工作台任务跟踪修复：补上"开始/更新/完成/取消"任务的入口 ──
             TaskStartTool(taskRepo = taskRepo, characterId = { currentCharacterId }),
             TaskUpdateTool(taskRepo = taskRepo, characterId = { currentCharacterId }),
@@ -222,6 +235,10 @@ class ChatToolRegistrar(
                 memoryEngine = { memoryEngine },
             ),
             TaskCancelTool(taskRepo = taskRepo, characterId = { currentCharacterId }),
+            )
+        }.onFailure { logGroupFailure("Task", it) }
+        runCatching {
+            AgentToolRegistry.registerAll(
             // 问题39修复：Soul/Memory/User 三模块 6 个工具的实例化代码此前在本文件
             // 和 ZaijianApp.kt 各写一份（仅 characterId 闭包不同），改用
             // AgentToolRegistry.registerSoulMemoryUserTools() 统一封装，本处传
@@ -275,6 +292,10 @@ class ChatToolRegistrar(
                 projectRepository   = projectRepo,
                 characterIdProvider = { currentCharacterId },
             ),
+            )
+        }.onFailure { logGroupFailure("Schedule", it) }
+        runCatching {
+            AgentToolRegistry.registerAll(
             // 主聊天工具接入 · 角色间私聊（详见 PrivateChatAgentTools.kt 顶部说明）：
             // A 在与用户的日常对话里识别"去找 B 聊聊"类意图时吐出
             // <tool:private_chat_send target="B" directive="..."/>，
@@ -310,6 +331,10 @@ class ChatToolRegistrar(
                 context             = getApplication(),
                 characterIdProvider = { currentCharacterId },
             ),
+            )
+        }.onFailure { logGroupFailure("PrivateChat/Heartbeat/Reminder", it) }
+        runCatching {
+            AgentToolRegistry.registerAll(
             // 问题24修复：SelfReflectTool（self_reflect）/RuleReviewTool（rule_review）
             // 在 DataVisTools.registerDataVisTools() 里以 characterIdProvider={-1} 静态
             // 注册，此前和 schedule_create 等一样从未在 ChatViewModel 里被覆盖注册。
@@ -345,11 +370,14 @@ class ChatToolRegistrar(
                 scheduleRepository  = scheduleRepo,
                 characterIdProvider = { currentCharacterId },
             ),
+            )
+        }.onFailure { logGroupFailure("SelfReflect/RuleReview/TableExport", it) }
+        runCatching {
+            AgentToolRegistry.registerAll(
             // 批次2 2-1修复：覆盖 ZaijianApp.registerAgentMetaTools() 里
-            // characterIdProvider={-1} 的6个静态占位注册。构造参数对齐
-            // AgentMetaTools.kt 第887-917行，仅 characterIdProvider 改为
-            // currentCharacterId。局部变量复用避免重复构造（agentMessageRepo
-            // 被 AgentMessageTool/RoundtableTriggerTool 共用，agentSessionDao
+            // characterIdProvider={-1} 的静态占位注册。构造参数对齐
+            // AgentMetaTools.kt 对应行，仅 characterIdProvider 改为
+            // currentCharacterId。局部变量复用避免重复构造（agentSessionDao
             // 被 SessionCompareTool/ProgressReportTool 共用）。
             RuleConflictCheckTool(
                 providerFn          = providerFn,
@@ -369,43 +397,54 @@ class ChatToolRegistrar(
                 fileExportTool      = agentFileExport,
                 characterIdProvider = { currentCharacterId },
             ),
-            AgentMessageTool(
-                messageDao          = agentMessageRepo,
-                characterIdProvider = { currentCharacterId },
-            ),
-            RoundtableTriggerTool(
-                messageDao          = agentMessageRepo,
-                characterIdProvider = { currentCharacterId },
-            ),
             TaskDelegateTool(
                 providerFn          = providerFn,
                 db                  = db,
                 taskDao             = agentTaskDao,
                 characterIdProvider = { currentCharacterId },
             ),
-        )
+            )
+        }.onFailure { logGroupFailure("AgentMeta", it) }
         // 问题39修复：见上方 registerAll(...) 内注释——统一封装的 Soul/Memory/User
         // 6 个工具注册，在此处传 currentCharacterId 覆盖 ZaijianApp 里的 -1 占位。
-        AgentToolRegistry.registerSoulMemoryUserTools(
-            identityDao = identityRepo,
-            characterId = { currentCharacterId },
-        )
+        runCatching {
+            AgentToolRegistry.registerSoulMemoryUserTools(
+                identityDao = identityRepo,
+                characterId = { currentCharacterId },
+            )
+        }.onFailure { logGroupFailure("SoulMemoryUserTools", it) }
         // Agent 结构化存储（方案_Agent结构化存储_最终版 8.10 第②处）：覆盖 ZaijianApp 里
         // characterIdProvider={-1} 的静态占位注册——5 个 store_* 工具若停留在 -1 占位版本，
         // 会把数据全部写到 ownerCharacterId=-1 这个不存在的角色下，工具执行"成功"但查不到。
         // 此处用 currentCharacterId 覆盖，与 SkillCreateTool/MemoryWriteTool 同款两阶段注册。
-        AgentToolRegistry.registerAgentStoreTools(
-            repo = agentStoreRepo,
-            characterIdProvider = { currentCharacterId },
-        )
+        runCatching {
+            AgentToolRegistry.registerAgentStoreTools(
+                repo = agentStoreRepo,
+                characterIdProvider = { currentCharacterId },
+            )
+        }.onFailure { logGroupFailure("AgentStoreTools", it) }
         // S8-窗口11 P1-8-7 修复：改为 providerFn 闭包模式后，无需在注册时刻
         // 判断 providerFn() 是否为 null 才决定是否注册——工具本身可以无条件
         // 注册，execute() 时才动态取最新 Provider。此前 `providerFn()?.let` 写法
         // 若角色切换时刻用户恰好未配置 Key，会导致该次覆盖注册被跳过，
         // rule_distill 停留在 ZaijianApp 阶段的 characterId=-1 占位版本上，
         // 直到下次角色切换才有机会补上；改为无条件注册后不再有这个空窗。
-        AgentToolRegistry.register(
-            RuleDistillTool(providerFn = providerFn, memoryRepo = memoryRepo, goalRepo = learningGoalRepo, characterId = { currentCharacterId })
-        )
+        runCatching {
+            AgentToolRegistry.register(
+                RuleDistillTool(providerFn = providerFn, memoryRepo = memoryRepo, goalRepo = learningGoalRepo, characterId = { currentCharacterId })
+            )
+        }.onFailure { logGroupFailure("RuleDistillTool", it) }
+    }
+
+    /**
+     * 附1：分组注册失败日志——ZLog.e 进 logcat；AgentLog.error 落用户可导出的
+     * agent_log.txt（fire-and-forget 协程：AgentLog.error 是 suspend，且本方法
+     * registerCharacterTools 是非 suspend，故在 IO 上异步写，不阻塞注册流程）。
+     */
+    private fun logGroupFailure(groupName: String, t: Throwable) {
+        ZLog.e("ChatToolRegistrar", "$groupName 注册失败", t)
+        CoroutineScope(Dispatchers.IO + SupervisorJob()).launch {
+            AgentLog.error("ChatToolRegistrar", "$groupName 注册失败", t)
+        }
     }
 }

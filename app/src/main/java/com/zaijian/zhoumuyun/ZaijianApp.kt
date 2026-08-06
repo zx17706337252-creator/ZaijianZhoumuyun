@@ -196,7 +196,20 @@ class ZaijianApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        initGlobalHandlersAndNotificationChannels()
+        val (db, scope) = initDatabaseAndAppContainer()
+        initBackgroundTasks(db, scope)
+        initSchedulers(scope)
+        val presenceEngine = initPresenceAndCompetitionAssembly(scope)
+        initWorldSimulation(db, presenceEngine)
+        registerLifecycleCallbacks()
+        initFinalTasks(db, scope, presenceEngine)
+    }
 
+    /**
+     * P0-1 拆分·阶段 A：全局异常处理器、AppearanceDataStore 初始化、通知渠道注册。
+     */
+    private fun initGlobalHandlersAndNotificationChannels() {
         // AgentLog 初始化：注入 appContext，否则日志静默丢弃
         com.zaijian.zhoumuyun.util.AgentLog.init(this)
 
@@ -236,7 +249,13 @@ class ZaijianApp : Application() {
 
         // 0a. Phase 30 方案六：注册通知渠道（Android 8+ 必须）
         setupNotificationChannels()
+    }
 
+    /**
+     * P0-1 拆分·阶段 B：数据库初始化、AppContainer 装配、文件保险库迁移、appScope 创建。
+     * 返回 db 与 scope 供后续阶段使用（阶段 E 依赖此处数据库已初始化）。
+     */
+    private fun initDatabaseAndAppContainer(): Pair<AppDatabase, CoroutineScope> {
         // 1. 初始化 Room 数据库（v4）
         //
         // P1-11 修复：原代码此处无任何保护。若 Room migration 失败
@@ -270,12 +289,28 @@ class ZaijianApp : Application() {
         ProviderManager.init(this)
         ProviderManager.instance.preloadAsync()
 
+        // 性能 M3 修复（完整版）：appScope 提前声明，全部工具注册 + 调度补偿均在后台执行。
+        // 原代码在主线程同步完成：30+ 工具实例化、EncryptedSharedPreferences Keystore 读取
+        // （activeProvider）、scheduleRepository 构建 + 云端同步。主线程累计耗时可达数百毫秒，
+        // 低端机冷启动时产生明显白屏/卡顿。
+        // 改为 appScope.launch(Dispatchers.Default) 后，主线程 onCreate 仅保留：
+        //   · AppDatabase.getInstance（synchronized 单例，仅首次建库时有 IO，<50ms）
+        //   · ProviderManager.init（SharedPreferences 读取，极轻）
+        //   · PresenceEngine 构建（纯内存，无 IO）
+        //   · WorldSimulation 构建 + start（纯内存 + 定时器启动）
+        //   · ActivityLifecycleCallbacks 注册（无 IO）
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        appScope = scope   // P1-13-21：公开给 FCM Service 等全局使用
+
         // P2-34 修复：预加载自定义启动页背景图到 Coil 内存缓存。
         // SplashScreen 首帧从 configFlow 拿到配置后用 rememberAsyncImagePainter
         // 异步加载图片——在此之前品牌 Logo 已经渲染，图片加载完毕后切换造成闪烁。
         // 此处在 App 启动时后台预取图片到内存缓存，SplashScreen 渲染时
         // memoryCachePolicy(ENABLED) 直接命中缓存，消除首帧闪烁。
-        CoroutineScope(Dispatchers.IO).launch {
+        // P2-8-3 修复：原用临时 CoroutineScope(Dispatchers.IO).launch 无取消挂钩，
+        // 改挂 appScope（SupervisorJob，onTerminate 时统一 cancel），与其余全局任务一致。
+        // 用刚创建的局部 scope direct launch（appScope 是 nullable 的 companion 字段）。
+        scope.launch(Dispatchers.IO) {
             try {
                 val config = com.zaijian.zhoumuyun.data.AppContainer.instance
                     .splashBackgroundDataStore.configFlow.first()
@@ -295,24 +330,19 @@ class ZaijianApp : Application() {
             }
         }
 
-        // 性能 M3 修复（完整版）：appScope 提前声明，全部工具注册 + 调度补偿均在后台执行。
-        // 原代码在主线程同步完成：30+ 工具实例化、EncryptedSharedPreferences Keystore 读取
-        // （activeProvider）、scheduleRepository 构建 + 云端同步。主线程累计耗时可达数百毫秒，
-        // 低端机冷启动时产生明显白屏/卡顿。
-        // 改为 appScope.launch(Dispatchers.Default) 后，主线程 onCreate 仅保留：
-        //   · AppDatabase.getInstance（synchronized 单例，仅首次建库时有 IO，<50ms）
-        //   · ProviderManager.init（SharedPreferences 读取，极轻）
-        //   · PresenceEngine 构建（纯内存，无 IO）
-        //   · WorldSimulation 构建 + start（纯内存 + 定时器启动）
-        //   · ActivityLifecycleCallbacks 注册（无 IO）
-        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-        appScope = scope   // P1-13-21：公开给 FCM Service 等全局使用
-
         // §6.1 灵活自动化编排：启动 ChainTriggerMatcher 常驻订阅
         // 必须在 appScope 创建之后调用，ChainTriggerMatcher 挂在 appScope 上
         // （不能挂在 ChatViewModel.viewModelScope 上，详见 §6.1）
         com.zaijian.zhoumuyun.data.AppContainer.instance.startChainSystem(scope)
+        return db to scope
+    }
 
+    /**
+     * P0-1 拆分·阶段 C：Agent 工具注册、调度补偿、Reminder 恢复、历史文件索引补建、
+     * MenstrualCycleRepository.initIfAbsent()、FCM 首次 token 注册。六者彼此独立，
+     * 各自保留独立 launch/try-catch 边界，失败不阻断启动。
+     */
+    private fun initBackgroundTasks(db: AppDatabase, scope: CoroutineScope) {
         // 3. 注册 Agent 工具（按模块）
         //
         // 性能 M3 修复（完整版）：全部工具注册块移入 appScope.launch(Dispatchers.Default)，
@@ -452,7 +482,12 @@ class ZaijianApp : Application() {
             // FirebaseApp 未初始化（google-services.json 缺失等）时 getInstance() 会抛异常
             ZLog.w("ZaijianApp", "FirebaseMessaging 不可用，FCM 推送链路未启动: ${e.message}")
         }
+    }
 
+    /**
+     * P0-1 拆分·阶段 D：三个 Scheduler 的 ensurePeriodicWork + 启动时立即检查。
+     */
+    private fun initSchedulers(scope: CoroutineScope) {
         // 批次C·问题5 修复：分娩到期结算调度。
         // PregnancyRepository.settleDueDeliveries() 此前全项目零调用点，怀孕满 30 天
         // 不会自动触发分娩结算，isPregnant 永远卡在 true。
@@ -496,7 +531,13 @@ class ZaijianApp : Application() {
                     .scheduleProactiveMessageCheck(this@ZaijianApp)
             }
         }.onFailure { ZLog.e("ZaijianApp", "scheduleProactiveMessageCheck 启动恢复失败", it) }
+    }
 
+    /**
+     * P0-1 拆分·阶段 E：AppContainer/PresenceEngine/竞争引擎装配。
+     * 返回 presenceEngine 供阶段 F/H 使用。
+     */
+    private fun initPresenceAndCompetitionAssembly(scope: CoroutineScope): com.zaijian.zhoumuyun.domain.PresenceEngine {
         // 报告第5条：PresenceEngine 收敛。原先在此处单独 new 一份 PresenceEngine
         // 再赋给 sharedPresenceEngine；现在 AppContainer.init(this) 内部已经
         // 自包含构造了同一个实例（见 AppContainer.presenceEngine 注释），这里
@@ -536,7 +577,13 @@ class ZaijianApp : Application() {
         ProviderManager.instance.addOnProviderConfigChangedListener {
             scope.launch { appContainer.reassembleCompetitionEngine(force = true) }
         }
+        return presenceEngine
+    }
 
+    /**
+     * P0-1 拆分·阶段 F：WorldSimulation 创建与启动。
+     */
+    private fun initWorldSimulation(db: AppDatabase, presenceEngine: com.zaijian.zhoumuyun.domain.PresenceEngine) {
         // 5. 启动 World Simulation（Phase 20：注入 projectDao/eventDao/context 支持项目驱动 + 离线补偿）
         worldSimulation = WorldSimulation(
             relationshipDao    = db.relationshipDao(),
@@ -550,9 +597,17 @@ class ZaijianApp : Application() {
             context            = this,                 // Phase 20 新增：DataStore 离线补偿
             messageDao         = MessageRepository(db.messageDao()),      // Phase 4（zaijian）新增：情境感知主动消息
             daughterCharacterDao = db.daughterCharacterDao(), // daughters 覆盖修复
+            // P1-5 修复：复用 AppContainer 的全局单例，而非新建一份 Repository
+            // 包着同一个 DAO——保证 chat 路径与 Tier1 读到的是同一份角色情绪状态。
+            characterStateRepo = com.zaijian.zhoumuyun.data.AppContainer.instance.characterStateRepo,
         )
         worldSimulation.start(startupDelayMs = WorldSimulation.STARTUP_DELAY_MS)
+    }
 
+    /**
+     * P0-1 拆分·阶段 G：ActivityLifecycleCallbacks 注册（前台/后台维护）。
+     */
+    private fun registerLifecycleCallbacks() {
         // Fix-14 + A-7: 通过 ActivityLifecycleCallbacks 计数前台 Activity，
         // App 完全退出后台时 stop()，重新回到前台时 start()。
         //
@@ -572,7 +627,7 @@ class ZaijianApp : Application() {
                     // 用户反馈修复：同步维护 App 前台状态，供 PresenceEngine 的
                     // onProactiveMessage 回调判断是否真的该抑制系统通知（不能只看
                     // foregroundChatCharacterId，见 PresenceEngine companion object 注释）。
-                    com.zaijian.zhoumuyun.domain.PresenceEngine.isAppInForeground = true
+                    com.zaijian.zhoumuyun.data.AppContainer.instance.setAppInForeground(true)
                 }
             }
             override fun onActivityStopped(activity: android.app.Activity) {
@@ -582,7 +637,7 @@ class ZaijianApp : Application() {
                 if (foregroundCount == 0) {
                     worldSimulation.stop()
                     ZLog.d("ZaijianApp", "App backgrounded — WorldSimulation stopped")
-                    com.zaijian.zhoumuyun.domain.PresenceEngine.isAppInForeground = false
+                    com.zaijian.zhoumuyun.data.AppContainer.instance.setAppInForeground(false)
                 }
             }
             override fun onActivityCreated(activity: android.app.Activity, savedInstanceState: android.os.Bundle?) = Unit
@@ -591,7 +646,12 @@ class ZaijianApp : Application() {
             override fun onActivitySaveInstanceState(activity: android.app.Activity, outState: android.os.Bundle) = Unit
             override fun onActivityDestroyed(activity: android.app.Activity) = Unit
         })
+    }
 
+    /**
+     * P0-1 拆分·阶段 H：observeAndNotifyResults、每日 Presence 文案、每日修炼调度。
+     */
+    private fun initFinalTasks(db: AppDatabase, scope: CoroutineScope, presenceEngine: com.zaijian.zhoumuyun.domain.PresenceEngine) {
         observeAndNotifyResults(
             appScope        = scope,
             jobResultDao    = db.jobResultDao(),
@@ -824,7 +884,10 @@ class ZaijianApp : Application() {
             ZLog.w("ZaijianApp", "Provider not ready, skip daily note gen", e)
             return
         } ?: run {
-            ZLog.w("ZaijianApp", "Provider is null, skip daily note gen")
+            // 预期降级：设备上未配置任何 LLM Provider（deepseek/volcengine/aliyun/custom）
+            // 的 API Key 与模型时，activeProvider 为 null，跳过每日便签生成。
+            // 非错误，如需启用请在 App 内设置中配置 Provider 后重试。
+            ZLog.w("ZaijianApp", "No LLM Provider configured, skip daily note gen (expected fallback)")
             return
         }
 
@@ -914,6 +977,18 @@ class ZaijianApp : Application() {
         // C1-#5 修复：以下 13 处 runCatching 此前 onFailure 只写 ZLog.e（仅 logcat，
         // 用户导出 agent_log.txt 排查不到），统一补一条 AgentLog.error 落盘，
         // 与本函数内已有的 registerCreativeDocTools/registerDataVisTools 两处对齐。
+        registerBasicTools(context)
+        registerCoreTools(db)
+        val scheduleRepository = registerCreativeDocDataVisAgentMetaTools(context, db)
+        registerCicdEmailAndPlannerTools(context, db)
+        registerScheduleAndHeartbeatTools(context, db, scheduleRepository)
+    }
+
+    /**
+     * P0-1 拆分：本地无网络工具 → 网络工具 → 个人助手 → 创作 → 文件系统 + 静态 4 工具。
+     * 每个 runCatching 块独立隔离，失败不阻断后续注册，与拆分前行为一致。
+     */
+    private suspend fun registerBasicTools(context: Context) {
         runCatching { AgentToolRegistry.registerDataTools() }.onFailure {
             ZLog.e("ZaijianApp", "registerDataTools 注册失败", it)
             AgentLog.error("ZaijianApp", "registerDataTools 注册失败", it)
@@ -957,7 +1032,13 @@ class ZaijianApp : Application() {
             ZLog.e("ZaijianApp", "PdfReadTool/MediaInfoTool/ImageEditTool/FileSearchTool 注册失败", it)
             AgentLog.error("ZaijianApp", "PdfReadTool/MediaInfoTool/ImageEditTool/FileSearchTool 注册失败", it)
         }
+    }
 
+    /**
+     * P0-1 拆分：AgentCoreTools（PlanSave/Memory/Query/Skill×5/Goal/Task×4）+
+     * Soul/Memory/User + AgentStore + RuleDistill。共享 repository 取自 AppContainer 单例。
+     */
+    private suspend fun registerCoreTools(db: AppDatabase) {
         // ── AgentCoreTools ─────────────────────────────────────────────────
         //
         // 注意：MemoryWriteTool 依赖 MemoryRepository（保证 FTS 同步写入），
@@ -1109,7 +1190,19 @@ class ZaijianApp : Application() {
             ZLog.e("ZaijianApp", "RuleDistillTool 注册失败", it)
             AgentLog.error("ZaijianApp", "RuleDistillTool 注册失败", it)
         }
+    }
 
+    /**
+     * P0-1 拆分：CreativeDoc / DataVis / AgentMeta。scheduleRepository 在此创建，
+     * 返回给 Schedule/Heartbeat 组复用（TableExportTool 与 schedule_* 工具共享同一实例）。
+     */
+    private suspend fun registerCreativeDocDataVisAgentMetaTools(
+        context: Context,
+        db:      AppDatabase,
+    ): ScheduleRepository {
+        // P0-1 拆分：memoryRepository 复用 AppContainer 共享单例（registerCoreTools 首次读取），
+        // 此处不重建实例，行为与拆分前一致。
+        val memoryRepository = com.zaijian.zhoumuyun.data.AppContainer.instance.memoryRepo
         // ── CreativeDocTools / DataVisTools / AgentMetaTools ─────────────────
         // W2 表格直传方案：scheduleRepository 必须在 registerDataVisTools 之前创建，
         // 因为 TableExportTool（在 DataVisTools.kt 里）注入了 scheduleRepository 作为
@@ -1140,7 +1233,7 @@ class ZaijianApp : Application() {
                 memoryDao          = db.memoryDao(),
                 // 复审修复：SelfReflectTool 的 Step3 写入需要走 MemoryRepository.save()
                 // 才能同步 FTS，否则自我反思记忆永久无法被全文检索召回。
-                // 复用本函数（registerAgentTools）开头已创建的 memoryRepository，
+                // 复用本函数开头已创建的 memoryRepository（AppContainer 共享单例），
                 // 不再新建实例。
                 memoryRepo         = memoryRepository,
                 // W2：TableExportTool 来源 B（日程数据源）需要 ScheduleRepository。
@@ -1172,6 +1265,17 @@ class ZaijianApp : Application() {
             AgentLog.error("ZaijianApp", "registerAgentMetaTools 注册失败", it)
         }
 
+        // P0-1 拆分：scheduleRepository 返回给 registerScheduleAndHeartbeatTools 复用。
+        return scheduleRepository
+    }
+
+    /**
+     * P0-1 拆分：CICD/GitHub 配置迁移/邮件/每日规划工具。
+     */
+    private suspend fun registerCicdEmailAndPlannerTools(
+        context: Context,
+        db:      AppDatabase,
+    ) {
         // ── CICD · GitHub 配置存储 ──────────────────────────────
         val githubConfigStore = GithubConfigDataStore(context)
         // 批次B（1.8）清理：旧版本使用明文 preferencesDataStore("github_config")，
@@ -1235,10 +1339,10 @@ class ZaijianApp : Application() {
                 // §7 灵活自动化编排：注册 chain_create 工具，LLM 可创建事件触发的
                 // Wait/Check/Action/End 节点链。与 WorkflowStartTool 同款静态占位注册，
                 // characterId 传 { -1 }，由 ChatViewModel.init() 动态覆盖。
-                // chainRunRepository 复用 AppContainer 共享实例（已在本函数上方
-                // 通过 appContainer = AppContainer.instance 获取），避免重复构造。
+                // chainRunRepository 复用 AppContainer 共享实例（P0-1 拆分后直接
+                // 从容器读取，同一单例，避免重复构造）。
                 ChainCreateTool(
-                    chainRunRepository = appContainer.chainRunRepository,
+                    chainRunRepository = com.zaijian.zhoumuyun.data.AppContainer.instance.chainRunRepository,
                     characterId        = { -1 },
                 ),
             )
@@ -1246,7 +1350,17 @@ class ZaijianApp : Application() {
             ZLog.e("ZaijianApp", "CICD 工具注册失败", it)
             AgentLog.error("ZaijianApp", "CICD 工具注册失败", it)
         }
+    }
 
+    /**
+     * P0-1 拆分：Schedule 系列 + Heartbeat 系列 + 就绪标记。scheduleRepository 由
+     * registerCreativeDocDataVisAgentMetaTools 创建并传入，避免重复构造。
+     */
+    private suspend fun registerScheduleAndHeartbeatTools(
+        context: Context,
+        db:      AppDatabase,
+        scheduleRepository: ScheduleRepository,
+    ) {
         // ── Phase 29 · 调度系统初始化 ─────────────────────────────
         // W2：scheduleRepository 已提前到 registerDataVisTools 之前创建（上方），
         // 供 TableExportTool 注入使用；此处不再重复创建，原创建语句已删除。

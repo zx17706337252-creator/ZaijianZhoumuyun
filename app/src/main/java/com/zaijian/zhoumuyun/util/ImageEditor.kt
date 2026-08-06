@@ -87,6 +87,42 @@ object ImageEditor {
             ?: throw IllegalStateException("无法解码图片：$filePath")
     }
 
+    /**
+     * 闪退排查（OOM）：解码前的内存护栏，只读边界（inJustDecodeBounds=true，不分配
+     * 像素内存）算出解码为 ARGB_8888 后的预估内存占用，超过 [maxBytes] 就判定"过大"。
+     *
+     * 用于 crop / rotate / flip / watermark / convert 这类必须拿到全分辨率原图、
+     * 不能像 [decodeSampledBitmap] 那样降采样的操作（降采样会让 crop 的 x/y/width/height
+     * 坐标、watermark 的 x/y 坐标相对图片实际尺寸错位，属于正确性问题而非单纯性能问题）。
+     * 这些路径此前直接 [BitmapFactory.decodeFile] 裸解码，遇到大图会把整个 App 撑到
+     * OOM 闪退——不只是这一次工具调用失败，而是连带当前会话、其它页面一起崩掉。
+     * 加了这道护栏后，大图会在真正分配像素内存之前就被拦下，只让这一次 image_edit
+     * 调用失败（工具返回 [ToolResult.success]=false，AI 可以据此提示用户先用
+     * resize 操作缩小图片），不再牵连整个进程。
+     *
+     * @param filePath 图片文件绝对路径。
+     * @param maxBytes 单张 ARGB_8888 解码后允许占用的内存上限（字节），默认 100MB——
+     *                 常见 12~20MP 手机照片（每张约 48~80MB）能正常通过，只挡住
+     *                 明显偏大（约 25MP 以上）会带来 OOM 风险的图。
+     * @return 尺寸安全返回 null；过大或读不出边界（留给正常解码路径报"无法解码"）时，
+     *         返回一句可直接作为 [ToolResult] 失败原因使用的中文提示。
+     */
+    fun checkDecodeSizeSafe(filePath: String, maxBytes: Long = DEFAULT_MAX_DECODE_BYTES): String? {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(filePath, bounds)
+        val w = bounds.outWidth
+        val h = bounds.outHeight
+        if (w <= 0 || h <= 0) return null // 边界都读不出来，交给后续正常解码路径去报"无法解码"
+        val estimatedBytes = w.toLong() * h.toLong() * 4L // ARGB_8888 = 4 字节/像素
+        if (estimatedBytes <= maxBytes) return null
+        val megapixels = (w.toLong() * h.toLong()) / 1_000_000.0
+        return "图片尺寸过大（约%.1fMP，%d×%d），直接处理容易导致内存溢出。请先用 resize 操作缩小图片后再试。"
+            .format(megapixels, w, h)
+    }
+
+    /** [checkDecodeSizeSafe] 默认内存上限：100MB，见该函数文档说明取值理由。 */
+    const val DEFAULT_MAX_DECODE_BYTES = 100L * 1024 * 1024
+
     // ─────────────────────────────────────────────────────────────
     //  几何变换：裁剪 / 缩放 / 旋转 / 镜像
     // ─────────────────────────────────────────────────────────────

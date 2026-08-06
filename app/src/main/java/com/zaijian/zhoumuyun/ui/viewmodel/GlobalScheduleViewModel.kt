@@ -135,15 +135,24 @@ class GlobalScheduleViewModel(application: Application) : AndroidViewModel(appli
                     }
                 jobsFlow.map { jobs -> Triple(offset, selectedId, jobs) }
             }.collect { (offset, selectedId, jobs) ->
-                val slots = buildTimeSlots(jobs)
-                _uiState.update {
-                    it.copy(
-                        dayOffset            = offset,
-                        selectedCharacterId  = selectedId,
-                        timeSlots            = slots,
-                        allCharacters        = allCharacters,
-                        isLoading            = false,
-                    )
+                // P2-7-5 修复：collect 内套 try/catch，上游 Flow 抛异常（如 SQLiteException）
+                // 时置 isLoading=false + error，避免协程死亡后 isLoading 停在初始 true、
+                // 屏幕永久转圈。CancellationException 必须重抛，否则协程取消被吞。
+                try {
+                    val slots = buildTimeSlots(jobs)
+                    _uiState.update {
+                        it.copy(
+                            dayOffset            = offset,
+                            selectedCharacterId  = selectedId,
+                            timeSlots            = slots,
+                            allCharacters        = allCharacters,
+                            isLoading            = false,
+                        )
+                    }
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    _uiState.update { it.copy(isLoading = false, error = e.message ?: "加载日程失败") }
                 }
             }
         }
@@ -169,22 +178,28 @@ class GlobalScheduleViewModel(application: Application) : AndroidViewModel(appli
         _uiState.update { it.copy(error = null) }
     }
 
-    suspend fun deleteJob(jobId: String) {
-        try {
-            // L-P0-4 修复：使用 ScheduleRepository 完整删除路径，
-            // 替代原来的直接 DA 删除（dao.deleteById）
-            // P2-18 修复：全局日程视图可跨角色删除，characterId 传 null 跳过归属校验，
-            // 但 deleteJobWithFullSync 内部仍会校验 job 存在性（不存在则抛异常）。
-            scheduleRepo.deleteJobWithFullSync(
-                jobId       = jobId,
-                userId      = null,
-                characterId = null,
-            )
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
-        } catch (e: Throwable) {
-            ZLog.e("GlobalScheduleViewModel", "删除日程失败 jobId=$jobId", e)
-            _uiState.update { it.copy(error = "删除失败：${e.message}") }
+    // P2-7-4 修复：删除/启停的完整同步（Room 删除 + WorkManager 取消除 + 日历 + Supabase 网络）
+    // 原先由屏侧 `scope.launch { viewModel.deleteJob(...) }` 驱动，scope 是 rememberCoroutineScope，
+    // 导航离开会让进行中的网络/DB 操作被取消、留半完成态。改为方法内部 viewModelScope.launch，
+    // 与 Personal 屏的 PersonalScheduleViewModel 同范式——操作绑定到 VM 生命周期，不随屏幕销毁中断。
+    fun deleteJob(jobId: String) {
+        viewModelScope.launch {
+            try {
+                // L-P0-4 修复：使用 ScheduleRepository 完整删除路径，
+                // 替代原来的直接 DA 删除（dao.deleteById）
+                // P2-18 修复：全局日程视图可跨角色删除，characterId 传 null 跳过归属校验，
+                // 但 deleteJobWithFullSync 内部仍会校验 job 存在性（不存在则抛异常）。
+                scheduleRepo.deleteJobWithFullSync(
+                    jobId       = jobId,
+                    userId      = null,
+                    characterId = null,
+                )
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                ZLog.e("GlobalScheduleViewModel", "删除日程失败 jobId=$jobId", e)
+                _uiState.update { it.copy(error = "删除失败：${e.message}") }
+            }
         }
     }
 
@@ -192,14 +207,17 @@ class GlobalScheduleViewModel(application: Application) : AndroidViewModel(appli
     // 无 WorkManager 调度变更、无日历事件同步。现改为调用 ScheduleRepository
     // 统一入口 toggleJobWithFullSync()，与 createJobWithFullSync /
     // deleteJobWithFullSync / updateJobWithFullSync 形成统一的写入路径。
-    suspend fun toggleEnabled(job: ScheduledJobEntity) {
-        try {
-            scheduleRepo.toggleJobWithFullSync(job)
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
-        } catch (e: Throwable) {
-            ZLog.e("GlobalScheduleViewModel", "切换日程状态失败 jobId=${job.id}", e)
-            _uiState.update { it.copy(error = "切换失败：${e.message}") }
+    // P2-7-4 修复：同 deleteJob，改用 viewModelScope.launch 绑定 VM 生命周期。
+    fun toggleEnabled(job: ScheduledJobEntity) {
+        viewModelScope.launch {
+            try {
+                scheduleRepo.toggleJobWithFullSync(job)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                ZLog.e("GlobalScheduleViewModel", "切换日程状态失败 jobId=${job.id}", e)
+                _uiState.update { it.copy(error = "切换失败：${e.message}") }
+            }
         }
     }
 

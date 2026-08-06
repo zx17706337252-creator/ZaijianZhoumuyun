@@ -48,9 +48,33 @@ interface MessageDao {
     @Query("SELECT * FROM messages WHERE characterId = :characterId AND speakerContext != 'NON_OWNER' ORDER BY createdAt DESC LIMIT :limit")
     suspend fun getRecentByCharacter(characterId: Int, limit: Int = 6): List<MessageEntity>
 
-    /** 实时观察指定角色的消息列表（UI 层用） */
-    @Query("SELECT * FROM messages WHERE characterId = :characterId ORDER BY createdAt ASC")
-    fun observeByCharacter(characterId: Int): Flow<List<MessageEntity>>
+    /**
+     * 实时观察指定角色的消息列表（UI 层用）。
+     *
+     * 闪退排查（内存持续膨胀）：此前无 LIMIT，随着单个角色聊天历史增长，
+     * 每次插入新消息都会把该角色的全部历史消息重新从数据库加载进内存，
+     * 再映射成 ImmutableList 触发 Compose 全量重组——聊得越久，内存占用
+     * 和重组开销越大，是长期使用后闪退的主要疑点之一。
+     * 现在改为只观察最近 [limit] 条：子查询先按 createdAt DESC 取前 limit
+     * 个 id，外层再按 createdAt ASC 排序返回，UI 展示顺序不受影响。默认
+     * 500 条——远超一般单次会话可见长度，不影响正常使用体验，同时把内存
+     * 和重组开销的上限锁死，不再随对话总量无限增长。
+     * 后续如需做"上滑加载更早消息"的完整分页，可参考
+     * [com.zaijian.zhoumuyun.data.db.dao.RoundtableMessageDao.getByRoundtablePaged]
+     * 的 limit+offset 做法另加方法，这里先只堵住无界增长这一个洞。
+     */
+    @Query("""
+        SELECT * FROM messages
+        WHERE characterId = :characterId
+        AND id IN (
+            SELECT id FROM messages
+            WHERE characterId = :characterId
+            ORDER BY createdAt DESC
+            LIMIT :limit
+        )
+        ORDER BY createdAt ASC
+    """)
+    fun observeByCharacter(characterId: Int, limit: Int = 500): Flow<List<MessageEntity>>
 
     /** 获取最近 N 条（跨角色，用于 Event 上下文） */
     @Query("SELECT * FROM messages ORDER BY createdAt DESC LIMIT :limit")

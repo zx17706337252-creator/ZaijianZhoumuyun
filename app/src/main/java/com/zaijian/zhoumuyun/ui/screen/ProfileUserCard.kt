@@ -11,6 +11,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import com.zaijian.zhoumuyun.ui.design.GhostGoldButton
+import com.zaijian.zhoumuyun.ui.design.GoldPrimaryButton
 import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
 
 
@@ -61,16 +63,13 @@ internal fun EditNicknameDialog(
             }
         },
         confirmButton = {
-            androidx.compose.material3.TextButton(
+            GoldPrimaryButton(
+                text = "保存",
                 onClick = { onConfirm(name.ifBlank { "旅人" }) },
-            ) {
-                Text(text = "保存", color = colors.accent)
-            }
+            )
         },
         dismissButton = {
-            androidx.compose.material3.TextButton(onClick = onDismiss) {
-                Text(text = "取消", color = colors.textSecondary)
-            }
+            GhostGoldButton(text = "取消", onClick = onDismiss)
         },
     )
 }

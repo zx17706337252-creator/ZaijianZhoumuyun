@@ -285,7 +285,7 @@ private data class BottomNavItem(
 private val bottomNavItems = listOf(
     BottomNavItem(AppRoute.World.route,         AppIcons.Home,        "公馆"),
     BottomNavItem(AppRoute.Characters.route,    AppIcons.MenuBook,    "书架"),
-    BottomNavItem(AppRoute.Tasks.route,         AppIcons.CheckCircle, "任务"),
+    BottomNavItem(AppRoute.Tasks.route,         AppIcons.CheckCircle, "事务"),
     // P3-C：学习目标 Tab 改名为「成长」，图标改为 TrendingUp
     BottomNavItem(
         route       = AppRoute.LearningGoals.route,
@@ -862,6 +862,9 @@ fun AppNavigation(
                     onNavigateToProject  = { projectId ->
                         navController.navigateSingle(AppRoute.ProjectDetail.createRoute(projectId))
                     },
+                    onNavigateToCompetition = { domain ->
+                        navController.navigateSingle(AppRoute.Competition.createRoute(domain))
+                    },
                 )
             }
 
@@ -996,11 +999,21 @@ fun AppNavigation(
                 JudgeProfileScreen(
                     characterId = charId,
                     onBack      = { navController.popBackStack() },
-                    onNavigateToCompetition = { _ ->
+                    onNavigateToCompetition = { roundDomain ->
                         // D-1 P0 fix：避免与 Competition 形成循环跳转（无限入栈）。
                         // JudgeProfile 从 Competition 进入，返回时 popBackStack 即可回到来源 Competition 页，
-                        // 不再 navigateSingle 新建入栈。domain 参数忽略——回到的是来源页的原 domain。
-                        navController.popBackStack()
+                        // 不再 navigateSingle 新建入栈。
+                        // P2-7-8 修复：原实现忽略点击轮次的真实 domain，无条件 popBackStack——裁判列表含多
+                        // domain 档案时，从 Competition(X) 进、点 domain=Y 的轮次，本应看 Y 却 pop 回 X。
+                        // 现校验来源 Competition 的 domain：相等则回到来源页；不等则 navigateSingle 到
+                        // Competition(Y)（launchSingleTop 防同 domain 重复入栈）。
+                        val sourceDomain = navController.previousBackStackEntry
+                            ?.arguments?.getString("domain")
+                        if (sourceDomain != null && sourceDomain == roundDomain) {
+                            navController.popBackStack()
+                        } else {
+                            navController.navigateSingle(AppRoute.Competition.createRoute(roundDomain))
+                        }
                     },
                 )
             }

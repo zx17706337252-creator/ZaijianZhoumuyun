@@ -65,4 +65,19 @@ sealed class BriefingAttentionItem {
     // 事件粒度，不需要完整 CharacterConfig。
     data class FertileAttention(val characterId: Int, val characterName: String) : BriefingAttentionItem()
     data class MenstrualAttention(val characterId: Int, val characterName: String) : BriefingAttentionItem()
+    // 叙事类①：对话引用——"她上次提到在读《月海沉书》"。数据源=角色最近一条
+    // 有内容的用户消息，取片段生成自然叙事，让"需要关注"带上对话的温度，
+    // 而不只是健康/关系状态。snippet 为消息内容截断片段，sourceMessageAt 供展示。
+    data class QuoteReference(
+        val character: CharacterConfig,
+        val snippet: String,
+        val sourceMessageAt: Long,
+    ) : BriefingAttentionItem()
+    // 叙事类②：约定事项——"她有条约定的事在推进"（示例"约定今天验收甜点配方"）。
+    // TaskEntity 无截止日期字段，取角色进行中(RUNNING)的任务标题作为"约定/待办"
+    // 关注点，安全地只透出真实存在的任务，不编造截止时间。
+    data class AgreementDue(
+        val character: CharacterConfig,
+        val taskTitle: String,
+    ) : BriefingAttentionItem()
 }

@@ -126,7 +126,15 @@ object AnimDuration {
     const val bottomSheet = 220  // BottomSheet 出现
     const val pageSwitch = 250   // 页面切换
     const val bookOpen   = 300   // 书本翻开
-    const val breath     = 4000  // 呼吸半周期 (full = 8000ms)
+    const val breath     = 2000  // 呼吸半周期 (full = 4000ms) — UI v2.0 校准：HTML halo/breathe 全周期 4s/3.2s
+
+    // ── UI 升级 v2.0（融合方案 §4.3）：AI 过程件动效令牌 ──
+    const val shimmer    = 1600  // 思考进行态微光扫过（1.6s linear）
+    const val spin       = 1000  // spinner / 工具运行金圈旋转（1s linear）
+    const val typingPulse = 1200 // 打字点阶梯起伏（1.2s）
+    const val cursorBlink = 1000 // 流式光标闪烁（1s steps）
+    const val fadeUp     = 350   // 过程件入场淡入上移（.35s）
+    const val florPulse  = 1400  // ✦ 圆桌发言者脉冲（1.4s）
 }
 
 // ─────────────────────────────────────────────────────────────

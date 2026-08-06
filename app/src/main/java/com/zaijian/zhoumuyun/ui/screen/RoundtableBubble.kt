@@ -100,6 +100,7 @@ import com.zaijian.zhoumuyun.data.model.CharacterConfig
 import com.zaijian.zhoumuyun.data.model.DefaultCharacters
 import com.zaijian.zhoumuyun.domain.ContentBlockParser
 import com.zaijian.zhoumuyun.ui.component.ContentBlockRenderer
+import com.zaijian.zhoumuyun.ui.design.StreamingCursor
 import com.zaijian.zhoumuyun.ui.design.WorldBubble
 import com.zaijian.zhoumuyun.ui.design.contentOnFill
 import com.zaijian.zhoumuyun.ui.screen.chat.PsychCard
@@ -159,7 +160,7 @@ internal fun UserBubble(
         Text(
             text     = msg.content,
             style    = type.body,
-            color    = Color.White,
+            color    = Palette.White,
             modifier = Modifier
                 .widthIn(max = maxW)
                 .graphicsLayer { scaleX = scale; scaleY = scale }
@@ -361,7 +362,7 @@ internal fun BotBubble(
                         // → ContentBlockRenderer 管线，取代此前的裸 Text。
                         val displayContent = when {
                             msg.isStreaming && msg.content.isEmpty() -> "…"
-                            msg.isStreaming -> msg.content + "▌"
+                            msg.isStreaming -> msg.content
                             else            -> msg.content
                         }
                         val contentBlocks = remember(displayContent) {
@@ -372,6 +373,11 @@ internal fun BotBubble(
                             textColor = accentColor.contentOnFill(),
                             style     = type.body,
                         )
+                        if (msg.isStreaming) {
+                            StreamingCursor(
+                                modifier = Modifier.padding(top = 2.dp),
+                            )
+                        }
                     }
                 }
             }

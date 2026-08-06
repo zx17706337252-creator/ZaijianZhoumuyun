@@ -2,36 +2,41 @@ package com.zaijian.zhoumuyun.ui.screen
 
 import android.widget.Toast
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -41,12 +46,17 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.zaijian.zhoumuyun.data.db.entity.PrivateChatMessageEntity
@@ -54,12 +64,15 @@ import com.zaijian.zhoumuyun.data.db.entity.PrivateChatPairEntity
 import com.zaijian.zhoumuyun.data.db.entity.PrivateChatSessionEntity
 import com.zaijian.zhoumuyun.data.model.DefaultCharacters
 import com.zaijian.zhoumuyun.ui.component.DetailTopBar
+import com.zaijian.zhoumuyun.ui.component.EmptyStateView
+import com.zaijian.zhoumuyun.ui.design.AppIcons
 import com.zaijian.zhoumuyun.ui.design.DangerVelvetButton
 import com.zaijian.zhoumuyun.ui.design.GhostGoldButton
 import com.zaijian.zhoumuyun.ui.design.GoldPrimaryButton
 import com.zaijian.zhoumuyun.ui.design.SecondaryGoldButton
 import com.zaijian.zhoumuyun.ui.design.WorldCard
 import com.zaijian.zhoumuyun.ui.theme.Palette
+import com.zaijian.zhoumuyun.ui.theme.SerifSC
 import com.zaijian.zhoumuyun.ui.theme.Spacing
 import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
 import com.zaijian.zhoumuyun.ui.viewmodel.PrivateChatViewModel
@@ -172,19 +185,16 @@ fun PrivateChatScreen(
 
                 // ── 配对列表 ────────────────────────────────────────
                 if (allPairs.isEmpty()) {
+                    // 帧28 空状态：裸 Text 收口为统一 EmptyStateView（金色圆容器 +
+                    // 行动按钮），与全 App 空状态族一致。
                     item {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = Spacing.xl),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Text(
-                                text = "还没有角色对，点击上方按钮新建",
-                                style = type.body,
-                                color = colors.textDisabled,
-                            )
-                        }
+                        EmptyStateView(
+                            icon        = AppIcons.PrivateChat,
+                            title       = "还没有角色对",
+                            subtitle    = "点击上方按钮新建一对AI角色",
+                            actionLabel = "新建角色对",
+                            onAction    = { showCreateDialog = true },
+                        )
                     }
                 } else {
                     items(allPairs, key = { it.pairId }) { pair ->
@@ -225,6 +235,9 @@ private fun PairRow(
 
     val nameA = rememberCharacterName(pair.characterIdA, viewModel)
     val nameB = rememberCharacterName(pair.characterIdB, viewModel)
+    // 帧28 双头像交叠：取双方主题色作头像底色（私聊配对均来自 DefaultCharacters）。
+    val colorA = DefaultCharacters.find { it.id == pair.characterIdA }?.accentColor ?: colors.accent
+    val colorB = DefaultCharacters.find { it.id == pair.characterIdB }?.accentColor ?: Palette.Velvet
     // C8 #45：角色自主下线状态（方案 v1.5 6.4 节），此前只有写入路径没有 UI 展示/恢复入口
     val isDisconnected = pair.characterDisconnectState ==
         com.zaijian.zhoumuyun.data.privatechat.PrivateChatSessionStatus.DISCONNECTED_BY_CHARACTER.name
@@ -240,18 +253,39 @@ private fun PairRow(
     ) {
         Column(modifier = Modifier.padding(Spacing.cardPadding)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "$nameA × $nameB",
-                        style = type.cardTitle,
-                        color = colors.textPrimary,
-                    )
-                    Spacer(Modifier.height(2.dp))
-                    Text(
-                        text = "今日已聊 ${pair.sessionsUsedToday}/${pair.maxSessionsPerDay} 次",
-                        style = type.caption,
-                        color = colors.textSecondary,
-                    )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    // 帧28 双头像交叠：A 在前(0)、B 偏移 20dp 叠在右侧
+                    Box(
+                        modifier = Modifier.size(width = 56.dp, height = 36.dp),
+                        contentAlignment = Alignment.CenterStart,
+                    ) {
+                        PairAvatar(
+                            initial = nameA.firstOrNull()?.toString() ?: "A",
+                            color = colorA,
+                        )
+                        PairAvatar(
+                            initial = nameB.firstOrNull()?.toString() ?: "B",
+                            color = colorB,
+                            modifier = Modifier.offset(x = 20.dp),
+                        )
+                    }
+                    Spacer(Modifier.width(Spacing.sm))
+                    Column {
+                        Text(
+                            text = "$nameA × $nameB",
+                            style = type.cardTitle,
+                            color = colors.textPrimary,
+                        )
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            text = "今日已聊 ${pair.sessionsUsedToday}/${pair.maxSessionsPerDay} 次",
+                            style = type.caption,
+                            color = colors.textSecondary,
+                        )
+                    }
                 }
                 Spacer(Modifier.width(Spacing.sm))
                 Switch(
@@ -275,12 +309,10 @@ private fun PairRow(
                         color = Palette.TaskFailed,
                         modifier = Modifier.weight(1f),
                     )
-                    TextButton(
+                    GhostGoldButton(
+                        text = "恢复",
                         onClick = { viewModel.resetDisconnect(pair.pairId) },
-                        colors = ButtonDefaults.textButtonColors(contentColor = Palette.TaskFailed),
-                    ) {
-                        Text("恢复", style = type.caption)
-                    }
+                    )
                 }
             }
             // A10-5 修复：删除配对入口
@@ -289,13 +321,10 @@ private fun PairRow(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.End,
             ) {
-                TextButton(
+                GhostGoldButton(
+                    text = "删除配对",
                     onClick = { showDeleteDialog = true },
-                    colors = ButtonDefaults.textButtonColors(contentColor = colors.textSecondary),
-                    contentPadding = PaddingValues(horizontal = Spacing.sm, vertical = 0.dp),
-                ) {
-                    Text("删除配对", style = type.caption)
-                }
+                )
             }
         }
     }
@@ -327,10 +356,36 @@ private fun PairRow(
                 )
             },
             dismissButton = {
-                TextButton(onClick = { showDeleteDialog = false }) {
-                    Text("取消", color = colors.textSecondary)
-                }
+                GhostGoldButton(text = "取消", onClick = { showDeleteDialog = false })
             },
+        )
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+//  帧28 双头像单元：角色色渐变底 + 首字（SerifSC），36dp 圆形
+// ─────────────────────────────────────────────────────────────
+
+@Composable
+private fun PairAvatar(
+    initial: String,
+    color: Color,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier
+            .size(36.dp)
+            .clip(CircleShape)
+            .background(Brush.linearGradient(listOf(color, color.copy(alpha = 0.72f))))
+            .border(1.dp, Color.White.copy(alpha = 0.25f), CircleShape),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = initial,
+            color = Color.White,
+            fontFamily = SerifSC,
+            fontWeight = FontWeight.Bold,
+            fontSize = 15.sp,
         )
     }
 }
@@ -389,8 +444,6 @@ private fun CreatePairDialog(
                     verticalArrangement = Arrangement.spacedBy(Spacing.xs),
                 ) {
                     DefaultCharacters.forEach { ch ->
-                        val isA = selectedA == ch.id
-                        val isB = selectedB == ch.id
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -405,55 +458,36 @@ private fun CreatePairDialog(
                                 color = colors.textPrimary,
                                 modifier = Modifier.weight(1f),
                             )
-                            TextButton(
+                            GhostGoldButton(
+                                text = "选为A",
                                 onClick = {
                                     selectedA = ch.id
                                     if (selectedB == ch.id) selectedB = null
                                 },
-                                contentPadding = PaddingValues(horizontal = Spacing.sm, vertical = 0.dp),
-                            ) {
-                                Text(
-                                    text = "选为A",
-                                    style = type.caption,
-                                    color = if (isA) colors.accent else colors.textSecondary,
-                                )
-                            }
-                            TextButton(
+                            )
+                            GhostGoldButton(
+                                text = "选为B",
                                 onClick = {
                                     selectedB = ch.id
                                     if (selectedA == ch.id) selectedA = null
                                 },
-                                contentPadding = PaddingValues(horizontal = Spacing.sm, vertical = 0.dp),
-                            ) {
-                                Text(
-                                    text = "选为B",
-                                    style = type.caption,
-                                    color = if (isB) colors.accent else colors.textSecondary,
-                                )
-                            }
+                            )
                         }
                     }
                 }
             }
         },
         confirmButton = {
-            Button(
+            GoldPrimaryButton(
+                text = "创建",
                 onClick = {
                     if (canCreate) onConfirm(selectedA!!, selectedB!!)
                 },
-                enabled = canCreate,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = colors.accent,
-                    contentColor = colors.bgBase,
-                ),
-            ) {
-                Text("创建")
-            }
+                modifier = Modifier.alpha(if (canCreate) 1f else 0.4f),
+            )
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("取消", color = colors.textSecondary)
-            }
+            GhostGoldButton(text = "取消", onClick = onDismiss)
         },
     )
 }
@@ -538,7 +572,7 @@ fun PrivateChatDetailScreen(
             )
 
             LazyColumn(
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier.weight(1f),
                 contentPadding = PaddingValues(
                     horizontal = Spacing.screenHorizontal,
                     vertical = Spacing.md,
@@ -552,16 +586,10 @@ fun PrivateChatDetailScreen(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
                         ) {
-                            Button(
+                            GoldPrimaryButton(
+                                text = "发起私聊",
                                 onClick = { showTriggerDialog = true },
-                                enabled = pair != null,
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = colors.accent,
-                                    contentColor = colors.bgBase,
-                                ),
-                            ) {
-                                Text("发起私聊")
-                            }
+                            )
                             SecondaryGoldButton(
                                 text = "导出Markdown",
                                 onClick = { viewModel.exportMarkdown(pairId) },
@@ -602,12 +630,12 @@ fun PrivateChatDetailScreen(
                                     onClick = {
                                         clipboardManager.setText(AnnotatedString(exportText))
                                     },
-                                    modifier = Modifier.fillMaxWidth(),
+                                    modifier = Modifier.weight(1f),
                                 )
                                 GhostGoldButton(
                                     text = "关闭",
                                     onClick = { viewModel.clearExportResult() },
-                                    modifier = Modifier.fillMaxWidth(),
+                                    modifier = Modifier.weight(1f),
                                 )
                             }
                         }
@@ -649,7 +677,9 @@ fun PrivateChatDetailScreen(
                                     viewModel.updateParams(pairId, mt, ms, cd)
                                 }
                             },
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier.fillMaxWidth().alpha(
+                                if (maxTurns.toIntOrNull() != null && maxSessions.toIntOrNull() != null && cooldown.toIntOrNull() != null) 1f else 0.4f
+                            ),
                         )
                     }
                 }
@@ -680,11 +710,21 @@ fun PrivateChatDetailScreen(
                             )
                         }
                         items(msgs, key = { it.id }) { msg ->
-                            MessageRow(msg, viewModel)
+                            MessageRow(
+                                message = msg,
+                                viewModel = viewModel,
+                                leftCharacterId = pair?.characterIdA ?: -1,
+                            )
                         }
                     }
                 }
             }
+
+            // ── 帧29 底部管理条（固定底部，非输入框）──────────────
+            PrivateChatDetailBottomBar(
+                onTrigger = { showTriggerDialog = true },
+                onExport = { viewModel.exportMarkdown(pairId) },
+            )
         }
     }
 
@@ -776,6 +816,7 @@ private fun SessionHeader(
 private fun MessageRow(
     message: PrivateChatMessageEntity,
     viewModel: PrivateChatViewModel,
+    leftCharacterId: Int,
 ) {
     val colors = ZaijianTheme.colors
     val type = ZaijianTheme.typography
@@ -784,37 +825,118 @@ private fun MessageRow(
     val timeText = remember(message.timestamp) {
         SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(message.timestamp))
     }
+    // 帧29 左右分列：A 角色(leftCharacterId)靠左、B 角色靠右；竖条用发送方角色色
+    val isLeft = if (leftCharacterId > 0) message.senderCharacterId == leftCharacterId else true
+    val senderColor = DefaultCharacters.find { it.id == message.senderCharacterId }?.accentColor
+        ?: colors.accent
 
-    Column(
+    Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = Spacing.xs),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                text = senderName,
-                style = type.bodyBold,
-                color = colors.accent,
+        // 非左侧消息先用 weight(1f) 占位把气泡推到右侧
+        if (!isLeft) Spacer(Modifier.weight(1f))
+
+        // 气泡（竖条卡）：3dp 角色色竖条 + 内容，宽度上限避免长消息撑满整行
+        Row(
+            modifier = Modifier
+                .widthIn(max = 300.dp)
+                .height(IntrinsicSize.Min)
+                .clip(RoundedCornerShape(12.dp))
+                .background(colors.bgElevated),
+        ) {
+            // 左侧消息：竖条在左；右侧消息：竖条在右
+            if (isLeft) {
+                Box(
+                    Modifier
+                        .width(3.dp)
+                        .fillMaxHeight()
+                        .background(senderColor),
+                )
+            }
+            Column(Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = senderName,
+                        style = type.bodyBold,
+                        color = senderColor,
+                    )
+                    Spacer(Modifier.width(Spacing.xs))
+                    Text(
+                        text = "第${message.turnIndexInSession}轮",
+                        style = type.label,
+                        color = colors.textDisabled,
+                    )
+                    Spacer(Modifier.width(Spacing.xs))
+                    Text(
+                        text = timeText,
+                        style = type.label,
+                        color = colors.textDisabled,
+                    )
+                }
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    text = message.content,
+                    style = type.body,
+                    color = colors.textPrimary,
+                )
+            }
+            if (!isLeft) {
+                Box(
+                    Modifier
+                        .width(3.dp)
+                        .fillMaxHeight()
+                        .background(senderColor),
+                )
+            }
+        }
+
+        // 左侧消息末尾用 weight(1f) 占位把气泡留在左侧
+        if (isLeft) Spacer(Modifier.weight(1f))
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+//  帧29 底部管理条（固定底部，非输入框）
+// ─────────────────────────────────────────────────────────────
+
+@Composable
+private fun PrivateChatDetailBottomBar(
+    onTrigger: () -> Unit,
+    onExport: () -> Unit,
+) {
+    val colors = ZaijianTheme.colors
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(colors.bgCard)
+            .navigationBarsPadding(),
+    ) {
+        // 顶部 0.5dp 发丝分隔线
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(0.5.dp)
+                .background(colors.border),
+        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = Spacing.screenHorizontal, vertical = Spacing.sm),
+            horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            SecondaryGoldButton(
+                text = "发起新会话",
+                onClick = onTrigger,
+                modifier = Modifier.weight(1f),
             )
-            Spacer(Modifier.width(Spacing.xs))
-            Text(
-                text = "第${message.turnIndexInSession}轮",
-                style = type.label,
-                color = colors.textDisabled,
-            )
-            Spacer(Modifier.weight(1f))
-            Text(
-                text = timeText,
-                style = type.label,
-                color = colors.textDisabled,
+            GhostGoldButton(
+                text = "导出",
+                onClick = onExport,
             )
         }
-        Spacer(Modifier.height(2.dp))
-        Text(
-            text = message.content,
-            style = type.body,
-            color = colors.textPrimary,
-        )
     }
 }
 
@@ -884,9 +1006,7 @@ private fun TriggerSessionDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = onDismiss) {
-                Text("关闭", color = colors.textSecondary)
-            }
+            GhostGoldButton(text = "关闭", onClick = onDismiss)
         },
     )
 }

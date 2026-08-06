@@ -220,12 +220,13 @@ private fun CharacterChip(
         modifier = Modifier
             .clip(RoundedCornerShape(999.dp))
             // 选中态：黄铜三段渐变（金色军规 §1，禁纯色平涂）；未选：纸底 + 金发丝边
-            .background(if (selected) AppBrushes.goldGradient() else colors.bgCard)
             .then(
-                if (!selected) {
-                    Modifier.border(0.5.dp, colors.accent.copy(alpha = 0.30f), RoundedCornerShape(999.dp))
+                if (selected) {
+                    Modifier.background(AppBrushes.goldGradient())
                 } else {
                     Modifier
+                        .background(colors.bgCard)
+                        .border(0.5.dp, colors.accent.copy(alpha = 0.30f), RoundedCornerShape(999.dp))
                 },
             )
             .clickable(onClick = onClick)

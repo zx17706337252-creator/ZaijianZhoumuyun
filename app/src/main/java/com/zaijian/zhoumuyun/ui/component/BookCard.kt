@@ -2,6 +2,7 @@ package com.zaijian.zhoumuyun.ui.component
 
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -159,10 +160,12 @@ fun BookCard(
             .semantics { contentDescription = a11yDesc }
             .scale(scale)
             .presenceGlow(
-                color       = character.accentColor,
+                color       = Palette.Gold,
                 isActive    = presence.statusType == StatusType.ACTIVE,
                 breathAlpha = if (presence.statusType == StatusType.ACTIVE) 0.28f else 0f,
-            ),
+            )
+            // 帧05：头像外层金环
+            .border(3.dp, Palette.GoldBright.copy(alpha = 0.55f), ovalShape),
         contentAlignment = Alignment.Center,
     ) {
         if (isLocked) {
@@ -208,12 +211,13 @@ fun BookCard(
             Box(
                 modifier = Modifier
                     .size(avatarW, avatarH)
-                    .clip(ovalShape),
+                    .clip(ovalShape)
+                    .border(2.dp, Color.White, ovalShape),
                 contentAlignment = Alignment.Center,
             ) {
                 BreathingAvatar(
                     imageUrl     = character.avatarUrlShelf,
-                    breathColor  = character.accentColor,
+                    breathColor  = Palette.Gold,
                     statusType   = presence.statusType,
                     width        = avatarW,
                     height       = avatarH,
@@ -257,14 +261,18 @@ fun BookCard(
                     .wrapContentWidth(unbounded = true),
             )
 
-            // ── 状态点（椭圆框右上侧） ────────────────────────────
+            // ── 状态点（椭圆框右下侧） ────────────────────────────
+            // UI 升级 v2.0 帧05：状态点位置由右上调整为右下，与头像右下角
+            // 状态指示惯例一致（如即时通讯应用）。显式 size 保证 Canvas
+            // 不因父级约束填充整个椭圆框导致定位失效。
             // UI M5 修复：提取为 StatusDot，与 WindowCard 共享实现。
             if (presence.statusType != StatusType.OFFLINE) {
                 StatusDot(
                     statusType = presence.statusType,
                     modifier   = Modifier
-                        .align(Alignment.TopEnd)
-                    .padding(top = Spacing.xs, end = 2.dp),
+                        .align(Alignment.BottomEnd)
+                        .padding(end = 2.dp, bottom = 2.dp)
+                        .size(12.dp),
                 )
             }
 

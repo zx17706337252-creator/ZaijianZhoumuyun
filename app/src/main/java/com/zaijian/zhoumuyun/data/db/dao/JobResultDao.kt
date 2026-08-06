@@ -16,9 +16,15 @@ interface JobResultDao {
     @Query("SELECT * FROM job_results WHERE characterId = :characterId AND isRead = 0 ORDER BY createdAt DESC")
     suspend fun findUnread(characterId: Int): List<JobResultEntity>
 
-    /** Phase 30 方案二：监听全部角色的未读结果，新结果写入时立即触发 */
-    @Query("SELECT * FROM job_results WHERE isRead = 0 ORDER BY createdAt DESC")
-    fun observeAllUnread(): Flow<List<JobResultEntity>>
+    /**
+     * Phase 30 方案二：监听全部角色的未读结果，新结果写入时立即触发。
+     *
+     * P2-3-2 修复：原查询无 LIMIT，跨角色聚合会把全表未读行读进内存，
+     * 且每条新结果写入都触发一次全量重发。加 LIMIT 上限，未读堆积时
+     * 只取最近的一批（按 createdAt 倒序），避免无界增长。
+     */
+    @Query("SELECT * FROM job_results WHERE isRead = 0 ORDER BY createdAt DESC LIMIT :limit")
+    fun observeAllUnread(limit: Int = 200): Flow<List<JobResultEntity>>
 
     /** Phase 30 方案四：按 jobId 查找最近一条结果（含已读），供今日时间线显示执行状态 */
     @Query("SELECT * FROM job_results WHERE jobId = :jobId ORDER BY createdAt DESC LIMIT 1")

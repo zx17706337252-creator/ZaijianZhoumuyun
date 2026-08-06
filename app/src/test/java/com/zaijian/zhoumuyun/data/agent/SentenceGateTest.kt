@@ -123,4 +123,120 @@ class SentenceGateTest {
         )
         assertEquals("好的，我来帮你看看这个问题。根据我的分析，主要有以下几个原因。", result)
     }
+
+    // ═══════════════════════════════════════════════════════════
+    //  以下 6 条为方向1（正则过宽）/ 方向2（thinking 泄漏）回归测试。
+    //  背景见 ToolCallInterceptor 里 FALSE_COMPLETION_CLAIM_REGEX /
+    //  hasGenericVerbFileCompletionClaim / looksLikeFalseFileCompletionClaim
+    //  的 KDoc：agent_log.txt 里"我确实这么做了"被误判为空头承诺、进而被硬推
+    //  去调用 excel_gen 生成一张无关测试表格，就是这条正则过宽导致的。
+    // ═══════════════════════════════════════════════════════════
+
+    @Test
+    fun `方向1-做了-日常收尾语不再误判`() {
+        val result = ToolCallInterceptor.runSentenceGate(
+            deltas = listOf("他说让我去撩顾澜，我确实这么做了。"),
+            anyToolSucceeded = false,
+        )
+        assertEquals("他说让我去撩顾澜，我确实这么做了。", result)
+    }
+
+    @Test
+    fun `方向1-弄完了-日常收尾语不再误判`() {
+        val result = ToolCallInterceptor.runSentenceGate(
+            deltas = listOf("这事儿弄完了，你别担心。"),
+            anyToolSucceeded = false,
+        )
+        assertEquals("这事儿弄完了，你别担心。", result)
+    }
+
+    @Test
+    fun `方向1-做好了-文件语境下依然被拦`() {
+        val result = ToolCallInterceptor.runSentenceGate(
+            deltas = listOf("表格我做好了。"),
+            anyToolSucceeded = false,
+        )
+        assertEquals("", result)
+    }
+
+    @Test
+    fun `方向1-弄完了-文件语境下依然被拦`() {
+        val result = ToolCallInterceptor.runSentenceGate(
+            deltas = listOf("这个文档弄完了。"),
+            anyToolSucceeded = false,
+        )
+        assertEquals("", result)
+    }
+
+    @Test
+    fun `方向2-thinking内完整虚假声明不再连累可见正文`() {
+        val result = ToolCallInterceptor.runSentenceGate(
+            deltas = listOf("[thinking:她问我文件弄好了没,我准备撒谎说已经生成了]我们聊得挺开心的。"),
+            anyToolSucceeded = false,
+        )
+        assertEquals("[thinking:她问我文件弄好了没,我准备撒谎说已经生成了]我们聊得挺开心的。", result)
+    }
+
+    @Test
+    fun `方向2-thinking内文件语境做好了不再连累可见正文`() {
+        val result = ToolCallInterceptor.runSentenceGate(
+            deltas = listOf("[thinking:其实表格还没做,但我想说表格我做好了]今天陪你聊了好久呢。"),
+            anyToolSucceeded = false,
+        )
+        assertEquals("[thinking:其实表格还没做,但我想说表格我做好了]今天陪你聊了好久呢。", result)
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    //  防谎报修复（修改点 8）：锁死"写/搞/完成/整理"扩词 + 用户输入并入检测。
+    //  背景见 ToolCallInterceptor 的 FILE_DELIVERY_RULE / GENERIC_VERB /
+    //  hasGenericVerbFileCompletionClaim(带 userRequestText) 的 KDoc。
+    //  核心：用户说"做个PPT"、agent 输出只回"搞定了"（不带格式词）也要能拦下。
+    // ═══════════════════════════════════════════════════════════
+
+    @Test
+    fun `防谎报-写好了-用户要求txt-拦截`() {
+        val result = ToolCallInterceptor.runSentenceGate(
+            deltas = listOf("写好了"),
+            anyToolSucceeded = false,
+            userRequestText = "给我写个txt",
+        )
+        assertEquals("", result)
+    }
+
+    @Test
+    fun `防谎报-搞定了-用户要求PPT-拦截`() {
+        val result = ToolCallInterceptor.runSentenceGate(
+            deltas = listOf("搞定了"),
+            anyToolSucceeded = false,
+            userRequestText = "做个PPT",
+        )
+        assertEquals("", result)
+    }
+
+    @Test
+    fun `防谎报-已经为您写好了-拦截`() {
+        val result = ToolCallInterceptor.runSentenceGate(
+            deltas = listOf("已经为您写好了"),
+            anyToolSucceeded = false,
+        )
+        assertEquals("", result)
+    }
+
+    @Test
+    fun `防谎报-写完了-无文件语境-放行`() {
+        val result = ToolCallInterceptor.runSentenceGate(
+            deltas = listOf("写完了"),
+            anyToolSucceeded = false,
+        )
+        assertEquals("写完了", result)
+    }
+
+    @Test
+    fun `防谎报-我确实这么做了-回归放行`() {
+        val result = ToolCallInterceptor.runSentenceGate(
+            deltas = listOf("我确实这么做了"),
+            anyToolSucceeded = false,
+        )
+        assertEquals("我确实这么做了", result)
+    }
 }

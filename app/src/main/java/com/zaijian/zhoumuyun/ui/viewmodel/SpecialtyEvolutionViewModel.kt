@@ -27,7 +27,10 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
+import com.zaijian.zhoumuyun.data.model.CharacterConfig
+import com.zaijian.zhoumuyun.data.model.DefaultCharacters
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
@@ -68,6 +71,13 @@ class SpecialtyEvolutionViewModel(
     // 复用的重复实例。现改为引用容器共享实例，两处收口为同一份。
     private val repo = AppContainer.instance.specialtyProfileRepo
 
+    // P2-7-9 修复：已注册女儿角色（ID≥1000）此前在专长页查名/查主题色只走 DefaultCharacters，
+    // 女儿身份无名无主题色。observeAllCharacterConfigs() 已合并 DefaultCharacters + 女儿，
+    // 供本页角色反查。
+    val characters: StateFlow<List<CharacterConfig>> =
+        AppContainer.instance.daughterCharacterRepo.observeAllCharacterConfigs()
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), DefaultCharacters)
+
     // ── 角色与专长列表 ───────────────────────────────────────────
 
     private val restoredCharacterId: Int = savedStateHandle.get<Int>(KEY_CHARACTER_ID) ?: -1
@@ -75,11 +85,18 @@ class SpecialtyEvolutionViewModel(
     private var currentCharacterId: Int = restoredCharacterId
     private var hasRunInit = false
 
+    // P2-7-6 修复：新增列表 isLoading 三态——Room Flow 首次查询完成前初始值是 emptyList()，
+    // 若 UI 直接以 profiles.isEmpty() 判空，慢查询会先闪"空态"再跳数据。init 置 true，
+    // profiles 首次真实发射后置 false。
+    private val _isLoading = MutableStateFlow(true)
+    val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
+
     val profiles: StateFlow<List<SpecialtyProfileEntity>> =
         _characterIdFlow
             .flatMapLatest { cid ->
                 if (cid < 0) flowOf(emptyList()) else repo.observeProfilesForCharacter(cid)
             }
+            .onEach { _isLoading.value = false }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     fun init(characterId: Int) {
@@ -87,6 +104,7 @@ class SpecialtyEvolutionViewModel(
         hasRunInit = true
         currentCharacterId = characterId
         savedStateHandle[KEY_CHARACTER_ID] = characterId
+        _isLoading.value = true
         _characterIdFlow.value = characterId
     }
 

@@ -40,7 +40,7 @@ object ReplyGuard {
 
     /** 固定兜底模板（5.2 节，重试仍命中越界时使用，不再调 LLM） */
     fun fallbackTemplate(characterName: String): String =
-        "（${characterName} 像是回过神来，脸上闪过一丝说不清的情绪，没有再接话。）"
+        "「${characterName} 像是回过神来，脸上闪过一丝说不清的情绪，没有再接话。」"
 
     /**
      * 6.3 施压类内容检测（独立的单轮分类调用）。

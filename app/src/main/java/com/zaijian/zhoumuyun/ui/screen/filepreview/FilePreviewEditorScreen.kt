@@ -29,6 +29,8 @@ import java.io.File
 import java.net.URLEncoder
 import com.zaijian.zhoumuyun.ui.component.DetailTopBar
 import com.zaijian.zhoumuyun.ui.design.AppIcons
+import com.zaijian.zhoumuyun.ui.design.GhostGoldButton
+import com.zaijian.zhoumuyun.ui.design.GoldPrimaryButton
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 /**
@@ -77,6 +79,10 @@ fun FilePreviewEditorScreen(
                         viewModel.loadFromTable(mem.columns, mem.rows)
                     }
                 }
+            } else {
+                // P1-24 修复：缓存 miss（进程被杀后 tempKey 失效）时置 Error 终态，
+                // 避免永久卡在 Loading 空白页（此前 consume 为 null 时既不加载也不报错）。
+                viewModel.setMemoryCacheMiss()
             }
         } else if (encodedPath != "memory") {
             val decodedPath = java.net.URLDecoder.decode(encodedPath, "UTF-8")
@@ -162,6 +168,10 @@ fun FilePreviewEditorScreen(
                                     showMenu = false
                                     try {
                                         val file = File(filePath)
+                                        if (!file.exists()) {
+                                            android.widget.Toast.makeText(context, "文件不存在：${file.name}", android.widget.Toast.LENGTH_SHORT).show()
+                                            return@DropdownMenuItem
+                                        }
                                         val uri = FileProvider.getUriForFile(
                                             context,
                                             "${context.packageName}.fileprovider",
@@ -174,6 +184,7 @@ fun FilePreviewEditorScreen(
                                         context.startActivity(Intent.createChooser(intent, "打开 ${file.name}"))
                                     } catch (e: Throwable) {
                                         com.zaijian.zhoumuyun.util.ZLog.e("FilePreview", "外部打开失败", e)
+                                        android.widget.Toast.makeText(context, "无法打开文件", android.widget.Toast.LENGTH_SHORT).show()
                                     }
                                 },
                                 leadingIcon = { Icon(AppIcons.OpenInNew, contentDescription = null) },
@@ -255,6 +266,10 @@ fun FilePreviewEditorScreen(
                                 onOpenExternal = {
                                     try {
                                         val file = File(content.filePath)
+                                        if (!file.exists()) {
+                                            android.widget.Toast.makeText(context, "文件不存在：${content.fileName}", android.widget.Toast.LENGTH_SHORT).show()
+                                            return@UnsupportedView
+                                        }
                                         val uri = FileProvider.getUriForFile(
                                             context,
                                             "${context.packageName}.fileprovider",
@@ -267,6 +282,7 @@ fun FilePreviewEditorScreen(
                                         context.startActivity(Intent.createChooser(intent, "打开 ${content.fileName}"))
                                     } catch (e: Throwable) {
                                         com.zaijian.zhoumuyun.util.ZLog.e("FilePreview", "外部打开失败", e)
+                                        android.widget.Toast.makeText(context, "无法打开文件", android.widget.Toast.LENGTH_SHORT).show()
                                     }
                                 },
                             )
@@ -512,13 +528,17 @@ private fun UnsupportedView(
             color = colors.textDisabled,
         )
         Spacer(Modifier.height(Spacing.lg))
-        Button(onClick = onExport, modifier = Modifier.fillMaxWidth()) {
-            Text("导出到下载目录")
-        }
+        GoldPrimaryButton(
+            text = "导出到下载目录",
+            onClick = onExport,
+            modifier = Modifier.fillMaxWidth(),
+        )
         Spacer(Modifier.height(Spacing.sm))
-        OutlinedButton(onClick = onOpenExternal, modifier = Modifier.fillMaxWidth()) {
-            Text("用其他应用打开")
-        }
+        GhostGoldButton(
+            text = "用其他应用打开",
+            onClick = onOpenExternal,
+            modifier = Modifier.fillMaxWidth(),
+        )
     }
 }
 

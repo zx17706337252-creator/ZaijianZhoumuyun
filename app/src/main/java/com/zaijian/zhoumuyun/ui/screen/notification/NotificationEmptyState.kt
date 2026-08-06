@@ -8,6 +8,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
+import com.zaijian.zhoumuyun.ui.design.WorldCard
+import com.zaijian.zhoumuyun.ui.theme.Radius
 import com.zaijian.zhoumuyun.ui.theme.Spacing
 import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
 
@@ -32,17 +34,20 @@ fun NotificationEmptyState(
     val colors = ZaijianTheme.colors
     val type = ZaijianTheme.typography
 
-    Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .padding(top = Spacing.sm, bottom = Spacing.xs),
-        horizontalAlignment = Alignment.CenterHorizontally,
+    WorldCard(
+        modifier = modifier.fillMaxWidth(),
+        cornerRadius = Radius.sm,
     ) {
-        Text(
-            text = text,
-            style = type.caption,
-            color = colors.textDisabled,
-            textAlign = TextAlign.Center,
-        )
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(Spacing.cardPadding),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text(
+                text = text,
+                style = type.caption,
+                color = colors.textDisabled,
+                textAlign = TextAlign.Center,
+            )
+        }
     }
 }

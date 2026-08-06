@@ -1,6 +1,7 @@
 package com.zaijian.zhoumuyun.data.agent
 
 import android.content.Context
+import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
@@ -94,7 +95,8 @@ class CiCdPipelineWorker(
 
         // C类审查 #47 修复：改用统一的权限检查入口
         com.zaijian.zhoumuyun.util.NotificationPermissionUtils.safeNotify(
-            appContext, System.currentTimeMillis().toInt(), notif, "CiCdPipelineWorker",
+            // P1-20 修复：通知 ID 改用单调钟，避免跨任务/跨 Worker 碰撞静默覆盖通知。
+            appContext, SystemClock.elapsedRealtime().toInt(), notif, "CiCdPipelineWorker",
         )
     }
 }

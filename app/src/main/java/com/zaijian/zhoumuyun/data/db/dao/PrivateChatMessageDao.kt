@@ -37,6 +37,14 @@ interface PrivateChatMessageDao {
     @Query("SELECT * FROM private_chat_messages WHERE sessionId = :sessionId ORDER BY timestamp ASC")
     fun observeBySession(sessionId: String): Flow<List<PrivateChatMessageEntity>>
 
+    // 修复 #5：续接 interrupted session 时需要该 session 的**全部**消息（推导
+    // turnIndex/currentSpeaker/lastMessageContent），不能像 getRecentBySessionDesc
+    // 那样只取最近 N 条——续接场景下"最早那条开场白"同样是推导状态所需的一部分
+    // （比如判断 initiatorCharacterId）。按 timestamp ASC 直接返回正序，
+    // 不需要像 getRecentBySessionDesc 那样反转。
+    @Query("SELECT * FROM private_chat_messages WHERE sessionId = :sessionId ORDER BY timestamp ASC")
+    suspend fun getAllBySession(sessionId: String): List<PrivateChatMessageEntity>
+
     @Query("SELECT COUNT(*) FROM private_chat_messages WHERE pairId = :pairId")
     suspend fun countByPair(pairId: String): Int
 

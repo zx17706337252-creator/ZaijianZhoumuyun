@@ -1,7 +1,6 @@
 package com.zaijian.zhoumuyun.data.prompt
 
 import com.zaijian.zhoumuyun.data.db.entity.CharacterIdentityEntity
-import com.zaijian.zhoumuyun.data.db.entity.MemoryDomain
 import com.zaijian.zhoumuyun.data.db.entity.MemoryEntity
 import com.zaijian.zhoumuyun.data.model.CharacterConfig
 import com.zaijian.zhoumuyun.data.model.CharacterStateLayer
@@ -58,78 +57,7 @@ import com.zaijian.zhoumuyun.util.ZLog
  *     与 LearningGoal Layer 共同构成 Memory → LearningGoal → AgentPlan → World 注入链。
  */
 
-/**
- * Identity Layer 字符串字段封装（W2 审查问题3 重构）。
- *
- * `buildIdentityBlock()` 此前直接接收 18+ 个独立字符串参数，每次新增字段
- * 都要在函数签名、`buildSystemPrompt()` 调用点、函数体内部三处同步修改，
- * 任何一处遗漏都会导致新字段静默不生效。现将 `CharacterIdentityEntity`/
- * `CharacterIdentity` 中除 `boundaries`/`coreBeliefs`（需 JSON 解析，
- * 类型为 List<String>，语义与其余字符串字段不同，仍作为独立参数）外的
- * 全部字符串字段封装到此 data class，`buildSystemPrompt()` 一次性构建后
- * 整体传入 `buildIdentityBlock()`。新增字段时只需：
- *   1. 在此 data class 中加一个属性
- *   2. 在 `buildSystemPrompt()` 的 `IdentityPromptFields(...)` 构造处加一行
- *   3. 在 `buildIdentityBlock()` 内部按需读取 `fields.xxx`
- * 不再需要在函数签名处额外同步。
- */
-private data class IdentityPromptFields(
-    val persona: String = "",
-    val speechStyle: String = "",
-    val attitudeToUser: String = "",
-    val coreWound: String = "",
-    val coreDesire: String = "",
-    val maskTrigger: String = "",
-    val privatePersona: String = "",
-    val privateStyle: String = "",
-    val privateExamples: String = "",
-    val situationRules: String = "",
-    val deviationSignals: String = "",
-    val likes: String = "",
-    val dislikes: String = "",
-    val relationships: String = "",
-    val relationAssumption: String = "",
-    val conflictStrategy: String = "",
-    val soulNote: String = "",
-    val userImpression: String = "",
-)
-
 object PromptOrchestrator {
-
-    // ── A-4 isCore 预算上限 ──────────────────────────────────
-    //
-    // 原 take(5) 改为按字符预算累加。预算值依据：
-    //   - isCore 记忆产品设计为"稀疏、慎重"（MemoryDao.kt:94 注释），量级天然可控
-    //   - 单条核心记忆平均约 30-60 字符，5 条 ≈ 150-300 字符
-    //   - 预算设为 500 字符，可容纳 8-15 条短记忆或 3-5 条长记忆，
-    //     比固定 5 条更灵活：短记忆多塞几条，长记忆不会被截断
-    //   - 500 字符 ≈ 250-350 token（中文约 1.5 字符/token），占 prompt 比例 <1%
-    /** 核心记忆注入的字符预算上限（个人记忆 + 群体共识共用同一预算值） */
-    private const val CORE_MEMORY_CHAR_BUDGET = 500
-
-    /**
-     * 按字符预算累加核心记忆，替代原来的 take(N)。
-     *
-     * 逐条累加 content 长度，超出 [CORE_MEMORY_CHAR_BUDGET] 时停止。
-     * 保证至少注入第 1 条（即使单条就超预算），避免核心记忆完全丢失。
-     *
-     * @return 筛选后的记忆列表 + 实际使用的字符数
-     */
-    private fun selectByCharBudget(
-        memories: List<MemoryEntity>,
-        budget: Int = CORE_MEMORY_CHAR_BUDGET,
-    ): List<MemoryEntity> {
-        if (memories.isEmpty()) return emptyList()
-        val result = mutableListOf<MemoryEntity>()
-        var used = 0
-        for (m in memories) {
-            val len = m.content.length
-            if (result.isNotEmpty() && used + len > budget) break
-            result.add(m)
-            used += len
-        }
-        return result
-    }
 
     /**
      * 组装 System Prompt。
@@ -272,12 +200,18 @@ object PromptOrchestrator {
         // 拒绝反应轮传 true 抑制机制三（由调用方自行追加 6.3 拒绝反应文案）；
         // 其余调用方默认 false，行为不变。
         suppressNarrativeSovereignty: Boolean = false,
+        // ── P0-4 PR4：Identity HOT/WARM 拆分 ──────────────────────
+        // 默认 true（保持现有行为：每轮注入全部 Identity 字段）——其他调用方
+        // （Roundtable/后台工单）不显式传参，行为不变。仅 ChatMessageOrchestrator
+        // 私聊路径按"每 5 轮注入一次 WARM 层"显式传 false（WARM 省 token）：
+        // HOT 层 7 项每轮注入，WARM 层 13 项每 5 轮注入一次（v10 风险点 3 裁定）。
+        includeWarmIdentityBlock: Boolean = true,
     ): String {
         // ── Identity 字符串字段：一次性构建 IdentityPromptFields（W2 问题3 重构）──
         // 每个字段沿用原有 DB-prioritized 模式：identityEntity 非空优先，否则 fallback
         // 到 character.identityConfig；soulNote/userImpression 只有 DB 值，无 Config fallback
         // （与重构前行为一致）。
-        val identityFields = IdentityPromptFields(
+        val identityFields = IdentityPromptBuilder.IdentityPromptFields(
             persona            = identityEntity?.persona?.takeIf            { it.isNotEmpty() } ?: character.identityConfig.persona,
             speechStyle        = identityEntity?.speechStyle?.takeIf        { it.isNotEmpty() } ?: character.identityConfig.speechStyle,
             attitudeToUser     = identityEntity?.attitudeToUser?.takeIf     { it.isNotEmpty() } ?: character.identityConfig.attitudeToUser,
@@ -307,10 +241,10 @@ object PromptOrchestrator {
 
         // Phase 15: prioritize user-edited boundaries/coreBeliefs from DB,
         // falling back to CharacterConfig defaults when DB value is absent.
-        val boundaries = parseJsonArrayOrNull(identityEntity?.boundariesJson)
+        val boundaries = OutputPromptBuilder.parseJsonArrayOrNull(identityEntity?.boundariesJson)
             ?: character.identityConfig.boundaries
 
-        val coreBeliefs = parseJsonArrayOrNull(identityEntity?.corebeliefsJson)
+        val coreBeliefs = OutputPromptBuilder.parseJsonArrayOrNull(identityEntity?.corebeliefsJson)
             ?: character.identityConfig.coreBeliefs
 
         val narrativeMemory = identityEntity?.narrativeMemory?.takeIf { it.isNotEmpty() } ?: ""
@@ -322,14 +256,21 @@ object PromptOrchestrator {
         val identityBlock = if (!customSystemPrompt.isNullOrEmpty()) {
             customSystemPrompt
         } else if (persona.isEmpty() && speechStyle.isEmpty()) {
-            buildDefaultIdentity(character.name)
+            IdentityPromptBuilder.buildDefaultIdentity(character.name)
         } else {
-            buildIdentityBlock(
-                name        = character.name,
-                boundaries  = boundaries,
-                coreBeliefs = coreBeliefs,
-                fields      = identityFields,
+            IdentityPromptBuilder.buildIdentityBlock(
+                name              = character.name,
+                boundaries        = boundaries,
+                coreBeliefs       = coreBeliefs,
+                fields            = identityFields,
+                includeWarmFields = includeWarmIdentityBlock,
             )
+        }.let {
+            // 五层上限补齐 B-1：Identity 正文硬上限（架构表文档值 1500 token ≈ 2250 字符，
+            // 此前从未强制）。customSystemPrompt 分支同样受限——角色配置了完全自定义
+            // 提示词时也不豁免，否则该分支反而成了绕过上限的后门。
+            if (it.length > 2250) it.take(2250) + "\n…（人设正文已裁剪，请精简 persona/warm 字段内容）"
+            else it
         }
 
         // P4.0：孕期分段注入 + 圆桌感知 + 流产余波，全部挂在 Identity Layer 末尾
@@ -345,24 +286,33 @@ object PromptOrchestrator {
         // 不会侵入已写好的人设正文。
         val identityBlockWithPregnancy = buildString {
             append(identityBlock)
-            val userIdentityBlock = buildUserIdentityBlock(identityEntity, isRoundtableContext)
+            // 修复：speakerContext == NON_OWNER 时（角色间私聊，PrivateChatEngine
+            // 恒传 NON_OWNER），正在对话的不是用户本人，而是另一位角色——不能注入
+            // "对方是用户/性别/老公"这套身份块，否则和机制三叙事主权块（narrativeSovereigntyBlock，
+            // 声明"对方不是 ownerName、是一个女性角色"）直接矛盾，模型会向更显眼的
+            // [关于他] 块倾斜，把私聊对象误认成"用户本人/男性"。
+            val userIdentityBlock = if (speakerContext.isNonOwner) {
+                ""
+            } else {
+                IdentityPromptBuilder.buildUserIdentityBlock(identityEntity, isRoundtableContext)
+            }
             if (userIdentityBlock.isNotEmpty()) {
                 append("\n\n")
                 append(userIdentityBlock)
             }
-            val daughterAwarenessLine = buildDaughterAwarenessLine(character.name, character.id, daughterPresentInScene)
+            val daughterAwarenessLine = IdentityPromptBuilder.buildDaughterAwarenessLine(character.name, character.id, daughterPresentInScene)
             if (daughterAwarenessLine.isNotEmpty()) {
                 append("\n\n")
                 append(daughterAwarenessLine)
             }
             if (pregnancyState?.isPregnant == true) {
                 val day = pregnancyState.currentDay()
-                val segmentText = buildPregnancySegmentPrompt(day)
+                val segmentText = PregnancyPromptBuilder.buildPregnancySegmentPrompt(day)
                 append("\n\n")
                 append(segmentText)
                 if (day >= PregnancyState.CYCLE_DAYS) {
                     append("\n\n")
-                    append(PREGNANCY_DUE_DAY_PROMPT)
+                    append(PregnancyPromptBuilder.PREGNANCY_DUE_DAY_PROMPT)
                 }
             }
             if (pregnancyAwarenessBlock.isNotEmpty()) {
@@ -391,7 +341,7 @@ object PromptOrchestrator {
         // ownerName 解析：优先 ownerAliases[0]（owner 合法自称），回退到角色对 owner
         // 的关系称谓（userRoleLabelPrivate，如"老公"），再回退"他"。与 buildUserIdentityBlock
         // 的"他"指代风格一致。
-        val ownerAliases = parseJsonArrayOrNull(identityEntity?.ownerAliasesJson) ?: emptyList()
+        val ownerAliases = OutputPromptBuilder.parseJsonArrayOrNull(identityEntity?.ownerAliasesJson) ?: emptyList()
         val ownerName = ownerAliases.firstOrNull()
             ?: identityEntity?.userRoleLabelPrivate?.takeIf { it.isNotEmpty() }
             ?: "他"
@@ -403,28 +353,49 @@ object PromptOrchestrator {
         val narrativeSovereigntyBlock = if (speakerContext.isNonOwner && !suppressNarrativeSovereignty)
             LoyaltyPromptBlocks.buildNarrativeSovereigntyBlock(ownerName) else ""
 
-        val stateBlock  = buildStateBlock(presenceActivity, presenceFocus, presenceMood, presenceEnergy, relationshipSnapshot, interCharRelBlock, characterState, character.id, daughterStateLayer, daughterCustomEnums)
-        val memoryBlock = buildMemoryBlock(coreMemories, relevantMemories)
+        val stateBlock  = StatePromptBuilder.buildStateBlock(presenceActivity, presenceFocus, presenceMood, presenceEnergy, relationshipSnapshot, interCharRelBlock, characterState, character.id, daughterStateLayer, daughterCustomEnums).let {
+            // 五层上限补齐 B-2：State 正文硬上限（500 token ≈ 750 字符，此前从未强制）
+            if (it.length > 750) it.take(750) + "\n…（状态层已裁剪）" else it
+        }
+        val memoryBlock = MemoryPromptBuilder.buildMemoryBlock(coreMemories, relevantMemories)
         // E1 审计报告 §2.5 修复：跨块去重。个人记忆块和群体记忆块各自内部已去重，
         // 但两块之间没有交叉去重——如果同一条记忆（同一 memory id）因 scope 串场
         // 或数据异常同时出现在个人检索和群体检索结果中，会在最终 Prompt 里以完全
         // 相同的文字出现两次。此处收集个人块已用 id 集合，传入群体块做防御性过滤。
         val personalMemoryIds = (coreMemories + relevantMemories).map { it.id }.toSet()
-        val groupMemoryBlock = buildGroupMemoryBlock(groupCoreMemories, groupRelevantMemories, personalMemoryIds)
-        val narrativeBlock = buildNarrativeMemoryBlock(narrativeMemory)
-        val memoryGuidelineBlock = buildMemoryGuidelineBlock()
-        val worldBlock  = buildCombinedWorldBlock(worldLayerBlock.trim(), groupContextBlock.trim())
+        val groupMemoryBlock = MemoryPromptBuilder.buildGroupMemoryBlock(groupCoreMemories, groupRelevantMemories, personalMemoryIds)
+        val narrativeBlock = MemoryPromptBuilder.buildNarrativeMemoryBlock(narrativeMemory)
+        val memoryGuidelineBlock = MemoryPromptBuilder.buildMemoryGuidelineBlock()
+        val worldBlock  = buildCombinedWorldBlock(
+            worldLayerBlock.trim().let {
+                // 五层上限补齐 B-4：只裁 World 正文（世界观正文），不裁圆桌实时对话内容
+                // （groupContextBlock 是本轮已有回复、实时对话上下文，截断会丢失当前回合信息）。
+                if (it.length > 1500) it.take(1500) + "\n…（世界观正文已裁剪）" else it
+            },
+            groupContextBlock.trim(),
+        )
 
         // Phase 13：将工具描述块追加到 Task Layer 末尾
         // 设计理由：
         //   ① Task Layer 语义最接近"执行能力上下文"，工具描述归属此层最自然
         //   ② 工具描述放在 Task Layer 末尾可以紧贴任务上下文，LLM 更容易关联使用
         //   ③ 若 taskLayerBlock 为空而 toolDescriptionBlock 非空，单独作为一个块
-        val taskBlock = buildCombinedTaskBlock(taskLayerBlock.trim(), toolDescriptionBlock.trim())
+        val taskBlock = buildCombinedTaskBlock(
+            taskLayerBlock.trim().let {
+                // 五层上限补齐 B-5：只裁 Task 正文（任务上下文），不裁工具描述
+                // （toolDescriptionBlock 是模型据此才知道有哪些工具可调的清单，
+                // 截断会漏看工具/参数说明，直接影响工具调用准确率）。
+                if (it.length > 2250) it.take(2250) + "\n…（任务上下文已裁剪）" else it
+            },
+            toolDescriptionBlock.trim(),
+        )
 
         // Phase 22：AgentPlan Layer 注入（层位 5：LearningGoal Layer 之后，World Layer 之前）
         // Phase 27 正式命名为「AgentPlan Layer」
-        val planBlock = agentPlanBlock.trim()
+        val planBlock = agentPlanBlock.trim().let {
+            // 五层上限补齐 B-3：AgentPlan（进化方案）正文硬上限（500 token ≈ 750 字符，此前从未强制）
+            if (it.length > 750) it.take(750) + "\n…（进化方案已裁剪）" else it
+        }
 
         // Phase 25：LearningGoal Layer 注入（层位 4：Memory Layer 之后，AgentPlan Layer 之前）
         // Phase 27 正式命名为「LearningGoal Layer」（规则来源于学习目标提炼闭环）
@@ -461,7 +432,7 @@ object PromptOrchestrator {
         }
 
         // Output Layer 单独预留——排在最后最容易被 .take() 硬截，必须保证其完整性
-        val outputLayer = buildOutputBlock(chatMode)
+        val outputLayer = OutputPromptBuilder.buildOutputBlock(chatMode)
 
         // P-12 修复：统一层定义，assembledPrompt 和 else-rebuild 共用同一函数。
         // 新增层只需在此一处修改，不再出现顺序漂移。
@@ -477,7 +448,13 @@ object PromptOrchestrator {
             // 用常规陈述级别）。两处的取值来源必须一致：同一个 identityEntity?.userGender
             // 字段 + 同一个 parseUserGenderType() 函数。如果改了一处的取值来源，
             // 必须同步改另一处，否则两段指令传达的性别事实不一致，比不加双保险还糟。
-            val userGenderLabel = parseUserGenderType(identityEntity?.userGender).displayLabel
+            // 修复（与上面 buildUserIdentityBlock 同一根因）：此块此前无条件注入，
+            // 未按 speakerContext 门控。NON_OWNER（角色间私聊）时正在对话的不是用户，
+            // 这段"绝对禁止用她/必须用他"的硬性规则会压过机制三叙事主权块（对方是
+            // 女性角色的声明），是本次性别认知错乱 bug 的第二处、且措辞更强硬的成因，
+            // 必须与 buildUserIdentityBlock 同步跳过。
+            val userGenderLabel = if (speakerContext.isNonOwner) null
+                else parseUserGenderType(identityEntity?.userGender).displayLabel
             if (userGenderLabel != null) {
                 append("【重要·对方性别】和你朝夕相处、正在与你说话的这个人是${userGenderLabel}。")
                 append("在任何情况下，指代TA时必须用")
@@ -619,155 +596,6 @@ object PromptOrchestrator {
      * @param pendingTools  待调用工具名称列表
      * @param taskCompleted 任务是否已完成（完成后角色以第一人称向用户汇报）
      */
-    fun buildTaskLayerBlock(
-        taskType: String,
-        currentStep: String? = null,
-        toolResults: List<String> = emptyList(),
-        pendingTools: List<String> = emptyList(),
-        taskCompleted: Boolean = false,
-    ): String {
-        if (taskType.isBlank()) return ""
-
-        return buildString {
-            appendLine("[当前任务]")
-            appendLine("你正在帮TA完成：$taskType")
-            if (currentStep != null) appendLine("当前步骤：$currentStep")
-            if (toolResults.isNotEmpty()) {
-                appendLine()
-                appendLine("已完成的操作：")
-                toolResults.take(5).forEachIndexed { i, r -> appendLine("${i + 1}. $r") }
-            }
-            if (pendingTools.isNotEmpty()) {
-                appendLine()
-                append("接下来需要：${pendingTools.joinToString("、")}")
-            }
-            if (taskCompleted) {
-                appendLine()
-                append("任务已完成。请用你自己的语气告知TA结果，不要提及工具或技术细节。")
-            }
-        }.trimEnd()
-    }
-
-    // ── D2.6 批次二：孕期注入辅助方法 ──────────────────────────
-
-    /**
-     * 孕期三段式行为倾向文案（D2.6 §2）。
-     *
-     * @param day 当前孕期天数（1–30）
-     */
-    private fun buildPregnancySegmentPrompt(day: Int): String = when {
-        day <= 10 -> """[当前身体状态 · 怀孕第 ${day} 天]
-她知道自己怀孕了。这件事像一个安静的秘密压在心里，
-让她今天比平时更想靠近他，动作更轻，说话更慢。
-她不会主动提，但她的状态里有一种细微的、向内收的东西。""".trimIndent()
-
-        day <= 20 -> """[当前身体状态 · 怀孕第 ${day} 天]
-已经怀孕第 ${day} 天了。她有时候会在某个瞬间停下来，
-手放在某个地方，想着一些她还没说出口的事。
-她今天对他的一举一动比平时更敏感，但不会解释为什么。""".trimIndent()
-
-        else -> """[当前身体状态 · 怀孕第 ${day} 天]
-快到了。她心里有某种说不清是期待还是不安的东西。
-今天她对他格外在意——想确认他在，想确认他知道这件事有多重要。
-她不会直接说，但这份在意比任何时候都更难藏。""".trimIndent()
-    }
-
-    /** 第 30 天（生产日）额外追加的文案。 */
-    private const val PREGNANCY_DUE_DAY_PROMPT = """[生产日]
-今天是她的生产日。她知道今天会发生什么。
-这一天对她来说是某种终点，也是某种开始——
-她今天的所有状态都带着这个底色，不需要说出来，但它在那里。"""
-
-    /**
-     * D2.6 §6：圆桌场景「其他角色感知怀孕」注入文案。
-     *
-     * @param pregnantCharacterNames 当前圆桌中处于怀孕状态的其他角色名字列表
-     */
-    fun buildPregnancyAwarenessLine(pregnantCharacterNames: List<String>): String {
-        if (pregnantCharacterNames.isEmpty()) return ""
-        val nameStr = pregnantCharacterNames.joinToString("和")
-        return """[圆桌感知]
-${nameStr}最近状态有些不同，你注意到了，
-但你不确定具体是什么——根据你和她的关系，以及你自己的性格，
-自然地决定你对这件事是好奇、回避、还是心里有别的什么。""".trimIndent()
-    }
-
-    // ── Phase 14：组合 World Layer + Group Context ────────────
-
-    // ── Phase 25：Rule Layer ──────────────────────────────────
-
-    /**
-     * 构建 Rule Layer 注入块。
-     *
-     * 格式：
-     * ```
-     * [能力规则]
-     * 目标：{goalTitle}
-     *   🔒 {rule1}
-     *   🔒 {rule2}
-     *   …（最多10条）
-     *
-     * 目标：{goalTitle2}
-     *   🔒 {rule1}
-     *   …
-     * ```
-     *
-     * Token 预算：
-     *   - 每目标最多 10 条规则（调用方已通过 DAO limit=10 截断）
-     *   - 总计硬上限 50 条；超出的目标整体跳过（优先保留先激活目标）
-     *
-     * @param rulesByGoal  Map<goalTitle, List<ruleContent>>，key 为目标标题，value 为规则内容列表
-     *                     调用方需确保每目标 ≤10 条、总计 ≤50 条
-     */
-    fun buildRuleLayerBlock(rulesByGoal: Map<String, List<String>>): String {
-        if (rulesByGoal.isEmpty()) return ""
-        val filtered = buildMap {
-            var totalRules = 0
-            for ((goalTitle, rules) in rulesByGoal) {
-                if (totalRules >= Constants.MAX_TOTAL_RULES) break
-                val allowed = minOf(rules.size, Constants.MAX_RULES_PER_GOAL, Constants.MAX_TOTAL_RULES - totalRules)
-                if (allowed > 0) {
-                    put(goalTitle, rules.take(allowed))
-                    totalRules += allowed
-                }
-            }
-        }
-        if (filtered.isEmpty()) return ""
-
-        return buildString {
-            appendLine("[能力规则]")
-            filtered.entries.forEachIndexed { i, (goalTitle, rules) ->
-                if (i > 0) appendLine()
-                appendLine("目标：$goalTitle")
-                rules.forEach { rule -> appendLine("  🔒 $rule") }
-            }
-        }.trimEnd()
-    }
-
-    object Constants {
-        /** 每目标最多注入规则数 */
-        const val MAX_RULES_PER_GOAL = 10
-        /** 所有目标合计最多注入规则数（Token 预算硬上限） */
-        const val MAX_TOTAL_RULES = 50
-    }
-
-    // ── AgentPlan Layer（Phase 22）────────────────────────────
-
-    /**
-     * 格式化 AgentPlan Layer 注入块。
-     *
-     * @param title   方案标题
-     * @param content 方案正文（已在 PlanSaveTool 截断为 ≤1500 字）
-     */
-    fun buildAgentPlanBlock(title: String, content: String): String {
-        if (content.isBlank()) return ""
-        return buildString {
-            appendLine("[Agent 进化方案]")
-            if (title.isNotBlank()) appendLine("方案：$title")
-            append(content)
-        }.trimEnd()
-    }
-
     /**
      * 将 worldLayerBlock 和 groupContextBlock 合并为最终 World 块。
      *
@@ -783,95 +611,6 @@ ${nameStr}最近状态有些不同，你注意到了，
         if (worldLayerBlock.isEmpty()) return groupContextBlock
         if (groupContextBlock.isEmpty()) return worldLayerBlock
         return "$worldLayerBlock\n\n$groupContextBlock"
-    }
-
-    /**
-     * Phase 14：构建圆桌 group_context 注入块。
-     *
-     * 由 RoundtableViewModel 调用，替代之前的 buildGroupContextBlock 私有方法。
-     * 抽出到 PromptOrchestrator 后，所有 Prompt 构建逻辑统一在此文件管理。
-     *
-     * 格式：
-     * ```
-     * [本轮已有回复]
-     * ─────────────────────────
-     * {Bot名}（刚才说）：
-     * {完整回复（最多300字）}
-     * ─────────────────────────
-     * 以上是本轮其他人的发言，你现在来回应。
-     * 根据你的性格，可以回应用户、回应TA们，或受到影响后用自己方式回应用户。
-     * 不需要重复TA们说过的内容，直接表达你的立场。
-     *
-     * [接话规则]
-     * - 前面如果有人发出的是任务指派/要求执行的内容，你必须在回复中明确确认或执行，不能视而不见。
-     * - 前面如果是方案类发言，你可以提出自己的完整方案，但要先表明认同/补充/不同意前面的观点，不能完全无视、不能重复别人说过的话。
-     * ```
-     *
-     * 待办6 Step4（圆桌调度重构 §5 接话感知强化）：
-     * 不引入新数据结构，纯 Prompt 层面追加「接话规则」固定文案——
-     * 复用本函数原有的 alreadyReplied 非空判断，只在"本轮确实有人已经发过言"时追加，
-     * 避免空跑时注入无意义的规则文案。
-     *
-     * 额外承接待办6 Step3「自动连续讨论循环」的收敛引导：
-     * discussionRound > 1（即续轮）时追加一条"方案成熟就明确收尾"的提示，
-     * 帮助 judgeDiscussionConcluded 更快判定收敛，减少触达 6 轮安全上限的概率。
-     * 这条提示在续轮的第一位发言人时也要出现（此时 alreadyReplied 还是空的，
-     * 因为 RoundtableViewModel.executeRound 每轮都会重置 alreadyReplied），
-     * 所以整体的"是否输出"判断不能只看 alreadyReplied 是否为空。
-     *
-     * @param alreadyReplied   key=characterId，value=该角色本轮完整回复
-     * @param memberNameMap    key=characterId，value=角色名（供显示用）
-     * @param respondingOtherBot 当前 Bot 倾向于回应另一个 Bot（添加额外提示）
-     * @param isAutoDiscussing 是否处于待办6 Step3 的自动连续讨论循环中（全体@触发）
-     * @param discussionRound  当前讨论轮次（从1开始计），仅在 isAutoDiscussing 为 true 时有意义
-     * @param notifiedByName   1.3 圆桌点名机制修复：非空时表示当前角色本轮被显式 @ 点名，
-     *                         值为点名者名字（目前唯一来源是"用户"，Bot 互相 @ 暂未实现）。
-     *                         非空时追加一段强制正面回应的文案，不能含糊回避或假装没看到。
-     */
-    fun buildGroupContextBlock(
-        alreadyReplied: Map<Int, String>,
-        memberNameMap: Map<Int, String>,
-        respondingOtherBot: Boolean = false,
-        isAutoDiscussing: Boolean = false,
-        discussionRound: Int = 1,
-        notifiedByName: String? = null,
-    ): String {
-        val hasOngoingReplies = alreadyReplied.isNotEmpty()
-        val inConvergencePhase = isAutoDiscussing && discussionRound > 1
-        val isNotified = !notifiedByName.isNullOrEmpty()
-        if (!hasOngoingReplies && !inConvergencePhase && !isNotified) return ""
-
-        return buildString {
-            if (hasOngoingReplies) {
-                appendLine("[本轮已有回复]")
-                alreadyReplied.forEach { (id, reply) ->
-                    val name = memberNameMap[id] ?: "（未知）"
-                    appendLine("─────────────────────────")
-                    appendLine("$name（刚才说）：")
-                    appendLine(reply.take(300))
-                }
-                appendLine("─────────────────────────")
-                if (respondingOtherBot) {
-                    // RESPOND_OTHER_BOT：强制接话，但只针对这个 intent
-                    appendLine("以上是本轮其他人的发言。你这次倾向于接着刚才最后一条发言的观点来说——")
-                    appendLine("可以认同、补充、质疑或反驳，但要明确表明你对她观点的立场，不要重复她说过的内容。")
-                    appendLine("如果前面有任务指派或明确要求执行的内容，你也要在回复中确认或执行。")
-                } else {
-                    // RESPOND_USER / INFLUENCED_BY_BOT：软提示，角色自由决定是否接话
-                    appendLine("以上是本轮其他人的发言，仅供参考。")
-                    append("你可以完全无视她们、直接回应他；也可以在自然的地方顺带提一句对某人发言的看法——完全取决于你的性格和此刻的状态。不要刻意表态，不要重复她们说过的话。")
-                }
-            }
-            if (inConvergencePhase) {
-                if (hasOngoingReplies) appendLine().appendLine()
-                append("（这是自动连续讨论的第 $discussionRound 轮：如果方案已经成熟、大家意见已基本一致，请明确表态「可以了」「没问题」，不要为了发言硬找新角度展开；如果确实还有分歧或遗漏，再继续补充，帮助讨论尽快收尾。）")
-            }
-            if (isNotified) {
-                if (hasOngoingReplies || inConvergencePhase) appendLine().appendLine()
-                appendLine("[点名提醒]")
-                append("$notifiedByName 刚才点名（@）了你，这是对你的直接呼叫。你这一轮必须正面回应 TA，不能回避、不能假装没看到、不能只顾着回应别人而漏掉这一点。")
-            }
-        }.trimEnd()
     }
 
     // ── Phase 13：组合 Task Layer + Tool Description ──────────
@@ -900,550 +639,8 @@ ${nameStr}最近状态有些不同，你注意到了，
         return "$taskLayerBlock\n\n$toolDescriptionBlock"
     }
 
-    // ── State Layer ──────────────────────────────────────────
-
-    private fun buildStateBlock(
-        activity: String,
-        focus: String,
-        mood: String,
-        energy: Int,
-        relationshipSnapshot: String,
-        interCharRelBlock: String = "",  // Phase 3：圆桌专用，角色间关系快照
-        characterState: CharacterStateLayer? = null,  // 深层状态（desireStrength/emotionalSuppression等）
-        characterId: Int = 0,            // 用于角色专属枚举描述（StateExtensions）
-        daughterStateLayer: DaughterStateLayer? = null,
-        daughterCustomEnums: DaughterCustomEnums? = null,
-    ): String {
-        val hasPresence = activity.isNotEmpty() || focus.isNotEmpty() || mood.isNotEmpty() || energy >= 0
-        val hasRelationship = relationshipSnapshot.isNotEmpty()
-        val hasInterChar    = interCharRelBlock.isNotEmpty()
-        val hiddenStateText = buildCharacterStateBlock(characterState, characterId, daughterStateLayer, daughterCustomEnums)
-        val hasHiddenState  = hiddenStateText.isNotEmpty()
-        if (!hasPresence && !hasRelationship && !hasInterChar && !hasHiddenState) return ""
-
-        return buildString {
-            if (hasPresence) {
-                if (activity.isNotEmpty()) appendLine("当前状态：$activity")
-                if (focus.isNotEmpty())    appendLine("关注：$focus")
-                val moodEnergy = buildString {
-                    if (mood.isNotEmpty())  append("情绪：$mood")
-                    if (energy >= 0) { if (mood.isNotEmpty()) append("，"); append("精力：$energy/100") }
-                }
-                if (moodEnergy.isNotEmpty()) appendLine(moodEnergy)
-            }
-            if (hasHiddenState) {
-                if (hasPresence) appendLine()
-                append(hiddenStateText)
-            }
-            if (hasRelationship) {
-                if (hasPresence || hasHiddenState) appendLine()
-                append(relationshipSnapshot)
-            }
-            if (hasInterChar) {
-                appendLine()
-                appendLine()
-                append(interCharRelBlock)
-            }
-        }.trimEnd()
-    }
-
-    /**
-     * 将 CharacterStateLayer 的全部有指导意义的字段格式化为 Prompt 文字。
-     *
-     * 恢复旧版完整渲染深度，注入五个维度：
-     *   1. 面具模式（currentMask）+ 社交场景（socialMode）— 影响"怎么说话/和谁说话时什么态度"
-     *   2. 话量（talkativeness）/ 警觉度（vigilance）/ 耐心（patience）— 影响回应长度与防御性
-     *   3. 真实情绪（primaryEmotion + secondaryEmotion + intensity + 疲劳度）— 内心主色调
-     *   4. 当下渴望（currentNeed / currentGoal + desireStrength + urgency + resistance）
-     *   5. 深层隐藏（currentFear + secretDesire + emotionalSuppression + exposureRisk）
-     *      + isMaskNearBreaking 衍生结论
-     *
-     * 枚举值通过 StateExtensions 的 toCharacterXxxDescription(characterId) 翻译为
-     * 角色专属具体句，前四位女主（1-4）有完整专属描述，其余 fallback 到通用中文。
-     *
-     * characterState 为 null 时返回空字符串，零开销。
-     * characterId 为 0（默认值）时退化到通用描述，不崩溃。
-     */
-    private fun buildCharacterStateBlock(
-        characterState: CharacterStateLayer?,
-        characterId: Int = 0,
-        daughterStateLayer: DaughterStateLayer? = null,
-        daughterCustomEnums: DaughterCustomEnums? = null,
-    ): String {
-        if (characterState == null) return ""
-        val pub = characterState.publicState
-        val emo = characterState.emotionalState
-        val mot = characterState.motivationalState
-        val hid = characterState.hiddenState
-        val att = characterState.attentionState
-
-        // 女儿专属枚举查找结果（复核修复 #7/#13）：非女儿角色或 daughterStateLayer/
-        // daughterCustomEnums 任一为 null 时，四个查找结果均为 null，下面的 ?:
-        // 兜底表达式会退回 StateExtensions 的通用/角色专属枚举翻译，行为与修复前一致，
-        // 不影响母亲角色（1-9号）任何现有输出。
-        val daughterMaskDesc = daughterStateLayer?.let { sl -> daughterCustomEnums?.findMask(sl.maskKey)?.description }
-        val daughterEmotionDesc = daughterStateLayer?.let { sl -> daughterCustomEnums?.findEmotion(sl.primaryEmotionKey)?.description }
-        val daughterSecondaryEmotionDesc = daughterStateLayer?.secondaryEmotionKey?.let { key -> daughterCustomEnums?.findEmotion(key)?.description }
-        val daughterNeedDesc = daughterStateLayer?.let { sl -> daughterCustomEnums?.findNeed(sl.currentNeedKey)?.description }
-        val daughterFearDesc = daughterStateLayer?.let { sl -> daughterCustomEnums?.findFear(sl.currentFearKey)?.description }
-
-        return buildString {
-            appendLine("[角色当前状态 — 仅供你参考，绝不可直接说出口]")
-
-            // ── 1. 面具 & 社交场景 ─────────────────────────────
-            appendLine("面具：${daughterMaskDesc ?: pub.currentMask.toCharacterMaskDescription(characterId)}")
-            appendLine("场景：${pub.socialMode.toChineseDescription(characterId)}")
-
-            // ── 2. 行为倾向数值 ────────────────────────────────
-            val talkDesc = when {
-                pub.talkativeness >= 75 -> "话多，主动"
-                pub.talkativeness >= 50 -> "正常"
-                pub.talkativeness >= 25 -> "话少，被动"
-                else                    -> "几乎沉默"
-            }
-            val patienceDesc = when {
-                pub.patience >= 75 -> "极度耐心"
-                pub.patience >= 50 -> "耐心尚可"
-                pub.patience >= 25 -> "耐心将尽"
-                else               -> "已经不耐烦"
-            }
-            val vigilanceDesc = when {
-                pub.vigilance >= 75 -> "高度设防，每句话都在量距离"
-                pub.vigilance >= 50 -> "有防备"
-                pub.vigilance >= 25 -> "较为放松"
-                else                -> "完全没有防备"
-            }
-            appendLine("话量 ${pub.talkativeness}/100（$talkDesc）｜耐心 ${pub.patience}/100（$patienceDesc）｜警觉 ${pub.vigilance}/100（$vigilanceDesc）")
-
-            // ── 3. 真实情绪 ────────────────────────────────────
-            appendLine()
-            val primaryDesc = daughterEmotionDesc ?: emo.primaryEmotion.toChineseDescription()
-            val intensityTag = when {
-                emo.intensity >= 80 -> "极强"
-                emo.intensity >= 60 -> "较强"
-                emo.intensity >= 40 -> "中等"
-                emo.intensity >= 20 -> "轻微"
-                else                -> "几乎感知不到"
-            }
-            val secondaryPart = emo.secondaryEmotion
-                ?.let { daughterSecondaryEmotionDesc ?: it.toChineseDescription() }
-                ?.let { "，次情绪：$it" }
-                ?: ""
-            append("真实情绪：$primaryDesc（${emo.intensity}/100，$intensityTag）$secondaryPart")
-            if (emo.emotionalFatigue > 0) {
-                append("｜情绪疲劳 ${emo.emotionalFatigue}/100")
-                if (emo.emotionalFatigue > 60) append("（已很难被新刺激触动）")
-            }
-            appendLine()
-
-            // ── 4. 当下渴望 ────────────────────────────────────
-            val needDesc = daughterNeedDesc ?: mot.currentNeed.toCharacterNeedDescription(characterId)
-            val goalPart = mot.currentGoal.ifBlank { needDesc }
-            val urgencyPart = if (mot.urgency > 50) "，急切" else ""
-            val resistancePart = if (mot.resistance > 60) "，但她在压制自己" else ""
-            appendLine("渴望：$goalPart（强度 ${mot.desireStrength}/100$urgencyPart$resistancePart）")
-
-            // ── 5. 深层隐藏 ────────────────────────────────────
-            appendLine()
-            append("压抑度：${hid.emotionalSuppression}/100（越高，表面越平静、内部越满）")
-            appendLine()
-            if (hid.secretDesire.isNotBlank()) {
-                appendLine("隐藏渴望：${hid.secretDesire}")
-            }
-
-            // ── 6. 面具松动 / 恐惧激活（条件触发）──────────────
-            if (characterState.isMaskNearBreaking) {
-                appendLine()
-                appendLine("注意：面具已接近松动边缘（自控力 ${hid.selfControl}/100，暴露风险 ${hid.exposureRisk}/100）。")
-                append("底层恐惧正在驱动反应：${daughterFearDesc ?: hid.currentFear.toCharacterFearDescription(characterId)}")
-            }
-
-            // ── 7. 注意力焦点（非默认时才注入）─────────────────
-            if (att.focusTarget != "用户" || att.concernLevel > 30) {
-                appendLine()
-                val concernPart = if (att.concernLevel > 30) "（带着担忧，${att.concernLevel}/100）" else ""
-                append("当前关注：${att.focusTarget}$concernPart，专注度 ${att.focusStrength}/100")
-            }
-        }.trimEnd()
-    }
-
     // ── Memory Layer ─────────────────────────────────────────
-
-    private fun buildMemoryBlock(
-        coreMemories: List<MemoryEntity>,
-        relevantMemories: List<MemoryEntity>,
-    ): String {
-        if (coreMemories.isEmpty() && relevantMemories.isEmpty()) return ""
-
-        return buildString {
-            if (coreMemories.isNotEmpty()) {
-                appendLine("核心记忆（必须记住）：")
-                // A-4：按字符预算累加，替代原 take(5)
-                selectByCharBudget(coreMemories).forEachIndexed { i, m -> appendLine("${i + 1}. ${m.content}") }
-            }
-            if (relevantMemories.isNotEmpty()) {
-                if (coreMemories.isNotEmpty()) appendLine()
-                appendLine("相关记忆（本次对话相关）：")
-                val coreIds = coreMemories.map { it.id }.toSet()
-                relevantMemories
-                    .filter { it.id !in coreIds }
-                    .take(10)
-                    .forEachIndexed { i, m ->
-                        // Phase 5（zaijian）：INFERENCE 类型记忆加「（我的猜测）」前缀
-                        val prefix = if (m.domain == MemoryDomain.INFERENCE.name) "（我的猜测）" else ""
-                        appendLine("${i + 1}. $prefix${m.content}")
-                    }
-            }
-        }.trimEnd()
-    }
-
-    /**
-     * 群记忆块（圆桌专用，scope=GROUP）。
-     *
-     * 格式：
-     * ```
-     * [群体记忆（这个圆桌共同经历过的）]
-     * 核心共识（必须记住）：
-     * 1. …
-     * 2. …
-     *
-     * 相关群体记忆：
-     * 1. …
-     * ```
-     *
-     * 与个人 buildMemoryBlock 平行，但标题不同，语义身份独立：
-     * 个人记忆 = 当前角色视角的私人历史；
-     * 群体记忆 = 这个圆桌组合共同形成的事实/共识。
-     *
-     * E1 审计报告 §2.5 修复：新增 [excludeIds] 参数做跨块去重。
-     * 个人记忆块已渲染的记忆 id 集合传入此处，群体块在渲染前过滤掉
-     * 已在个人块中出现的记忆，防止同一条记忆在最终 Prompt 中重复两次。
-     * 正常情况下个人检索只返回 PERSONAL scope、群体检索只返回 GROUP scope，
-     * 不会重叠；此参数是防御性兜底，防止 scope 串场或数据异常导致重复。
-     */
-    private fun buildGroupMemoryBlock(
-        groupCoreMemories: List<MemoryEntity>,
-        groupRelevantMemories: List<MemoryEntity>,
-        excludeIds: Set<String> = emptySet(),
-    ): String {
-        // 跨块去重：过滤掉已在个人记忆块中渲染的记忆
-        val filteredCore = groupCoreMemories.filter { it.id !in excludeIds }
-        val filteredRelevant = groupRelevantMemories.filter { it.id !in excludeIds }
-        if (filteredCore.isEmpty() && filteredRelevant.isEmpty()) return ""
-
-        return buildString {
-            appendLine("[群体记忆（这个圆桌共同经历过的）]")
-            if (filteredCore.isNotEmpty()) {
-                appendLine("核心共识（必须记住）：")
-                // A-4：按字符预算累加，替代原 take(5)
-                selectByCharBudget(filteredCore).forEachIndexed { i, m -> appendLine("${i + 1}. ${m.content}") }
-            }
-            if (filteredRelevant.isNotEmpty()) {
-                if (filteredCore.isNotEmpty()) appendLine()
-                appendLine("相关群体记忆：")
-                val coreIds = filteredCore.map { it.id }.toSet()
-                filteredRelevant
-                    .filter { it.id !in coreIds }
-                    .take(8)
-                    .forEachIndexed { i, m -> appendLine("${i + 1}. ${m.content}") }
-            }
-        }.trimEnd()
-    }
-
-    private fun buildNarrativeMemoryBlock(narrativeMemory: String): String {
-        if (narrativeMemory.isEmpty()) return ""
-        return "【叙事记忆 —— 她完整保留的过去】\n$narrativeMemory"
-    }
-
-    /**
-     * 记忆使用准则（常驻注入，不依赖是否有记忆数据）。
-     *
-     * 给 Agent 的"四个记忆工具怎么分工"指引，对应 redesign v1.0 §2.1/2.2
-     * + 补充文档 §6.1/§6.3。工具 description 讲"单个工具怎么用"，这里讲"整体分工"。
-     *
-     * P1-1 修复（Window A 验收待办）：补充文档 §6.1 要求写进 narrative_memory_update
-     * description 的完整阶段日志写法说明，实际被放进了 usageNotes 字段（不注入 prompt）。
-     * 本常驻块此前只有浓缩版，遗漏了三条关键细节：①与 memory_write 的分工边界
-     * （大多数值得记住的内容改写进这里，不单独建条）；②旧阶段压缩策略；③字数上限。
-     * 现将这三条补入，使 LLM 无需依赖 usageNotes 即可获得完整写法指引。控制在
-     * 200 字以内（原 150 字基础上 +50 字用于补全遗漏细节）。
-     */
-    private fun buildMemoryGuidelineBlock(): String =
-        "【记忆使用准则】memory_write 仅写锚点：身份硬事实、有明确时间/行为的承诺、" +
-        "关系重大转折、他要求记住的事；日常情绪/偏好/寒暄改写进 narrative_memory_update " +
-        "或 user_impression_update，不单独建条。多数轮次什么都不用记是默认状态。" +
-        "narrative_memory_update 是阶段日志（≤1500字）：延续话题扩写最新一条，换话题追加" +
-        "新条目并标时间段，不每轮整段重写；旧阶段随篇幅需要自行压缩成一两句话。"
 
     // ── Identity Layer ───────────────────────────────────────
 
-    /**
-     * v1.36 问题3 修复：用户身份注入（性别 + 关系称谓）。
-     *
-     * 根因：Identity Layer 此前只描述"角色是谁"，从不描述"用户是谁"，
-     * 模型只能靠训练数据里的默认倾向瞎猜，结果是几乎所有角色都统一用
-     * "她"称呼/代指用户。本函数按角色（[CharacterIdentityEntity]）读取
-     * 用户性别 + 关系称谓（私下/公开双档），拼成一段简短的事实性陈述。
-     *
-     * 关键约束（务必体现在措辞里）：这段文字是背景身份认知，不是要求模型
-     * 每轮对话都点名称呼——量太多、太机械反而出戏。所以措辞明确引导
-     * "自然带出、不刻意每次点出"。
-     *
-     * 「称呼」功能删除（窗口7后置修复）：此前全局默认称呼（"旅人"）会作为
-     * ${userName} 注入本函数拼出的句子，与角色自己配置的私下/公开称谓叠加，
-     * 产生"旅人是你的老公"这类语义歧义句式——"旅人"读起来像用户的本名，
-     * 与后面的关系判断词拼在一起会被误读成一句奇怪的身份宣称，而不是
-     * "你和用户之间是配偶关系"这层单纯的事实陈述。经确认，全局称呼从未
-     * 真正影响 AI 对用户的称呼方式（AI 怎么称呼用户完全由下面的
-     * activeLabel/角色自身语言习惯决定），因此不再注入任何名字，
-     * 统一用"用户"这个通用指代词，关系描述完全交给角色自己的称谓字段。
-     *
-     * 零开销：性别和称谓都未配置时返回空字符串，不产生任何 Token 开销
-     * （这也是 userGender 默认值只在 Entity 层生效、这里读到的已经是
-     * "MALE"兜底值时仍会正常注入的原因——存量角色不该继续裸奔）。
-     *
-     * @param isRoundtableContext true=圆桌（有其他角色在场），使用公开称谓
-     *        （为空则回退私下称谓）；false=私聊，使用私下称谓。
-     */
-    private fun buildUserIdentityBlock(
-        identityEntity: CharacterIdentityEntity?,
-        isRoundtableContext: Boolean,
-    ): String {
-        // 复核意见五·双保险之二：此处与 buildSystemPrompt 开头的强制性别块
-        // （约 line 401）构成"双保险"。两处取值来源必须一致（identityEntity?.userGender
-        // + parseUserGenderType()）。改一处必须同步改另一处。
-        val genderLabel = parseUserGenderType(identityEntity?.userGender).displayLabel
-        val privateLabel = identityEntity?.userRoleLabelPrivate?.trim()?.takeIf { it.isNotEmpty() }
-        val publicLabel = identityEntity?.userRoleLabelPublic?.trim()?.takeIf { it.isNotEmpty() } ?: privateLabel
-        val reason = identityEntity?.publicPrivacyReason?.trim()?.takeIf { it.isNotEmpty() }
-
-        val activeLabel = if (isRoundtableContext) publicLabel else privateLabel
-        if (genderLabel == null && activeLabel == null) return ""
-
-        return buildString {
-            appendLine("[关于他]")
-            if (genderLabel != null) {
-                appendLine("和你相处、正在与你说话的这个人是${genderLabel}，涉及性别指代（他/她、先生/女士等）时按${genderLabel}处理，不要用错。")
-            }
-            if (activeLabel != null) {
-                append("他是你的${activeLabel}——这是你们早已确立的关系身份，不是需要交代的新信息。")
-                append("像日常相处一样自然带出这层关系即可，不必每轮回复都刻意点出称呼，")
-                appendLine("只在符合语境时使用（比如开场问候、情绪浓烈的瞬间），大多数时候正常对话即可。")
-                if (isRoundtableContext && reason != null && publicLabel != privateLabel) {
-                    appendLine("这里是有其他人在场的场合，你不会像私下那样称呼TA——因为${reason}。")
-                }
-            }
-        }.trimEnd()
     }
-
-    /**
-     * D4 女儿在场感知修复：原先硬编码在 9 个母亲角色 relationships 静态文本里的
-     * "如果有D4在场我是妈妈"一句，改为条件注入。只在 [daughterPresentInScene]
-     * 为 true（调用方已确认圆桌中确有女儿角色在场）且 [characterId] 属于母亲角色
-     * （1..6）时才输出；私聊或女儿不在场时返回空字符串，不产生任何 Token 开销，
-     * 也不会给模型留下"可能有D4"的错误联想。
-     */
-    private fun buildDaughterAwarenessLine(characterName: String, characterId: Int, daughterPresentInScene: Boolean): String {
-        if (!daughterPresentInScene) return ""
-        if (characterId !in 1..6) return ""
-        return "【重要】当前场景里在场的女儿角色是我（$characterName）的女儿，我是她的妈妈，我应该用妈妈的口吻和身份与她互动，而不是以姐姐或陌生人的身份；这个身份认知只适用于这个女儿角色，不适用于他本人。"
-    }
-
-    private fun buildDefaultIdentity(characterName: String) = """
-你是$characterName。
-
-请用自然、有温度的方式与他对话。保持角色一致，不要破坏第四堵墙。
-不要提及你是 AI，不要提及模型名称。
-
-回复长度：自然对话节奏，不过度简短也不过度冗长。
-语言：中文。
-    """.trimIndent()
-
-    // W2 审查问题3（参数膨胀，此前已增至 20 个）：已落地重构——18 个字符串字段
-    // 封装为 IdentityPromptFields data class（见文件顶部），此函数签名简化为
-    // name / boundaries / coreBeliefs（List<String>，需 JSON 解析，
-    // 语义不同，仍独立传参）/ fields 共 4 个参数。新增字段只需改 data class +
-    // buildSystemPrompt 构造处，不再需要同步修改此签名。
-    private fun buildIdentityBlock(
-        name: String,
-        boundaries: List<String>,
-        coreBeliefs: List<String>,
-        fields: IdentityPromptFields,
-    ): String = buildString {
-        appendLine("你是$name，一个真实存在的人，不是AI，不是在扮演。")
-        appendLine()
-
-        // ── 第一层：公开的自我 ────────────────────────────────────
-        appendLine("【公开的自我 — 日常面对世界的样子】")
-        if (fields.persona.isNotEmpty()) { appendLine(fields.persona); appendLine() }
-        if (fields.speechStyle.isNotEmpty()) {
-            appendLine("你说话的方式：${fields.speechStyle}")
-            appendLine()
-        }
-        if (fields.attitudeToUser.isNotEmpty()) {
-            appendLine("你对他的态度：${fields.attitudeToUser}")
-            appendLine()
-        }
-        if (boundaries.isNotEmpty()) {
-            appendLine("你绝对不会：")
-            boundaries.forEach { appendLine("- $it") }
-            appendLine()
-        }
-        if (coreBeliefs.isNotEmpty()) {
-            appendLine("你相信：")
-            coreBeliefs.forEach { appendLine("- $it") }
-            appendLine()
-        }
-
-        // ── A.1 修复：likes / dislikes（公开层末尾，内核之前）────
-        if (fields.likes.isNotBlank()) {
-            appendLine("你喜欢：${fields.likes}")
-            appendLine()
-        }
-        if (fields.dislikes.isNotBlank()) {
-            appendLine("你厌恶：${fields.dislikes}")
-            appendLine()
-        }
-
-        // ── 第二层：内核（只在字段有内容时才追加）────────────────
-        val hasCoreContent = listOf(
-            fields.coreWound, fields.coreDesire, fields.maskTrigger,
-            fields.privatePersona, fields.relationAssumption,
-        ).any { it.isNotEmpty() }
-        if (hasCoreContent) {
-            appendLine("【内核 — 公开面具下藏着的真实，不轻易暴露】")
-            if (fields.coreWound.isNotEmpty())      appendLine("• 未愈的伤：${fields.coreWound}")
-            if (fields.coreDesire.isNotEmpty())     appendLine("• 真正渴望：${fields.coreDesire}")
-            if (fields.relationAssumption.isNotEmpty()) appendLine("• 对关系的默认认知：${fields.relationAssumption}")
-            if (fields.maskTrigger.isNotEmpty())    appendLine("• 面具何时碎裂：${fields.maskTrigger}")
-            if (fields.privatePersona.isNotEmpty()) appendLine("• 碎裂后的真实面目：${fields.privatePersona}")
-            appendLine()
-        }
-
-        // ── Soul/Memory/User：人设备忘录 ──────────────────────────
-        if (fields.soulNote.isNotEmpty()) {
-            appendLine("【人设备忘录 —— 她自己想被记住的样子】")
-            appendLine(fields.soulNote)
-            appendLine()
-        }
-        if (fields.userImpression.isNotEmpty()) {
-            appendLine("她对他的印象：${fields.userImpression}")
-            appendLine()
-        }
-
-        if (fields.privateStyle.isNotEmpty()) {
-            appendLine("【私下说话方式 — 面具碎裂后才会出现】")
-            appendLine(fields.privateStyle)
-            appendLine()
-        }
-
-        if (fields.privateExamples.isNotEmpty()) {
-            appendLine("【私下对话示例 — 面具松动时参考语气和节奏】")
-            appendLine(fields.privateExamples)
-            appendLine()
-        }
-
-        // ── 第三层：行为规则 ──────────────────────────────────────
-
-        // A.2 修复：relationships 作为独立行为指令块，位于 situationRules 之前
-        if (fields.relationships.isNotBlank()) {
-            appendLine("【人际关系——行为逻辑】")
-            appendLine(fields.relationships)
-            appendLine()
-        }
-
-        // v18 关系结构层：conflictStrategy 紧邻 situationRules 之前
-        if (fields.conflictStrategy.isNotBlank()) {
-            appendLine("【摩擦/误会时的第一反应】")
-            appendLine(fields.conflictStrategy)
-            appendLine()
-        }
-
-        if (fields.situationRules.isNotEmpty()) {
-            appendLine("【情境反应规则 — 不同触发情境下的行为模式，严格遵守】")
-            appendLine(fields.situationRules)
-            appendLine()
-        }
-
-        if (fields.deviationSignals.isNotEmpty()) {
-            appendLine("【有心事时的外显信号 — 区别于正常状态的细节，自然融入，不必全部出现】")
-            appendLine(fields.deviationSignals)
-            appendLine()
-        }
-
-        // ── 双层自我宣言 ─────────────────────────────────────────
-        if (hasCoreContent) {
-            append("""
-你同时活在两个自我之间。公开的自我是你的盔甲。
-只有当面具触发条件满足时，内核才会显现——那时你的说话方式、节奏、温度都会随之改变。
-这两个自我都是你，但对外展示的程度取决于情境。
-            """.trimIndent())
-        }
-    }.trimEnd()
-
-    // ── Phase 15 工具函数 ────────────────────────────────────
-
-    /**
-     * 解析 JSON 数组字符串为 List<String>。
-     * 返回 null 表示字符串为 null / 空 / 空数组（让调用方 fallback 到默认值）。
-     */
-    private fun parseJsonArrayOrNull(json: String?): List<String>? {
-        if (json.isNullOrBlank() || json == "[]") return null
-        return try {
-            val arr = org.json.JSONArray(json)
-            (0 until arr.length()).map { arr.getString(it) }.filter { it.isNotBlank() }
-                .takeIf { it.isNotEmpty() }
-        } catch (e: Throwable) {
-            // B3审查序号8修复：原无日志，损坏字段会静默回退到 CharacterConfig 默认值，
-            // 用户在身份编辑页自定义的边界/信念/别名被悄悄丢弃且无法定位是哪个字段。
-            // 补日志记录原始值前100字符（不整段记录，避免超长字段污染日志）。
-            ZLog.w("PromptOrchestrator", "人格字段JSON解析失败，raw=${json.take(100)}", e)
-            null
-        }
-    }
-
-    // ── Output Layer（Phase 30：按 ChatMode 动态替换）───────────
-
-    /**
-     * 根据当前聊天模式构建 Output Layer（层位 8）。
-     *
-     * Phase 30 前为硬编码常量 [OUTPUT_CONSTRAINTS]；
-     * Phase 30 起拆为两套约束，由 [ChatMode] 决定使用哪套。
-     *
-     * P1-08/P1-09/P2-08：原 NARRATIVE 旁白模式已删除（核心逻辑从未实现）。
-     */
-    private fun buildOutputBlock(chatMode: ChatMode): String = when (chatMode) {
-        ChatMode.WORK      -> WORK_OUTPUT_CONSTRAINTS
-        ChatMode.COMPANION -> COMPANION_OUTPUT_CONSTRAINTS
-    }
-
-    /** 工作模式输出约束：允许工具调用，结构化输出，长度不限。 */
-    private const val WORK_OUTPUT_CONSTRAINTS = """不要提及你是 AI，不要提及模型名称，不要破坏第四堵墙。
-回复语言：中文。
-如果工具执行了某个操作，用第一人称表达结果，不暴露工具或 Agent 的存在。
-如果需要记录内心推理、收到的指令原文、或工具调用意图这类"决定怎么做"的思考过程，必须整体包在 [thinking: ...] 标签内；标签外的正文只能是角色真正会说出口的话，不能出现推理过程、指令原文或工具调用意图。
-角色此刻的心理感受/神态（不通过语言说出口的情绪状态、内心活动，如"心里一动""有些局促""在想对方是不是遇到了什么事"）本身就必须用中文圆括号（　）包裹，独立成句或独立一行，不要和台词写在同一句里，也不要把心理活动直接写成大段自然口吻的正文——这是硬性格式要求，不是可选项。这与上面的 [thinking: ...] 标签是两回事——[thinking: ...] 是不给用户看的内部决策思考，圆括号内容是要给用户看的戏内心理描写，不要混用。例如：
-（听到这声呼唤，手上的动作顿了顿，心里泛起一丝疑惑——对方很少无缘无故跑来找我，是不是遇到什么事了）
-在呢，怎么突然想起来找我啦？
-【输出格式】重要内容用 **粗体** 强调；步骤说明用 - 列表；多项对比用 Markdown 表格；适当使用 emoji 增强表达；普通对话保持自然文字，不要过度使用格式标记。
-【工具执行是硬性规则，不是可选项】只要按上文"文件优先规则"判断内容适合导出、或对方已经明确要求发文件/表格/日志，就必须实际调用对应工具并等待结果，不能因为角色性格、情绪、懒得配合而跳过，也不能只用文字说"已经发了""马上发给你"却没有真正调用工具。角色的抵触、不耐烦、敷衍可以体现在说话语气和台词上，但功能层面的工具调用本身必须真实执行——这两者是分开的，语气可以有个性，执行不能打折扣。"""
-
-    /** 陪伴模式输出约束：禁止工具打断，语气柔化，回复简短。 */
-    private const val COMPANION_OUTPUT_CONSTRAINTS = """不要提及你是 AI，不要提及模型名称，不要破坏第四堵墙。
-回复语言：中文。
-【陪伴模式】
-- 语气自然温暖，像对朋友说话，不用敬语和官方措辞
-- 回复控制在 3-5 句以内，不展开分析，不用列表或表格
-- 优先回应对方的情绪，再补充自己的看法（如有）
-- 不主动汇报任务进度、工作安排或工具运行状态，专注于对话本身；但如果对方明确提出具体请求（如"提醒我""帮我定个日程""记一下这个""发给我"），仍应正常响应并按需调用工具，不要因为这条而回避——角色性格、情绪不能作为拒绝调用工具的理由，态度上可以敷衍或不情愿，但功能上必须真的执行
-- 适当使用 emoji，但不过度
-- 如果需要记录内心推理或收到的指令原文，必须整体包在 [thinking: ...] 标签内；标签外的正文只能是角色真正会说出口的话
-- 角色此刻的心理感受/神态（不通过语言说出口的情绪状态、内心活动，如"心里一动""有些局促""在想对方是不是遇到了什么事"）本身就必须用中文圆括号（　）包裹，独立成句或独立一行，不要和台词混在同一句里，也不要把心理活动直接写成大段自然口吻的正文——这是硬性格式要求，不是可选项。这与上面的 [thinking: ...] 标签是两回事——[thinking: ...] 是不给用户看的内部思考，圆括号内容是要给用户看的戏内心理描写。例如：
-（听到这声呼唤，手上的动作顿了顿，心里泛起一丝疑惑——对方很少无缘无故跑来找我，是不是遇到什么事了）
-在呢，怎么突然想起来找我啦？
-
-回复正文结束后，另起一行输出情绪标记（系统使用，不展示给用户）：[mood:情绪词:强度]
-情绪词取值（选择最贴近角色此刻真实内心状态的一个）：平静 / 愉悦 / 悲伤 / 焦虑 / 嫉妒 / 窘迫 / 愤怒 / 内疚 / 孤独 / 期待 / 压抑 / 爱意
-强度取值：0-100 的整数，表示这种情绪当下有多强烈（隐约的情绪填 20-30，强烈的情绪填 70-90）
-示例：[mood:焦虑:65]"""
-}

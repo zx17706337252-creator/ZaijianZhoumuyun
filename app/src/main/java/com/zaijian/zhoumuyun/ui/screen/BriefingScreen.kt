@@ -123,15 +123,25 @@ fun BriefingScreen(
                     modifier = Modifier
                         .fillMaxSize()
                         .navigationBarsPadding(),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = Spacing.lg),
                 ) {
-                    item { BriefingIntroSection(periodStart = data.periodStart, periodEnd = data.periodEnd) }
+                    item {
+                        BriefingIntroSection(
+                            periodStart = data.periodStart,
+                            periodEnd = data.periodEnd,
+                            modifier = Modifier.padding(
+                                horizontal = Spacing.screenHorizontal,
+                                vertical = Spacing.sm,
+                            ).padding(top = Spacing.sm),
+                        )
+                    }
 
                     if (data.attentionItems.isNotEmpty()) {
                         item {
                             BriefingAttentionSection(
                                 items = data.attentionItems,
                                 daughterNameMap = uiState.daughterNameMap,
-                                modifier = Modifier.padding(horizontal = Spacing.screenHorizontal, vertical = Spacing.xs),
+                                modifier = Modifier.padding(horizontal = Spacing.screenHorizontal, vertical = Spacing.sm),
                             )
                         }
                     }
@@ -139,27 +149,24 @@ fun BriefingScreen(
                     items(data.characters, key = { it.character.id }) { entry ->
                         BriefingCharacterCard(
                             entry = entry,
-                            modifier = Modifier.padding(horizontal = Spacing.screenHorizontal, vertical = Spacing.xs),
+                            modifier = Modifier.padding(horizontal = Spacing.screenHorizontal, vertical = Spacing.sm),
                         )
                     }
 
                     item {
                         BriefingRankingSection(
                             ranking = data.affectionRanking,
-                            modifier = Modifier.padding(horizontal = Spacing.screenHorizontal, vertical = Spacing.xs),
+                            modifier = Modifier.padding(horizontal = Spacing.screenHorizontal, vertical = Spacing.sm),
                         )
                     }
 
                     item {
-                        // UI 升级 v2.0（融合方案 §4.1 + 帧02）：全页唯一 Primary
-                        // 从 Material3 纯色 accent 平涂（违反金色军规 §1）迁移到
-                        // GoldPrimaryButton（黄铜三段渐变 + 顶高光 + 金影 + 按压下沉）。
                         GoldPrimaryButton(
                             text = "推门进入公馆",
                             onClick = onEnterWorld,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(Spacing.screenHorizontal),
+                                .padding(horizontal = Spacing.screenHorizontal, vertical = Spacing.md),
                         )
                     }
                 }

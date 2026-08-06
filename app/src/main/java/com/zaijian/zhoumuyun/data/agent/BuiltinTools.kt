@@ -418,7 +418,7 @@ class FileReadTool(private val context: Context) : AgentTool {
     override val paramKeys = listOf("path", "lines")
 
     private companion object {
-        const val MAX_CHARS = 8_000
+        const val MAX_CHARS = 50_000
         const val DEFAULT_LINES = 100
         const val MAX_LINES = 500
         val ZIP_TEXT_EXTENSIONS = setOf(
@@ -529,7 +529,10 @@ class FileReadTool(private val context: Context) : AgentTool {
                 var content = lines.joinToString("\n")
                 var truncated = false
                 if (content.length > MAX_CHARS) {
-                    content = content.take(MAX_CHARS)
+                    // 截断时优先在行边界截断，避免切断句子或代码行。
+                    val cut = content.take(MAX_CHARS)
+                    val lastNl = cut.lastIndexOf('\n')
+                    content = if (lastNl > MAX_CHARS / 2) cut.substring(0, lastNl) else cut
                     truncated = true
                 }
 
@@ -697,12 +700,12 @@ class FileReadTool(private val context: Context) : AgentTool {
                         val wPMatch = wPPattern.find(xmlContent, pos)
                         if (wPMatch == null) {
                             // 剩余文本
-                            wTPattern.findAll(xmlContent, pos).forEach { textBuilder.append(it.groupValues[1]) }
-                            break
-                        }
-                        // 段落前的 <w:t>
-                        wTPattern.findAll(xmlContent, pos).takeWhile { it.range.first < wPMatch.range.first }
-                            .forEach { textBuilder.append(it.groupValues[1]) }
+                        wTPattern.findAll(xmlContent, pos).forEach { textBuilder.append(FilePreviewParser.decodeXmlEntities(it.groupValues[1])) }
+                        break
+                    }
+                    // 段落前的 <w:t>
+                    wTPattern.findAll(xmlContent, pos).takeWhile { it.range.first < wPMatch.range.first }
+                        .forEach { textBuilder.append(FilePreviewParser.decodeXmlEntities(it.groupValues[1])) }
                         textBuilder.append('\n')  // 段落分隔
                         pos = wPMatch.range.last + 1
                     }
@@ -751,14 +754,26 @@ class FileReadTool(private val context: Context) : AgentTool {
                     val sharedStrings = mutableListOf<String>()
                     val ssEntry = zip.getEntry("xl/sharedStrings.xml")
                     if (ssEntry != null) {
+                        // 修复（OOM 防护）：限制 sharedStrings.xml 条目大小，防止恶意/超大
+                        // xlsx 文件导致 OOM。ssEntry.size 为未压缩大小（-1 表示未知）。
+                        if (ssEntry.size > 10L * 1024 * 1024) {
+                            return@withContext ToolResult(
+                                name, false, "xlsx 文件过大：共享字符串表超过 10MB，无法解析",
+                            )
+                        }
                         val ssXml = zip.getInputStream(ssEntry).use { it.readBytes().toString(Charsets.UTF_8) }
                         // <si> 是一个字符串项，内含一个或多个 <t> 标签（富文本可能有多个）
                         val siPattern = Regex("<si>(.*?)</si>", RegexOption.DOT_MATCHES_ALL)
                         val tPattern = Regex("<t[^>]*>([^<]*)</t>")
                         siPattern.findAll(ssXml).forEach { siMatch ->
                             val text = tPattern.findAll(siMatch.groupValues[1])
-                                .joinToString("") { it.groupValues[1] }
-                            sharedStrings.add(text)
+                                .joinToString("") { FilePreviewParser.decodeXmlEntities(it.groupValues[1]) }
+                            // 修复（OOM 防护）：单个共享字符串限制长度，防止超大单元格
+                            if (text.length > 10000) {
+                                sharedStrings.add(text.take(10000) + "...[内容过长已截断]")
+                            } else {
+                                sharedStrings.add(text)
+                            }
                         }
                     }
 
@@ -767,6 +782,12 @@ class FileReadTool(private val context: Context) : AgentTool {
                         ?: return@withContext ToolResult(
                             name, false, "无法解析 xlsx：找不到 xl/worksheets/sheet1.xml",
                         )
+                    // 修复（OOM 防护）：限制工作表条目大小，防止恶意/超大 xlsx 导致 OOM
+                    if (sheetEntry.size > 30L * 1024 * 1024) {
+                        return@withContext ToolResult(
+                            name, false, "xlsx 文件过大：工作表超过 30MB，无法解析",
+                        )
+                    }
                     val sheetXml = zip.getInputStream(sheetEntry).use { it.readBytes().toString(Charsets.UTF_8) }
 
                     // 3. 解析行和单元格
@@ -777,7 +798,11 @@ class FileReadTool(private val context: Context) : AgentTool {
                     val colPattern = Regex("[A-Z]+")
 
                     val rows = mutableListOf<List<String>>()
+                    var rowCount = 0
                     for (rowMatch in rowPattern.findAll(sheetXml)) {
+                        // 修复（OOM 防护）：限制解析行数，防止超大工作表耗尽内存
+                        if (rowCount >= maxLines) break
+                        rowCount++
                         val rowContent = rowMatch.groupValues[1]
                         val cells = cellPattern.findAll(rowContent).map { cellMatch ->
                             val attrs = cellMatch.groupValues[2]
@@ -821,26 +846,12 @@ class FileReadTool(private val context: Context) : AgentTool {
             }
         }
 
-    private fun resolveFile(path: String): File? {
-        if (path.startsWith("/")) {
-            val file = File(path)
-            val allowed = listOf(
-                context.filesDir.absolutePath,
-                context.cacheDir.absolutePath,
-                context.getExternalFilesDir(null)?.absolutePath ?: "",
-            )
-            if (allowed.none { path.startsWith(it) }) return null
-            return file
-        }
-
-        val internal = File(context.filesDir, path)
-        if (internal.exists()) return internal
-
-        val external = context.getExternalFilesDir(null)?.let { File(it, path) }
-        if (external?.exists() == true) return external
-
-        return null
-    }
+    // P2-6-6 修复：与 [FileSystemTools.resolveFileSystemPath] 统一为同一解析器。
+    // 原实现相对路径"先试 filesDir、不存在再试 externalFilesDir"，与 FileSystemTools/
+    // 保险库（相对路径一律落 filesDir）不一致——同一相对路径在不同工具里可能读一个文件、
+    // 写/删另一个文件。现直接委托给 resolveFileSystemPath，保证全仓相对路径解析语义一致
+    //（绝对路径同样复用其防穿越 + allowed 目录前缀校验，去掉本文件重复的实现）。
+    private fun resolveFile(path: String): File? = resolveFileSystemPath(context, path)
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1021,8 +1032,49 @@ class UrlFetchTool : AgentTool {
         }
 
         try {
+            // P1-11 修复（SSRF 重定向绕过）：见 fetchWithRedirects 内注释。
+            return@withContext fetchWithRedirects(url, maxChars)
+        } catch (e: java.net.UnknownHostException) {
+            // P1 修复（P2批次2审查报告问题B）：同上，补 error 让 LLM 知道具体是网络问题
+            ToolResult(name, false, "无法连接网络，请检查网络设置后重试。", error = "unknown_host")
+        } catch (e: java.net.SocketTimeoutException) {
+            ToolResult(name, false, "网页响应超时，稍后再试。", error = "timeout")
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            toolFailure(name, "抓取网页时遇到问题。", "url_fetch_failed", e)
+        }
+    }
+
+    /**
+     * P1-11 修复（SSRF 重定向绕过）：手动逐跳跟随 3xx 重定向，每跳重新校验 host。
+     *
+     * 原实现用 HttpURLConnection 默认跟随 3xx 重定向，而 SSRF 校验只对初始 URL 的 host 做一次，
+     * 重定向目标 host 不再校验——公网 URL 302 跳转到 http://127.0.0.1:8080/...、
+     * http://192.168.x.x/admin、http://169.254.x.x 等内网地址即可被读取回注（SSRF 绕过）。
+     * 这里禁用自动跟随（instanceFollowRedirects=false），手动逐跳跟随并重新校验每一跳的 host，
+     * 跳数上限 5，同时防重定向环。
+     *
+     * 独立成函数（而非塞在 execute 的 withContext 里）是为了让返回类型明确、可读。
+     * 由 execute 在 withContext(Dispatchers.IO) 内调用，阻塞 IO 运行在 IO 线程。
+     */
+    private suspend fun fetchWithRedirects(url: String, maxChars: Int): ToolResult {
+        var currentUrl = url
+        var redirects = 0
+        val maxRedirects = 5
+        while (true) {
+            // 逐跳 SSRF 校验：解析当前跳的 host 对应 IP，私有/回环/链路本地/任意地址一律拒绝。
+            val hopHost = java.net.URL(currentUrl).host
+            val hopAddr = java.net.InetAddress.getByName(hopHost)
+            if (hopAddr.isLoopbackAddress || hopAddr.isLinkLocalAddress || hopAddr.isSiteLocalAddress || hopAddr.isAnyLocalAddress) {
+                return ToolResult(
+                    name, false, "该链接指向内网地址，出于安全考虑不予抓取。",
+                    error = "ssrf_blocked_private_address",
+                )
+            }
             // P1-8-2 修复：conn 声明在内层 try 外，使 finally 保证 disconnect
-            val conn = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+            val conn = java.net.URL(currentUrl).openConnection() as java.net.HttpURLConnection
+            conn.instanceFollowRedirects = false
             conn.connectTimeout = CONNECT_TIMEOUT
             conn.readTimeout    = READ_TIMEOUT
             conn.setRequestProperty("User-Agent", "Mozilla/5.0 (compatible; ZaijianBot/1.0)")
@@ -1030,10 +1082,24 @@ class UrlFetchTool : AgentTool {
 
             try {
                 val responseCode = conn.responseCode
+                if (responseCode in 300..399) {
+                    // 手动跟随重定向：取 Location 并拼成绝对 URL，回到循环头重新校验 host。
+                    val location = conn.getHeaderField("Location")
+                    if (location == null || redirects >= maxRedirects) {
+                        return ToolResult(
+                            name, false,
+                            "无法访问该网页（HTTP $responseCode，重定向过多或无效）。",
+                            error = "HTTP $responseCode",
+                        )
+                    }
+                    redirects++
+                    currentUrl = java.net.URL(java.net.URL(currentUrl), location).toExternalForm()
+                    continue
+                }
                 if (responseCode !in 200..299) {
                     // P1 修复（P2批次2审查报告问题B）：原先只传 content 未传 error，
                     // 回注 LLM 会丢失"HTTP $responseCode"这一具体原因，变成"未知错误"。
-                    return@withContext ToolResult(
+                    return ToolResult(
                         name, false,
                         "无法访问该网页（HTTP $responseCode）。",
                         error = "HTTP $responseCode",
@@ -1049,10 +1115,10 @@ class UrlFetchTool : AgentTool {
                 val text = extractReadableText(html).take(maxChars)
 
                 if (text.isBlank()) {
-                    return@withContext ToolResult(name, false, "网页内容为空或无法提取正文。", error = "empty_content")
+                    return ToolResult(name, false, "网页内容为空或无法提取正文。", error = "empty_content")
                 }
 
-                ToolResult(
+                return ToolResult(
                     toolName = name,
                     success  = true,
                     content  = "[网页内容: $url]\n$text",
@@ -1061,15 +1127,6 @@ class UrlFetchTool : AgentTool {
             } finally {
                 conn.disconnect()
             }
-        } catch (e: java.net.UnknownHostException) {
-            // P1 修复（P2批次2审查报告问题B）：同上，补 error 让 LLM 知道具体是网络问题
-            ToolResult(name, false, "无法连接网络，请检查网络设置后重试。", error = "unknown_host")
-        } catch (e: java.net.SocketTimeoutException) {
-            ToolResult(name, false, "网页响应超时，稍后再试。", error = "timeout")
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
-        } catch (e: Throwable) {
-            toolFailure(name, "抓取网页时遇到问题。", "url_fetch_failed", e)
         }
     }
 
@@ -1266,7 +1323,8 @@ class FileExportTool(private val context: Context) : AgentTool {
             }
 
         // v147：EXPORT_DIR 已废弃（落盘统一走 VaultIo），移除该常量。
-        private val UNSAFE_CHARS = Regex("[/\\\\:*?\"<>|]")
+        // 专项审查报告问题10：文件名安全化/截断统一走 VaultIo.safeFileName（保留扩展名），
+        // 本工具不再各自维护 UNSAFE_CHARS。
     }
 
     override val name      = "file_export"
@@ -1286,7 +1344,9 @@ class FileExportTool(private val context: Context) : AgentTool {
             return@withContext ToolResult(name, false, "", "需要 content 参数（文件内容）")
         }
 
-        val safeName = UNSAFE_CHARS.replace(rawName, "_").take(60)
+        // 修复（专项审查报告问题10）：改用 VaultIo.safeFileName 截断，保留扩展名，
+        // 避免长标题把 .docx/.xlsx/.pdf 等末尾后缀截掉导致生成文件打不开。
+        val safeName = safeFileName(rawName)
         // P2 修复（批次3审查报告问题2）：原实现只认 "txt"，其他任何值（包括 "pdf" 这种
         // LLM 可能填的合理猜测）都静默落到 .md，无任何提示。改为显式白名单校验，
         // 非法值仍回退为 md（不阻断导出，容错优先），但在返回结果里明确告知发生了偏离，
@@ -1344,6 +1404,9 @@ class FileExportTool(private val context: Context) : AgentTool {
         val mimeType = when {
             format == "html"        -> "text/html"
             fileName.endsWith(".md") -> "text/markdown"
+            // P2-6-3 修复：MindmapGenTool 现在用 `.xmind.xml`（真实 XML）后缀，
+            // 对齐为 XML 类型，避免被 mime 判成 text/plain。
+            fileName.endsWith(".xml") -> "application/xml"
             else                     -> "text/plain"
         }
 
@@ -1355,7 +1418,29 @@ class FileExportTool(private val context: Context) : AgentTool {
             // fileName 已是本函数上方计算好的安全人读名（含后缀），直接传给
             // writeVaultFile（它不会再二次 sanitize/截断，避免截掉扩展名）。
             val metaJson = writeVaultFile(context, fileName, content, mimeType)
-            val sizeBytes = content.toByteArray(Charsets.UTF_8).size.toLong()
+
+            // Fix-落盘验证（根因修复：角色说发了但文件不落盘）：
+            // writeVaultFile 返回 metaJson 后，立即验证文件确实存在于磁盘上。
+            // 此前 writeVaultFile 内部 file.writeText() 可能因 IO 异常/磁盘满/
+            // 权限问题等静默失败（writeText 本身不抛异常但文件可能未完整写入），
+            // 或者 metaJson 构建成功但文件路径不正确——验证失败时返回明确的
+            // 错误结果，让 LLM 知道文件没有生成成功，而不是继续假装已发送。
+            val metaObj = try { JSONObject(metaJson) } catch (_: Throwable) { null }
+            val absolutePath = metaObj?.optString("absolutePath", "")
+            val verifiedFile = if (!absolutePath.isNullOrEmpty()) File(absolutePath) else null
+            if (verifiedFile == null || !verifiedFile.exists() || verifiedFile.length() == 0L) {
+                com.zaijian.zhoumuyun.util.AgentLog.error(
+                    "FileExportTool",
+                    "⚠ 文件写入后验证失败: fileName=$fileName, path=$absolutePath, " +
+                        "exists=${verifiedFile?.exists()}, size=${verifiedFile?.length() ?: -1}",
+                )
+                return@withContext ToolResult(
+                    name, false, "",
+                    "文件写入后验证失败（文件不存在或大小为0），请重试",
+                )
+            }
+
+            val sizeBytes = verifiedFile.length()
 
             // 根因修复（formatNotice 破坏 JSON 解析）：
             // 原 content 格式为 "前缀文字\n$metaJson$formatNotice"——当 format 不受

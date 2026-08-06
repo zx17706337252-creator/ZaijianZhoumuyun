@@ -73,6 +73,15 @@ fun BriefingAttentionSection(
                     text = "${characterNameById(item.fromId, daughterNameMap)}：${item.description}"
                     waxChar = "隙"
                 }
+                // 叙事类（帧02/19）：对话引用 + 约定事项
+                is BriefingAttentionItem.QuoteReference -> {
+                    text = "${item.character.name}：上次听她说「${item.snippet}」"
+                    waxChar = "念"
+                }
+                is BriefingAttentionItem.AgreementDue -> {
+                    text = "${item.character.name}：有条约定的事在推进「${item.taskTitle}」"
+                    waxChar = "期"
+                }
             }
             WorldCard(
                 modifier = Modifier.padding(top = Spacing.sm),

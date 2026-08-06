@@ -64,6 +64,26 @@ internal fun extractExportedFileJson(content: String): String? {
 }
 
 /**
+ * P2-6-2 修复：table_export 的 xlsx 附件元数据挂在 TablePayload.exportedFileMetaJson
+ * （序列化进 ToolResult.tablePayloadJson 字段），而不是 content 字符串末尾。此前
+ * ToolCallInterceptor 只从 content 提取文件元数据，table_export 的 xlsx 因此不登记进
+ * generatedFilePaths，不参与落盘存在性校验——xlsx 写失败仍报 success。
+ * 这里从 tablePayloadJson 里解析出 exportedFileMetaJson，判定标准与
+ * [extractExportedFileJson] 一致（fileName + absolutePath 齐全才算数）。
+ */
+internal fun extractExportedFileJsonFromTablePayload(tablePayloadJson: String?): String? {
+    if (tablePayloadJson.isNullOrEmpty()) return null
+    return try {
+        val payloadObj = org.json.JSONObject(tablePayloadJson)
+        val metaJson = payloadObj.optString("exportedFileMetaJson").takeIf { it.isNotEmpty() } ?: return null
+        val metaObj = org.json.JSONObject(metaJson)
+        if (metaObj.has("fileName") && metaObj.has("absolutePath")) metaJson else null
+    } catch (_: Throwable) {
+        null
+    }
+}
+
+/**
  * 从 [text] 末尾往前找最后一个 '{'，且该 '{' 到字符串末尾（去除尾部空白后）
  * 花括号深度能配平为 0——即这个 '{' 确实是"贴着字符串结尾的那个 JSON 对象"的
  * 起点，而不是前缀文字里偶然出现的杂散字符。

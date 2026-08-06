@@ -42,6 +42,8 @@ import com.zaijian.zhoumuyun.ui.viewmodel.repeatLabel
 import kotlinx.coroutines.launch
 import java.util.Calendar
 import com.zaijian.zhoumuyun.ui.design.AppIcons
+import com.zaijian.zhoumuyun.ui.design.DangerVelvetButton
+import com.zaijian.zhoumuyun.ui.design.GhostGoldButton
 
 // ─────────────────────────────────────────────────────────────
 //  GlobalScheduleScreen  —  全局日程视图（Stage A+B）
@@ -60,7 +62,7 @@ fun GlobalScheduleScreen(
     val colors  = ZaijianTheme.colors
     val type    = ZaijianTheme.typography
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-    val scope   = rememberCoroutineScope()
+    // P2-7-4 修复：删除/启停改由 VM viewModelScope 驱动，屏侧不再需要 rememberCoroutineScope。
 
     // 日程系统第七节：批量查项目标题，供卡片展示侧使用（避免 N+1）。
     // 从 timeSlots 里 collect 所有 job 的非空 projectId，一次性查回映射表。
@@ -91,15 +93,18 @@ fun GlobalScheduleScreen(
             title = { Text("删除日程") },
             text  = { Text("确认删除「${job.title}」？此操作不可撤销。") },
             confirmButton = {
-                TextButton(onClick = {
-                    scope.launch { viewModel.deleteJob(job.id) }
-                    jobToDelete = null
-                }) {
-                    Text("删除", color = Palette.SemanticDanger)  // P3-53 修复：colorScheme.error → Palette.SemanticDanger
-                }
+                DangerVelvetButton(
+                    text = "删除",
+                    onClick = {
+                        // P2-7-4 修复：deleteJob 内部已用 viewModelScope.launch，直接调即可，
+                        // 不再走屏侧 rememberCoroutineScope（导航离开会取消操作）。
+                        viewModel.deleteJob(job.id)
+                        jobToDelete = null
+                    },
+                )
             },
             dismissButton = {
-                TextButton(onClick = { jobToDelete = null }) { Text("取消") }
+                GhostGoldButton(text = "取消", onClick = { jobToDelete = null })
             },
         )
     }
@@ -150,11 +155,22 @@ fun GlobalScheduleScreen(
                     )
                 }
                 if (uiState.dayOffset != 0) {
-                    IconButton(onClick = { viewModel.setDayOffset(0) }) {
-                        Icon(
-                            imageVector        = AppIcons.CalendarMonth,
-                            contentDescription = "回今天",
-                            tint               = colors.textSecondary,
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        IconButton(onClick = { viewModel.setDayOffset(0) }) {
+                            Icon(
+                                imageVector        = AppIcons.CalendarMonth,
+                                contentDescription = "回今天",
+                                tint               = colors.textSecondary,
+                            )
+                        }
+                        // UI 升级 v2.0（帧13 黄铜金环）：回今天按钮下方金色链节下划线
+                        Box(
+                            modifier = Modifier
+                                .width(40.dp)
+                                .height(2.dp)
+                                .background(AppBrushes.goldGradient()),
                         )
                     }
                 }
@@ -187,9 +203,7 @@ fun GlobalScheduleScreen(
             Snackbar(
                 modifier = Modifier.padding(horizontal = Spacing.md, vertical = Spacing.sm),
                 action = {
-                    TextButton(onClick = { viewModel.clearError() }) {
-                        Text("关闭", color = Color.White)
-                    }
+                    GhostGoldButton(text = "关闭", onClick = { viewModel.clearError() })
                 },
             ) {
                 Text(uiState.error!!)
@@ -217,7 +231,8 @@ fun GlobalScheduleScreen(
                 slots            = uiState.timeSlots,
                 projectTitleMap  = projectTitleMap,
                 onDeleteJob = { jobToDelete = it },
-                onToggle    = { scope.launch { viewModel.toggleEnabled(it) } },
+                // P2-7-4 修复：toggleEnabled 内部已用 viewModelScope.launch，直接调。
+                onToggle    = { viewModel.toggleEnabled(it) },
             )
         }
     }
@@ -313,6 +328,8 @@ private fun CharacterFilterRow(
                 selectedId = selectedId,
                 onSelect   = onSelect,
                 avatarSize = 44.dp,
+                // UI 升级 v2.0（帧13 黄铜金环）：选中态用黄铜渐变金环替代角色色单色边框
+                selectedBorder = AppBrushes.goldGradient(),
             )
         }
 
@@ -327,7 +344,7 @@ private fun CharacterFilterRow(
                 Text(
                     text     = "当前筛选：${selectedChar.name}",
                     style    = type.label, // 伪接入修复：type.label 本身即 11sp
-                    color    = selectedChar.accentColor,
+                    color    = colors.accentDeep,
                     modifier = Modifier.padding(
                         horizontal = Spacing.screenHorizontal,
                         vertical   = Spacing.xs,
@@ -464,7 +481,7 @@ private fun ScheduleJobCard(
                             Text(
                                 text  = char.name,
                                 style = type.label.copy(fontSize = 12.sp),
-                                color = accentColor.copy(alpha = if (isDisabled) 0.5f else 0.85f),
+                                color = colors.textSecondary.copy(alpha = if (isDisabled) 0.5f else 0.85f),
                             )
                             Text(
                                 text  = " · ",
@@ -490,7 +507,7 @@ private fun ScheduleJobCard(
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                         verticalAlignment     = Alignment.CenterVertically,
                     ) {
-                        ScheduleRepeatChip(label = repeatLbl, accent = accentColor, disabled = isDisabled)
+                        ScheduleRepeatChip(label = repeatLbl, accent = colors.accent, disabled = isDisabled)
                         Text(
                             // 批次4（方案8.1）：与 PersonalScheduleScreen 第372行同款分叉。
                             // 工单型展示 description 预览（take(20) + 超长省略号），

@@ -19,6 +19,12 @@ import androidx.room.PrimaryKey
  *   没有抛异常），是角色扮演层面的正常结局，但也不是"双方自然聊完"的
  *   completed——UI/导出器需要能区分这三种情形，不能把角色下线误记为
  *   completed（会让 owner 以为对话是正常收尾的）。
+ *
+ * notifiedCharacterIds（私聊实时同步修复新增，见 Migration79to80）：逗号分隔的
+ * characterId 列表，记录这次会话已经在哪些角色的主对话里播报过完整逐字记录。
+ * ChatMessageOrchestrator 的私聊动态播报按"当前角色 id 是否已在这个列表里"判断
+ * 要不要播报，不再依赖时间窗口——避免角色因为没在窗口期内被找去聊天而永久错过
+ * 被告知的机会。播报一次后追加自己的 id，同一角色不会对同一次会话被重复播报。
  */
 @Entity(tableName = "private_chat_sessions")
 data class PrivateChatSessionEntity(
@@ -28,4 +34,5 @@ data class PrivateChatSessionEntity(
     val status: String,        // "in_progress" | "completed" | "interrupted" | "disconnected"
     val turnCount: Int = 0,
     val errorMessage: String? = null,
+    val notifiedCharacterIds: String = "",
 )

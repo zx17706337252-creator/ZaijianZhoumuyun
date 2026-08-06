@@ -24,7 +24,7 @@ internal val MIGRATION_71_72 = object : Migration(71, 72) {
         db.execSQL(
             """
             CREATE TABLE IF NOT EXISTS `agent_store_records` (
-                `id` INTEGER PRIMARY KEY AUTOINCREMENT,
+                `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
                 `ownerCharacterId` INTEGER NOT NULL,
                 `collection` TEXT NOT NULL,
                 `key` TEXT NOT NULL,

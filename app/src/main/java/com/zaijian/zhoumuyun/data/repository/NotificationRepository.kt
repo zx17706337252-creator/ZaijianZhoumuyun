@@ -118,6 +118,11 @@ class NotificationRepository(
             "fertile:${item.characterId}"
         is BriefingAttentionItem.MenstrualAttention ->
             "menstrual:${item.characterId}"
+        // 叙事类：按角色维度追踪已读（与 Pregnancy/NoContact 同口径）。
+        is BriefingAttentionItem.QuoteReference ->
+            "quote:${item.character.id}:${item.sourceMessageAt}"
+        is BriefingAttentionItem.AgreementDue ->
+            "agreement:${item.character.id}:${item.taskTitle}"
     }
 
     suspend fun markRead(item: BriefingAttentionItem) {

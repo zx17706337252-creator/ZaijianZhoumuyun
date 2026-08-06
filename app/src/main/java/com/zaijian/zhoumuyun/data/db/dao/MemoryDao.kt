@@ -259,6 +259,11 @@ abstract class MemoryDao {
     @Query("DELETE FROM memories WHERE id = :memoryId")
     abstract suspend fun deleteById(memoryId: String)
 
+    // P2-3-3 修复：按 memoryId 取 ftsRowId，供删除路径在调用方未传 ftsRowId 时
+    // 也能对称清理 FTS 虚拟表（多数 UI 入口只持有 memoryId）。
+    @Query("SELECT ftsRowId FROM memories WHERE id = :memoryId")
+    abstract suspend fun getRowIdByMemoryId(memoryId: String): Int?
+
     // ── D-1 修复：带 FTS 同步清理的删除 ──────────────────────
 
     /**
@@ -516,4 +521,19 @@ abstract class MemoryDao {
           AND scope = 'PERSONAL'
     """)
     abstract suspend fun deleteStaleUnused(cutoffMs: Long): Int
+
+    // ── P2-3-1 修复：衰减清理前先取待删行（memoryId + ftsRowId），供调用方
+    //    对称清理 FTS 虚拟表与 memory_tags，避免主表删除后留下孤儿行 ──
+    data class MemoryStaleRow(val memoryId: String, val ftsRowId: Int)
+
+    @Query("""
+        SELECT id AS memoryId, ftsRowId FROM memories
+        WHERE isCore = 0
+          AND isEternal = 0
+          AND importance <= 2
+          AND accessCount = 0
+          AND createdAt < :cutoffMs
+          AND scope = 'PERSONAL'
+    """)
+    abstract suspend fun getStaleUnusedRows(cutoffMs: Long): List<MemoryStaleRow>
 }

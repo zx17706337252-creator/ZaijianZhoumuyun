@@ -49,6 +49,19 @@ enum class PrivateChatSessionStatus {
 /** 本轮 prompt 文案版本（机制三"正常代入" vs 6.3"拒绝反应"，互斥不叠加） */
 enum class PromptVariant { NORMAL, REFUSAL }
 
+/**
+ * "拨号"结果（实时化重构新增）：triggerSession() 只做本地校验，不调用 LLM，
+ * 毫秒级返回，回答的是"这次发起动作本身有没有成立"，不是"聊完了没有/聊了什么"。
+ * - [Started]：本地校验全部通过，已把真正的 A↔B 事件循环交给后台执行
+ *   （调用方需要自行把 runSession() 派发到后台，triggerSession 本身不启动它）
+ * - [Skipped]：与 [PrivateChatSessionResult.Skipped] 同一套原因文案
+ *   （全局开关/上限/冷却/下线/未开启/配对不存在/发起者不匹配），未发生任何动作
+ */
+sealed class SessionTriggerOutcome {
+    object Started : SessionTriggerOutcome()
+    data class Skipped(val reason: String) : SessionTriggerOutcome()
+}
+
 /** generateReply 单轮产出（含展示文本 + 决策 + 兜底/版本信息，供 runSession 决策） */
 data class ReplyOutcome(
     val displayText: String,
@@ -112,8 +125,102 @@ class PrivateChatEngine(
     }
 
     /**
-     * 私聊回合的唯一入口，由用户手动触发（2.1 节确认的唯一触发源）。
-     * 内部同步循环执行到收尾或达到轮数上限，不重新入队、不等待。
+     * 共享本地前置校验（实时化重构抽出）：pair 存在/发起者合法/开启状态/日上限/
+     * 全局开关/冷却/角色下线/「会话进行中」——八项判断，[triggerSession] 和
+     * [runSession] 共用同一份实现，不再各写一份、事后靠人工核对两处是否同步
+     * （正是这次要修的"两条触发路径各自维护一套规则、容易走岔"的问题类型）。
+     *
+     * 跨天重置每日计数属于有副作用的写操作，判断通过后也需要用到重置后的最新
+     * pair，因此返回 `Pair<PrivateChatPairEntity?, String?>`（重置/刷新后的 pair,
+     * 跳过原因）——reason 非空时 pair 未必可用，调用方应先看 reason。
+     *
+     * 修复（专项审查报告 #4）：此前没有检查"该配对是否已有会话在进行中"，
+     * triggerSession() 校验通过后无条件返回 Started，PrivateChatSendTool 据此
+     * 回复用户"已经联系上对方了，对话正在后台推进"；但 enqueuePrivateChatSession()
+     * 用 ExistingWorkPolicy.KEEP 入队——若同一对角色已有 in_progress/ENQUEUED 的
+     * WorkManager 任务，新请求会被静默丢弃，什么都不会发生，用户和角色 A 都被
+     * 告知"聊上了"，实际上后台什么也没做。现在在这里补上"in_progress 会话检测"，
+     * 命中时直接判定 Skipped，让调用方能给出真实反馈而不是虚假的成功文案。
+     */
+    private suspend fun checkCanStart(
+        pairId: String,
+        initiatorCharacterId: Int,
+    ): Pair<com.zaijian.zhoumuyun.data.db.entity.PrivateChatPairEntity?, String?> {
+        var pair = pairRepo.get(pairId) ?: return null to "配对不存在"
+
+        if (initiatorCharacterId != pair.characterIdA && initiatorCharacterId != pair.characterIdB) {
+            return null to "发起者不属于该配对"
+        }
+
+        if (!pair.enabled) return pair to "未开启"
+        val now = System.currentTimeMillis()
+        if (PrivateChatPairRepository.isStaleDay(pair.usedTodayResetAt, now)) {
+            pairRepo.resetDailyCounter(pairId, now)
+            pair = pairRepo.get(pairId) ?: return null to "配对不存在"
+        }
+
+        if (pair.sessionsUsedToday >= pair.maxSessionsPerDay) return pair to "今日次数已达上限"
+        if (!globalKillSwitchOff()) return pair to "全局开关已关闭"
+        if (System.currentTimeMillis() - pair.lastSessionAt < pair.cooldownMinutes * 60_000L) {
+            return pair to "距上次会话不足冷却时间"
+        }
+        if (PrivateChatSessionStatus.fromStored(pair.characterDisconnectState)
+            == PrivateChatSessionStatus.DISCONNECTED_BY_CHARACTER) {
+            return pair to "角色已下线"
+        }
+        // 修复 #4：会话进行中检测，与 PrivateChatHistoryTool 判断"是否 in_progress"
+        // 用的同一套标准（status == "in_progress"），避免两处出现不同的判定口径。
+        // 逾时豁免：runSession() 正常路径下无论成功/失败/取消都会在 finally 前
+        // markInterrupted（见 runSession 的 catch 块），所以自己这次调用不会撞上
+        // 自己刚插入的记录（insert 在 checkCanStart 通过之后才发生），也不会拦住
+        // WorkManager 的 Result.retry() 重跑（重试前旧 session 早已被标记
+        // interrupted）。这里的逾时豁免只用于兜底极端情况——例如进程被系统
+        // kill（非 CancellationException、不会走到 catch 块）导致 session 永久卡
+        // 在 in_progress，不豁免会让这对角色永远无法再发起私聊。
+        val staleInProgressThresholdMs = 60 * 60_000L // 1 小时，与私聊单次上限时长量级一致，足够宽松
+        val hasInProgressSession = try {
+            sessionRepo.getAllByPair(pairId).any {
+                it.status == "in_progress" && (now - it.startedAt) < staleInProgressThresholdMs
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            ZLog.w(TAG, "checkCanStart: 查询进行中会话失败，本次不做该项拦截", e)
+            false
+        }
+        if (hasInProgressSession) return pair to "会话进行中"
+
+        return pair to null
+    }
+
+    /**
+     * "拨号"入口（实时化重构新增）：只做 [checkCanStart] 本地校验，不调用 LLM，
+     * 毫秒级返回。真正的 A↔B 事件循环（[runSession]）由调用方在校验通过后自行
+     * 派发到后台执行（当前统一走 [enqueuePrivateChatSession] / WorkManager）——
+     * triggerSession 本身不启动、不等待那个循环，这正是它与 [runSession] 的分工：
+     * 一个负责"这次发起动作本身能不能成立"，一个负责"真正把对话聊完"。
+     *
+     * `private_chat_send`（ChatScreen 工具调用入口）与 PrivateChatViewModel
+     * .triggerSession（管理面板手动入口）现在都调用这同一个函数做前置校验，
+     * 避免两条入口各自维护一份规则、事后走岔。
+     */
+    suspend fun triggerSession(
+        pairId: String,
+        initiatorCharacterId: Int,
+    ): SessionTriggerOutcome {
+        val (_, reason) = checkCanStart(pairId, initiatorCharacterId)
+        return if (reason != null) SessionTriggerOutcome.Skipped(reason) else SessionTriggerOutcome.Started
+    }
+
+    /**
+     * 私聊回合真正的事件循环，由 [PrivateChatWorker] 在后台调用（实时化重构后：
+     * 不再有任何调用方同步等待它跑完——`private_chat_send` 已改为"拨号即返回"，
+     * 管理面板按钮此前就已经是异步 Worker 路径）。内部同步循环执行到收尾或
+     * 达到轮数上限，不重新入队、不等待。
+     *
+     * 复用 [checkCanStart] 做与 [triggerSession] 完全一致的前置校验——两次校验
+     * 之间存在时间差（triggerSession 通过后、Worker 真正调度执行前，pair 状态
+     * 理论上可能被并发修改），这里重新查一遍最新状态是必要的，不是重复代码。
      */
     suspend fun runSession(
         pairId: String,
@@ -121,72 +228,126 @@ class PrivateChatEngine(
         openingMessage: String? = null,
         directive: String? = null,
     ): PrivateChatSessionResult {
-        var pair = pairRepo.get(pairId) ?: return PrivateChatSessionResult.Skipped("配对不存在")
+        val (checkedPair, reason) = checkCanStart(pairId, initiatorCharacterId)
+        if (reason != null) return PrivateChatSessionResult.Skipped(reason)
+        val pair = checkedPair ?: return PrivateChatSessionResult.Skipped("配对不存在")
 
-        // v2.7 防御性校验：initiatorCharacterId 必须是该 pair 的 characterIdA/B 之一。
-        // 当前唯一调用点（PrivateChatSendTool）用 generatePairId(selfId, targetId) 生成
-        // pairId，天然满足这个约束，不会触发；但 runSession 是这个引擎唯一的公开入口，
-        // 接口本身不应该信任调用方一定传对——万一以后新增调用路径传错了 initiatorCharacterId
-        // （比如传了第三方角色的 id），当前代码会静默把它当成合法发言者塞进
-        // buildMessage/currentSpeaker，产出一条查不出破绽但语义错误的会话。
-        // 放在最前面、拿到 pair 后立刻检查，在任何风控判断和落库之前就短路掉非法请求。
-        if (initiatorCharacterId != pair.characterIdA && initiatorCharacterId != pair.characterIdB) {
-            return PrivateChatSessionResult.Skipped("发起者不属于该配对")
-        }
-
-        if (!pair.enabled) return PrivateChatSessionResult.Skipped("未开启")
-
-        // 跨天重置每日计数（验收项：跨天后 sessionsUsedToday 正确重置）
-        val now = System.currentTimeMillis()
-        if (PrivateChatPairRepository.isStaleDay(pair.usedTodayResetAt, now)) {
-            pairRepo.resetDailyCounter(pairId, now)
-            pair = pairRepo.get(pairId) ?: return PrivateChatSessionResult.Skipped("配对不存在")
-        }
-
-        if (pair.sessionsUsedToday >= pair.maxSessionsPerDay) return PrivateChatSessionResult.Skipped("今日次数已达上限")
-        if (!globalKillSwitchOff()) return PrivateChatSessionResult.Skipped("全局开关已关闭")
-        // v2.3 补充（对应 3.1.1 节）：冷却检查落实为真实代码，不再只是注释承诺。
-        if (System.currentTimeMillis() - pair.lastSessionAt < pair.cooldownMinutes * 60_000L) {
-            return PrivateChatSessionResult.Skipped("距上次会话不足冷却时间")
-        }
-
-        // 角色忠诚锁定·6.4：被追求角色已自主下线时，runSession 静默跳过生成。
-        // A 视角只是"发了消息对方一直没回"，不暴露明确的"已下线"状态提示
-        //（与方案零节"全程角色不知道自己被锁定"同一原则）。仅 owner 手动可恢复。
-        if (PrivateChatSessionStatus.fromStored(pair.characterDisconnectState)
-            == PrivateChatSessionStatus.DISCONNECTED_BY_CHARACTER) {
-            return PrivateChatSessionResult.Skipped("角色已下线")
-        }
-
-        val sessionId = UUID.randomUUID().toString()
-        var currentSpeaker = initiatorCharacterId
         val otherOf: (Int) -> Int = { if (it == pair.characterIdA) pair.characterIdB else pair.characterIdA }
-        var turnIndex = 0
-        var wrappedUp = false
         // 6.3：每个角色被持续施压的连续轮数计数器（中性消息插入清零）
         val pressureToward = mutableMapOf<Int, Int>()
-        var lastMessageContent: String? = null
         var disconnected = false
+        // 专项审查报告问题11：用户主动中止（kill switch / 配对开关关闭）会话的标志。
+        // 与 disconnected 区分——disconnected 表示"角色自主下线"（仍算正常聊完、计次数，
+        // 只是状态标 disconnected）；userAborted 表示"用户主动打断"，不按正常聊完处理。
+        var userAborted = false
 
-        // v2.3 补充（对应 3.2.1 节）：会话开场先落一条 in_progress 状态记录
-        sessionRepo.insert(PrivateChatSessionEntity(
-            sessionId = sessionId, pairId = pair.pairId,
-            startedAt = System.currentTimeMillis(), status = "in_progress",
-        ))
+        // 修复 #5：retry 重跑串号——Result.retry() 会让 WorkManager 重新完整调用
+        // doWork() → runSession()，此前每次都会生成全新 sessionId 并以
+        // isOpening=true 重新开场，导致：①A 的开场白在旧 interrupted session 和
+        // 新 session 里各出现一次（PrivateChatHistoryTool 按 pairId 查询、不按
+        // sessionId/status 过滤，两条都会展示给用户/LLM）；②旧 session 永久
+        // 停留在 interrupted，从未被清理或续接。
+        //
+        // 修复方式：runSession 开始时查一次"该 pairId 下是否有一个足够新鲜、
+        // 由同一个 initiatorCharacterId 发起、且已有消息记录的 interrupted
+        // session"——命中即判定为"这是一次 retry 重跑"，复用其 sessionId 续接
+        // （不重新生成 sessionId，不再走 isOpening=true 的开场分支），从已有
+        // 消息记录里推导 turnIndex/currentSpeaker/lastMessageContent。
+        //
+        // "同一个 initiatorCharacterId"判定：session 本身没有存 initiatorCharacterId
+        // 字段（不加字段、不做 migration，最小改动），改用"该 session 第一条
+        // 消息的 senderCharacterId"反推——开场白发送者就是当次 runSession 的
+        // initiatorCharacterId，这个事实在 completed/interrupted 场景下都成立。
+        //
+        // 时间窗口 10 分钟：WorkManager 的 EXPONENTIAL 退避从 30 秒起步，几次重试
+        // 也大概率在 10 分钟内；同时足够短，不会误续接"用户很久之前失败、现在又
+        // 重新主动发起一段全新私聊"的陈旧记录（那种场景应该重新开场，不该接上
+        // 一段几小时前的半截对话）。与 checkCanStart 里 in_progress 逾时豁免的
+        // 1 小时窗口是两个不同性质的判断，不复用同一个常量。
+        val resumeWindowMs = 10 * 60_000L
+        val now = System.currentTimeMillis()
+        val resumableSession = try {
+            sessionRepo.getAllByPair(pairId)
+                .filter { it.status == "interrupted" && (now - it.startedAt) < resumeWindowMs }
+                .sortedByDescending { it.startedAt }
+                .firstNotNullOfOrNull { candidate ->
+                    val msgs = messageRepo.getAllBySession(candidate.sessionId)
+                    val opener = msgs.firstOrNull()
+                    if (opener != null && opener.senderCharacterId == initiatorCharacterId) {
+                        candidate to msgs
+                    } else null
+                }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            ZLog.w(TAG, "runSession: 查询可续接 session 失败，本次按全新会话处理", e)
+            null
+        }
+
+        val sessionId: String
+        var currentSpeaker: Int
+        var turnIndex: Int
+        var lastMessageContent: String?
+
+        if (resumableSession != null) {
+            val (session, msgs) = resumableSession
+            sessionId = session.sessionId
+            val lastMsg = msgs.last()
+            currentSpeaker = lastMsg.senderCharacterId
+            turnIndex = msgs.size
+            lastMessageContent = lastMsg.content
+            ZLog.w(TAG, "私聊 retry 续接：复用 sessionId=$sessionId, 已有 ${msgs.size} 条消息, 从 turnIndex=$turnIndex 继续")
+            // 续接场景下这次调用不会走"落一条新 in_progress 记录"的分支——
+            // 复用的 session 行已经存在（当前是 interrupted），改回 in_progress
+            // 即可，不能再 insert 一条新行（sessionId 主键会冲突/覆盖，且语义上
+            // 这本来就是同一场会话的延续，不是两场）。
+            sessionRepo.markResumed(sessionId)
+        } else {
+            sessionId = UUID.randomUUID().toString()
+            currentSpeaker = initiatorCharacterId
+            turnIndex = 0
+            lastMessageContent = null
+            // v2.3 补充（对应 3.2.1 节）：会话开场先落一条 in_progress 状态记录
+            sessionRepo.insert(PrivateChatSessionEntity(
+                sessionId = sessionId, pairId = pair.pairId,
+                startedAt = System.currentTimeMillis(), status = "in_progress",
+            ))
+        }
+
+        var wrappedUp = false
 
         try {
-            val firstOutcome = generateReply(
-                pair, currentSpeaker, otherOf(currentSpeaker), sessionId,
-                isOpening = true, pressureCount = 0,
-                directive = directive, isInitiatorTurn = true,
-            )
-            val firstContent = openingMessage ?: firstOutcome.displayText
-            messageRepo.insert(buildMessage(pair.pairId, currentSpeaker, firstContent, sessionId, turnIndex, "manual"))
-            lastMessageContent = firstContent
-            turnIndex++
+            if (resumableSession == null) {
+                val firstOutcome = generateReply(
+                    pair, currentSpeaker, otherOf(currentSpeaker), sessionId,
+                    isOpening = true, pressureCount = 0,
+                    directive = directive, isInitiatorTurn = true,
+                )
+                val firstContent = openingMessage ?: firstOutcome.displayText
+                messageRepo.insert(buildMessage(pair.pairId, currentSpeaker, firstContent, sessionId, turnIndex, "manual"))
+                lastMessageContent = firstContent
+                turnIndex++
+            }
 
             // 事件驱动核心：本轮消息落库后，直接（同步）调用对方的处理
             while (turnIndex < pair.maxTurnsPerSession && !wrappedUp && !disconnected) {
+                // 修复：循环内检查全局 kill switch 和配对开关，使用户能中途中止
+                // 正在进行的私聊。此前 kill switch 和 enabled 仅在 runSession 入口检查
+                // 一次，进入循环后用户关闭开关无法停止已开始的会话——用户完全失去控制权。
+                if (!globalKillSwitchOff()) {
+                    ZLog.w(TAG, "私聊被全局开关中止: pairId=$pairId, turn=$turnIndex")
+                    // 专项审查报告问题11：用户主动中止不能按"正常聊完"处理——
+                    // 只标记被用户打断，不标 completed、不计每日次数、不生成记忆。
+                    userAborted = true
+                    break
+                }
+                val currentPair = pairRepo.get(pairId)
+                if (currentPair == null || !currentPair.enabled) {
+                    ZLog.w(TAG, "私聊被配对开关中止: pairId=$pairId, turn=$turnIndex")
+                    userAborted = true
+                    break
+                }
+
                 val speakerNow = otherOf(currentSpeaker)
                 // 6.3 施压检测：对"上一条发给 speakerNow 的消息"做独立分类（不复用机制一，
                 // 判断维度不同）。命中 +1、未命中清零。
@@ -248,7 +409,9 @@ class PrivateChatEngine(
         // 门槛 turnIndex >= 2：至少一次开场 + 一次回应才算"发生过一次真实交流"，
         // 单方开场没人回（异常/被跳过之外的正常收尾场景不会出现，但防御性保留）
         // 不值得生成记忆。
-        if (turnIndex >= 2) {
+        // 专项审查报告问题11：用户主动中止的会话不生成记忆——对话被半途打断，
+        // 不构成一次值得双方"记住"的完整交流，强行生成会污染角色记忆。
+        if (turnIndex >= 2 && !userAborted) {
             generatePrivateChatMemories(pair, sessionId, pair.characterIdA, pair.characterIdB)
         }
 
@@ -260,7 +423,11 @@ class PrivateChatEngine(
         // 和导出文件里都会看到一段"正常聊完"的对话，看不出对方其实是被中断的。
         // 这里按 disconnected 标志分流到 markDisconnectedAtomic，两个方法内部都会
         // 做 pair 计数 +1（占用一次"今日次数"的事实不变，只是 session 状态不同）。
-        if (disconnected) {
+        // 专项审查报告问题11：用户主动中止走 interrupted（不计数、不误标 completed），
+        // 与"角色自主下线"（disconnected，仍算占一次次数）区分开。
+        if (userAborted) {
+            sessionRepo.markInterrupted(sessionId, turnIndex, errorMessage = "user_aborted")
+        } else if (disconnected) {
             sessionAndPairDao.markDisconnectedAtomic(sessionId, pairId, turnIndex)
         } else {
             sessionAndPairDao.completeSessionAtomic(sessionId, pairId, turnIndex)
@@ -314,14 +481,19 @@ class PrivateChatEngine(
             "$speakerLabel：${msg.content}"
         }
 
+        // 修复：摘要从 100 字提升到 300 字，要求包含更多实质内容
+        // （聊了什么话题、对方的态度、达成的共识或分歧、你的感受）。
+        // 此前 100 字太简略，即使记忆被检索到，角色也只能回忆起模糊印象，
+        // 无法回答用户"你们具体聊了什么"的追问。
         val sys = "你是「${self.name}」，刚和「${other.name}」私下聊完一段对话（对方不是你的主人，" +
             "是另一个角色）。用第一人称、你自己的口吻，把这段对话在你记忆里会留下的印象" +
-            "总结成一两句话（100字以内），只写你会记住的实质内容（聊了什么、对方给你的感受），" +
-            "不要客套开场白，不要复述对话原文。"
+            "总结成一段话（300字以内），要包含实质内容：聊了什么话题、对方的态度如何、" +
+            "有没有达成什么共识或者产生分歧、你对此的感受。不要客套开场白，不要逐字复述对话原文。"
         val summary = runCatching {
             provider.chatSyncWithRetry(
                 listOf(LLMMessage("user", transcriptText)), sys,
-                LLMConfig(model = "", maxTokens = 200, temperature = 0.7f, stream = false),
+                // 修复：maxTokens 从 200 提升到 500，匹配 300 字摘要需求
+                LLMConfig(model = "", maxTokens = 500, temperature = 0.7f, stream = false),
             ).trim()
         }.getOrNull()
         if (summary.isNullOrBlank()) return
@@ -333,7 +505,12 @@ class PrivateChatEngine(
                 characterId    = selfId,
                 domain         = MemoryDomain.WORLD.name,
                 content        = summary.take(500),
-                importance     = 2,
+                // 修复：importance 从 2 提升到 4。
+                // searchRelevantWithRouting 按 importance DESC 排序，limit=8。
+                // importance=2 的私聊记忆排在最底部，几乎永远被截断、检索不到。
+                // 提升到 4 后，私聊记忆能排在中等优先级，当用户提到对方角色名时
+                // 能被 L2 tag 搜索或 L1 FTS 搜索命中并实际注入到 prompt 中。
+                importance     = 4,
                 keywords       = other.name,
                 sourceEventId  = "private_chat:${pair.pairId}:$sessionId",
                 createdAt      = now,
@@ -400,10 +577,26 @@ class PrivateChatEngine(
         // 自行脑补亲密关系，实测偏向默认成恋人）的根因，必须显式声明未知状态。
         // 注：只接头衔文本，不接 RelationshipEngine 数值快照（2.1 节双向隔离，见类注释）。
         val interCharTitle = titleRelationRepo.getTitle(speakerId, listenerId)
-        val interCharRelBlock = if (!interCharTitle.isNullOrBlank()) {
-            "【你与对方的关系】对方是「${listener.name}」，你认她做「${interCharTitle}」，请按这层关系的分寸对待她。"
+        // 性别认知修复：此前只靠"她"这个代词暗示对方性别，且 listener 自己 persona
+        // 里"我是XX，女性"这句话从未注入到 speaker 的 prompt 里——speaker 对 listener
+        // 的性别没有任何正面依据。这里从 listener.persona 里提取性别词并正面声明，
+        // 消除对代词的依赖；提取不到时不强行声明，避免瞎猜出错。
+        val listenerGenderLabel = when {
+            // 预存在修复：persona 在 CharacterConfig.identityConfig（CharacterIdentity）上，
+            // 原代码直接 listener.persona 编译不过（CharacterConfig 无 persona 字段）。
+            listener.identityConfig.persona.contains("女性") -> "女性"
+            listener.identityConfig.persona.contains("男性") -> "男性"
+            else -> null
+        }
+        val listenerGenderClause = if (listenerGenderLabel != null) {
+            "对方是${listenerGenderLabel}，"
         } else {
-            "【你与对方的关系】对方是「${listener.name}」，你们还没有明确的关系认定，" +
+            ""
+        }
+        val interCharRelBlock = if (!interCharTitle.isNullOrBlank()) {
+            "【你与对方的关系】对方是「${listener.name}」，${listenerGenderClause}你认${if (listenerGenderLabel == "男性") "他" else "她"}做「${interCharTitle}」，请按这层关系的分寸对待${if (listenerGenderLabel == "男性") "他" else "她"}。"
+        } else {
+            "【你与对方的关系】对方是「${listener.name}」，${listenerGenderClause}你们还没有明确的关系认定，" +
                 "以陌生/初识的分寸对待，不要预设亲密关系（不是恋人，不是家人）。"
         }
 

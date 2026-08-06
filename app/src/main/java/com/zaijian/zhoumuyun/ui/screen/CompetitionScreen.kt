@@ -15,17 +15,29 @@ import androidx.compose.foundation.verticalScroll
 import com.zaijian.zhoumuyun.ui.component.DetailTopBar
 import com.zaijian.zhoumuyun.ui.component.EmptyStateView
 import com.zaijian.zhoumuyun.ui.design.WorldCard
+import com.zaijian.zhoumuyun.ui.design.GoldPrimaryButton
+import com.zaijian.zhoumuyun.ui.design.SecondaryGoldButton
+import com.zaijian.zhoumuyun.ui.design.GhostGoldButton
+import com.zaijian.zhoumuyun.ui.design.DangerVelvetButton
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSavedStateRegistryOwner
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import java.time.Instant
+import java.time.YearMonth
+import java.time.ZoneId
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle // P1-11-2
 import com.zaijian.zhoumuyun.data.model.CharacterConfig
@@ -206,17 +218,19 @@ fun CompetitionScreen(
             title = { Text("取消这轮竞赛？") },
             text  = { Text("取消后这轮竞赛将无法继续（不能再重试或结算），且无法恢复。已收集的作品和打分记录仍会保留，仅供查看。") },
             confirmButton = {
-                TextButton(onClick = {
-                    showCancelConfirmDialog = false
-                    if (roundIdToCancel != null) viewModel.cancelRound(roundIdToCancel)
-                }) {
-                    Text("确认取消", color = Palette.TaskFailed)
-                }
+                DangerVelvetButton(
+                    text = "确认取消",
+                    onClick = {
+                        showCancelConfirmDialog = false
+                        if (roundIdToCancel != null) viewModel.cancelRound(roundIdToCancel)
+                    },
+                )
             },
             dismissButton = {
-                TextButton(onClick = { showCancelConfirmDialog = false }) {
-                    Text("再想想")
-                }
+                GhostGoldButton(
+                    text = "再想想",
+                    onClick = { showCancelConfirmDialog = false },
+                )
             },
         )
     }
@@ -224,7 +238,34 @@ fun CompetitionScreen(
 
 // ─────────────────────────────────────────────────────────────
 //  列表层
+//
+//  UI 升级 v2.0 帧16：编年体分组 —— 列表层按年月分组展示，
+//  每组以 sticky header 标注"2026年8月"等时间标签，组内按
+//  创建时间倒序排列。编年体（annalistic）即以时间为经、事件
+//  为纬，让用户快速定位"哪个月做了哪些竞赛"。
 // ─────────────────────────────────────────────────────────────
+
+private data class ChronologicalGroup(
+    val label: String,
+    val rounds: List<com.zaijian.zhoumuyun.data.db.entity.CompetitionRoundEntity>,
+)
+
+private fun groupRoundsChronologically(
+    rounds: List<com.zaijian.zhoumuyun.data.db.entity.CompetitionRoundEntity>,
+): List<ChronologicalGroup> {
+    val zone = ZoneId.systemDefault()
+    return rounds
+        .groupBy { round ->
+            YearMonth.from(Instant.ofEpochMilli(round.createdAt).atZone(zone))
+        }
+        .toSortedMap(reverseOrder())
+        .map { (ym, rs) ->
+            ChronologicalGroup(
+                label  = "${ym.year}年${ym.monthValue}月",
+                rounds = rs.sortedByDescending { it.createdAt },
+            )
+        }
+}
 
 @Composable
 private fun CompetitionListContent(
@@ -256,6 +297,8 @@ private fun CompetitionListContent(
         return
     }
 
+    val groups = remember(rounds) { groupRoundsChronologically(rounds) }
+
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(
@@ -264,8 +307,34 @@ private fun CompetitionListContent(
         ),
         verticalArrangement = Arrangement.spacedBy(Spacing.sm),
     ) {
-        items(rounds, key = { it.id }) { round ->
-            RoundSummaryCard(round = round, onClick = { onSelect(round.id) })
+        groups.forEach { group ->
+            // ── 编年体分组标题 ──────────────────────────────
+            // 金色衬线标题 + 底部 1px 金线，构成"编年"视觉锚点。
+            item(key = "header_${group.label}") {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = Spacing.xs),
+                ) {
+                    Text(
+                        text       = group.label,
+                        style      = type.cardTitle.copy(fontWeight = FontWeight.SemiBold),
+                        color      = Palette.Gold,
+                        textAlign  = TextAlign.Start,
+                    )
+                    Spacer(Modifier.height(2.dp))
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(0.5.dp)
+                            .background(Palette.GoldLine),
+                    )
+                }
+            }
+            // ── 组内轮次列表 ────────────────────────────────
+            items(group.rounds, key = { it.id }) { round ->
+                RoundSummaryCard(round = round, onClick = { onSelect(round.id) })
+            }
         }
     }
 }
@@ -451,42 +520,18 @@ private fun LaunchRoundDialog(
                 && selectedParticipantIds.isNotEmpty()
                 && !isLoading
 
-            Button(
-                onClick  = {
-                    if (canConfirm) {
-                        onConfirm(
-                            topic.trim(),
-                            selectedJudgeId!!,
-                            selectedParticipantIds.toList(),
-                        )
-                    }
-                },
-                enabled  = canConfirm,
-                colors   = ButtonDefaults.buttonColors(
-                    containerColor = colors.accent,
-                    contentColor   = colors.bgBase,
-                ),
-            ) {
-                if (isLoading) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(16.dp),
-                        strokeWidth = 2.dp,
-                        color = colors.bgBase,
-                    )
-                    Spacer(Modifier.width(Spacing.xs))
-                    Text("发起中…")
-                } else {
-                    Text("发起竞赛")
-                }
-            }
+            GoldPrimaryButton(
+                text    = if (isLoading) "发起中…" else "发起竞赛",
+                onClick = { if (canConfirm) { onConfirm(topic.trim(), selectedJudgeId!!, selectedParticipantIds.toList()) } },
+                modifier = Modifier.fillMaxWidth().alpha(if (canConfirm) 1f else 0.4f),
+            )
         },
         dismissButton = {
-            TextButton(
-                onClick  = onDismiss,
-                enabled  = !isLoading,
-            ) {
-                Text("取消", color = colors.textSecondary)
-            }
+            GhostGoldButton(
+                text = "取消",
+                onClick = { if (!isLoading) onDismiss() },
+                modifier = Modifier.alpha(if (!isLoading) 1f else 0.4f),
+            )
         },
     )
 }
@@ -545,16 +590,10 @@ private fun CharacterPickerRow(
                 )
                 // 查看/训练标准按钮（仅选中时显示）
                 if (isSelected) {
-                    TextButton(
-                        onClick      = { onViewProfile(char.id) },
-                        contentPadding = PaddingValues(horizontal = Spacing.xs, vertical = 0.dp),
-                    ) {
-                        Text(
-                            text  = "查看/训练标准",
-                            style = type.caption,
-                            color = colors.accent,
-                        )
-                    }
+                    SecondaryGoldButton(
+                        text = "查看/训练标准",
+                        onClick = { onViewProfile(char.id) },
+                    )
                 }
             }
         }
@@ -715,14 +754,28 @@ internal fun CompetitionDetailContent(
             // （App 崩溃后重启，状态卡在 JUDGING）+ 已有参赛条目 + 当前不在
             // loading 中。四个状态统一交给 ViewModel.retryRound 按状态分派
             // 到 runCollecting 或 runJudging。
-            val canRetry = (round.status == STATUS_COLLECTING
-                || round.status == STATUS_COLLECTING_IN_PROGRESS
-                || round.status == STATUS_COLLECTED
+            // 修复：entries.isNotEmpty() 曾统一套用在全部四个状态上，但
+            // COLLECTING/COLLECTING_IN_PROGRESS 走的是 retryCollecting→
+            // runCollecting，而 runCollecting 的状态守卫只看 round.status，
+            // 并不要求已有 entries（重新生成作品前 entries 本就可能是空的，
+            // 例如上一轮全体生成失败）。若仍要求 entries.isNotEmpty()，
+            // 恰恰是"最需要重试"的这种全军覆没场景会被挡在按钮之外，用户
+            // 除了取消没有别的路可走。COLLECTED/JUDGING 走的是 retryJudging→
+            // runJudging，评审确实需要已有作品，这两个状态保留原有条件。
+            val canRetryCollecting = (round.status == STATUS_COLLECTING
+                || round.status == STATUS_COLLECTING_IN_PROGRESS) && !isLoading
+            val canRetryJudging = (round.status == STATUS_COLLECTED
                 || round.status == STATUS_JUDGING)
                 && entries.isNotEmpty() && !isLoading
+            val canRetry = canRetryCollecting || canRetryJudging
             if (canRetry) {
                 item {
-                    RetryJudgingBanner(onRetry = { onRetryRound(round.id, round.status) })
+                    RetryJudgingBanner(
+                        // entries 为空时说明上一轮生成全部失败，用更准确的文案
+                        // 提示"需要重新生成"，而不是沿用"作品已收集完毕"的误导性文案
+                        entriesEmpty = entries.isEmpty(),
+                        onRetry = { onRetryRound(round.id, round.status) },
+                    )
                 }
             }
 
@@ -744,6 +797,37 @@ internal fun CompetitionDetailContent(
                     .mapIndexed { index, e -> e.id to (index + 1) }
                     .toMap()
             } else emptyMap()
+
+            // ── 拱形领奖台（帧16）──────────────────────────────
+            // COMPLETED 时取前三名构造 PodiumEntry 列表，传给 ArchPodium。
+            // 角色名/色解析与下方 EntryCard 内一致（DefaultCharacters →
+            // daughterCharacters → 占位符），确保领奖台与卡片显示同名。
+            //
+            // 注意：此处不能使用 remember()——LazyColumn 的 content lambda
+            // 是 LazyListScope（非 @Composable 作用域），remember 是
+            // @Composable 函数，在 LazyListScope 中调用会编译报错。
+            // 与上方 rankMap 同理，直接用 val 计算即可（数据量小，无性能问题）。
+            val podiumEntries: List<PodiumEntry> = if (round.status == STATUS_COMPLETED && rankMap.isNotEmpty()) {
+                rankMap.entries
+                    .sortedBy { it.value }
+                    .take(3)
+                    .mapNotNull { (entryId, rank) ->
+                        val entry = entries.find { it.id == entryId } ?: return@mapNotNull null
+                        val name = DefaultCharacters.find { it.id == entry.characterId }?.name
+                            ?: daughterCharacters.find { it.id == entry.characterId }?.name
+                            ?: "角色 #${entry.characterId}"
+                        val color = DefaultCharacters.find { it.id == entry.characterId }?.accentColor
+                            ?: daughterCharacters.find { it.id == entry.characterId }?.accentColor
+                            ?: Palette.Gold
+                        PodiumEntry(entry = entry, name = name, color = color, rank = rank)
+                    }
+            } else emptyList()
+
+            if (podiumEntries.isNotEmpty()) {
+                item(key = "arch_podium") {
+                    ArchPodium(podiumEntries = podiumEntries)
+                }
+            }
 
             items(entries, key = { it.id }) { entry ->
                 // Audit-v1.33 P1-1 修复：补充女儿角色回退查找。此前仅查 DefaultCharacters，
@@ -788,43 +872,27 @@ internal fun CompetitionDetailContent(
                         vertical   = Spacing.md,
                     ),
             ) {
-                Button(
-                    onClick  = { onFinalize(round.id) },
-                    enabled  = !isLoading,
+                GoldPrimaryButton(
+                    text    = if (isLoading) "结算中…" else "提交并结算",
+                    onClick = { onFinalize(round.id) },
                     modifier = Modifier.fillMaxWidth(),
-                    colors   = ButtonDefaults.buttonColors(
-                        containerColor = colors.accent,
-                        contentColor   = colors.bgBase,
-                    ),
-                ) {
-                    if (isLoading) {
-                        CircularProgressIndicator(
-                            modifier    = Modifier.size(16.dp),
-                            strokeWidth = 2.dp,
-                            color       = colors.bgBase,
-                        )
-                        Spacer(Modifier.width(Spacing.xs))
-                        Text("结算中…")
-                    } else {
-                        Icon(AppIcons.EmojiEvents, contentDescription = null)
-                        Spacer(Modifier.width(Spacing.xs))
-                        Text("提交并结算")
-                    }
-                }
+                )
             }
         }
     }
 }
 
 // ─────────────────────────────────────────────────────────────
-//  重试评审横幅（P0-2 修复）
-//  仅在 status==COLLECTING && entries.isNotEmpty() && !isLoading 时显示。
-//  runJudging 失败后状态回退到 COLLECTING（Manager 层已保证），
-//  此横幅给用户一个明确的操作入口，而不是让"收集中"转圈永远不停。
+//  重试横幅（P0-2 修复；修复：entries 为空场景改用不同文案/按钮字样）
+//  status==COLLECTING/COLLECTING_IN_PROGRESS/COLLECTED/JUDGING 之一
+//  && !isLoading 时显示（entries 是否为空只影响文案，见 canRetryCollecting/
+//  canRetryJudging 的调用处）。runJudging 失败后状态回退到 COLLECTING
+//  （Manager 层已保证），此横幅给用户一个明确的操作入口，而不是让
+//  "收集中"转圈永远不停。
 // ─────────────────────────────────────────────────────────────
 
 @Composable
-private fun RetryJudgingBanner(onRetry: () -> Unit) {
+private fun RetryJudgingBanner(entriesEmpty: Boolean = false, onRetry: () -> Unit) {
     val colors = ZaijianTheme.colors
     val type   = ZaijianTheme.typography
 
@@ -845,17 +913,18 @@ private fun RetryJudgingBanner(onRetry: () -> Unit) {
             modifier           = Modifier.size(16.dp),
         )
         Text(
-            text     = "裁判评审未能完成，作品已收集完毕，可重新发起评审。",
+            text     = if (entriesEmpty)
+                "作品未能生成，可重新发起收集。"
+            else
+                "裁判评审未能完成，作品已收集完毕，可重新发起评审。",
             style    = type.caption,
             color    = colors.textSecondary,
             modifier = Modifier.weight(1f),
         )
-        TextButton(
+        SecondaryGoldButton(
+            text = if (entriesEmpty) "重新收集" else "重试评审",
             onClick = onRetry,
-            colors  = ButtonDefaults.textButtonColors(contentColor = Palette.TaskFailed),
-        ) {
-            Text("重试评审", style = type.caption.copy(fontWeight = FontWeight.Medium))
-        }
+        )
     }
 }
 
@@ -902,6 +971,182 @@ private fun RoundStatusBanner(status: String, isLoading: Boolean) {
             style = type.caption,
             color = colors.textSecondary,
         )
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+//  ArchPodium — 拱形领奖台（帧16）
+//
+//  UI 升级 v2.0 帧16：竞赛结算后以拱形领奖台展示前三名，
+//  中心最高（冠军）、左次高（亚军）、右最低（季军），
+//  构成"拱形"视觉轮廓。领奖台底座使用金色渐变，与方案
+//  GoldGradient 135° 三段一致；名次数字用衬线大字号，
+//  呼应方案"金数字"设计语言。
+// ─────────────────────────────────────────────────────────────
+
+private data class PodiumEntry(
+    val entry: com.zaijian.zhoumuyun.data.db.entity.CompetitionEntryEntity,
+    val name: String,
+    val color: Color,
+    val rank: Int,
+)
+
+@Composable
+private fun ArchPodium(podiumEntries: List<PodiumEntry>) {
+    if (podiumEntries.isEmpty()) return
+
+    val colors = ZaijianTheme.colors
+    val type   = ZaijianTheme.typography
+
+    WorldCard(
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(Spacing.cardPadding),
+            verticalArrangement = Arrangement.spacedBy(Spacing.sm),
+        ) {
+            // ── 标题行 ──────────────────────────────────────
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector        = AppIcons.EmojiEvents,
+                    contentDescription = null,
+                    tint               = Palette.Gold,
+                    modifier           = Modifier.size(18.dp),
+                )
+                Spacer(Modifier.width(Spacing.xs))
+                Text(
+                    text  = "领奖台",
+                    style = type.cardTitle,
+                    color = colors.textPrimary,
+                )
+            }
+
+            // ── 拱形领奖台主体 ──────────────────────────────
+            // 排列：亚军(左, 中等高) · 冠军(中, 最高) · 季军(右, 最低)
+            // 用 Row + Alignment.Bottom 让三个底座底部对齐，
+            // 高度差形成"拱形"轮廓（中间凸起、两侧递降）。
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = Spacing.sm),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.Bottom,
+            ) {
+                // 亚军（第2名）— 左侧
+                if (podiumEntries.size >= 2) {
+                    PodiumStep(
+                        podiumEntry = podiumEntries[1],
+                        stepHeight  = 72.dp,
+                        isChampion  = false,
+                        modifier    = Modifier.weight(1f),
+                    )
+                } else {
+                    Spacer(Modifier.weight(1f))
+                }
+
+                Spacer(Modifier.width(Spacing.sm))
+
+                // 冠军（第1名）— 中央，最高
+                PodiumStep(
+                    podiumEntry = podiumEntries[0],
+                    stepHeight  = 108.dp,
+                    isChampion  = true,
+                    modifier    = Modifier.weight(1f),
+                )
+
+                Spacer(Modifier.width(Spacing.sm))
+
+                // 季军（第3名）— 右侧
+                if (podiumEntries.size >= 3) {
+                    PodiumStep(
+                        podiumEntry = podiumEntries[2],
+                        stepHeight  = 52.dp,
+                        isChampion  = false,
+                        modifier    = Modifier.weight(1f),
+                    )
+                } else {
+                    Spacer(Modifier.weight(1f))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PodiumStep(
+    podiumEntry: PodiumEntry,
+    stepHeight: Dp,
+    isChampion: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val colors = ZaijianTheme.colors
+    val type   = ZaijianTheme.typography
+
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        // ── 角色名 ──────────────────────────────────────
+        Text(
+            text       = podiumEntry.name,
+            style      = type.caption.copy(fontWeight = FontWeight.Medium),
+            color      = colors.textPrimary,
+            maxLines   = 1,
+            overflow   = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+            textAlign  = TextAlign.Center,
+            modifier   = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(Spacing.xs))
+
+        // ── 综合分 ──────────────────────────────────────
+        Text(
+            text  = "%.1f".format(podiumEntry.entry.compositeScore),
+            style = type.cardTitle.copy(
+                fontSize   = if (isChampion) 20.sp else 16.sp,
+                fontWeight = FontWeight.Bold,
+            ),
+            color = if (isChampion) Palette.Gold else colors.textSecondary,
+        )
+        Spacer(Modifier.height(Spacing.xs))
+
+        // ── 领奖台底座（金色渐变矩形 + 名次数字）──────────
+        // 冠军底座用三段金渐变（GoldBright→Gold→GoldDeep），
+        // 亚军/季军底座用淡金渐变（Gold@55%→GoldDeep@40%），
+        // 视觉上冠军明显更亮，呼应"金数字"设计语言。
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(stepHeight)
+                .clip(RoundedCornerShape(topStart = 6.dp, topEnd = 6.dp))
+                .drawBehind {
+                    drawRect(
+                        brush = Brush.linearGradient(
+                            colors = if (isChampion) {
+                                listOf(Palette.GoldBright, Palette.Gold, Palette.GoldDeep)
+                            } else {
+                                listOf(
+                                    Palette.Gold.copy(alpha = 0.55f),
+                                    Palette.GoldDeep.copy(alpha = 0.40f),
+                                )
+                            },
+                            start = androidx.compose.ui.geometry.Offset(0f, 0f),
+                            end   = androidx.compose.ui.geometry.Offset(size.width, size.height),
+                        ),
+                    )
+                },
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                text  = "${podiumEntry.rank}",
+                style = type.titleBold.copy(
+                    fontSize   = if (isChampion) 36.sp else 28.sp,
+                    fontWeight = FontWeight.Bold,
+                ),
+                color = Color.White.copy(alpha = if (isChampion) 0.95f else 0.7f),
+            )
+        }
     }
 }
 

@@ -7,8 +7,6 @@ package com.zaijian.zhoumuyun.data.agent
  *   RuleConflictCheckTool — 规则冲突检查（rule_conflict_check）
  *   SessionCompareTool    — Session 横向对比（session_compare）
  *   ProgressReportTool    — 进度报告生成（progress_report）
- *   AgentMessageTool      — Agent 间消息传递（agent_message）
- *   RoundtableTriggerTool — 触发圆桌讨论（roundtable_trigger）
  *   TaskDelegateTool      — 任务委派（task_delegate）
  *   WikiFetchTool         — Wikipedia 知识获取（wiki_fetch）
  *   ArxivSearchTool       — ArXiv 论文检索（arxiv_search）
@@ -524,156 +522,6 @@ $rulesSummary
 }
 
 // ═════════════════════════════════════════════════════════════
-//  ㉓ AgentMessageTool — 向另一角色发送异步消息
-// ═════════════════════════════════════════════════════════════
-
-/**
- * 角色间异步消息工具。
- *
- * 标签格式：
- *   <tool:agent_message to_character_id="{角色ID}" content="{消息内容}"/>
- *
- * 实现：
- *   将消息以 source="agent_collab" 写入 MessageEntity（对接收方的消息流），
- *   接收方在下次进入对话时会看到这条系统消息。
- *   不依赖 RoundtableRepository，走 MessageRepository 薄包装操作消息表，保持解耦。
- *
- * 接收方下次进入对话时，ChatViewModel 会读取未读的 agent_collab 消息并作为上下文注入。
- */
-class AgentMessageTool(
-    private val messageDao:          MessageRepository,
-    private val characterIdProvider: () -> Int,
-) : AgentTool {
-
-    override val name      = "agent_message"
-    override val description = "向另一个角色发送异步消息，对方下次对话时会看到"
-    override val usageNotes = "to_character_id 必须是整数角色 ID，非角色名"
-    override val paramKeys = listOf("to_character_id", "content")
-
-    override suspend fun execute(params: Map<String, String>): ToolResult =
-        withContext(Dispatchers.IO) {
-            val toCharId = params["to_character_id"]?.toIntOrNull()
-            val content  = params["content"]?.trim()
-            val fromId   = params["__character_id"]?.toIntOrNull() ?: characterIdProvider()
-
-            if (toCharId == null) {
-                return@withContext ToolResult(name, false, "", "需要 to_character_id 参数（整数角色 ID）")
-            }
-            if (content.isNullOrEmpty()) {
-                return@withContext ToolResult(name, false, "", "需要 content 参数")
-            }
-            if (fromId < 0) {
-                return@withContext ToolResult(name, false, "", "发送方角色未初始化")
-            }
-            if (toCharId == fromId) {
-                return@withContext ToolResult(name, false, "不能向自己发送消息", "self-message")
-            }
-
-            return@withContext try {
-                // 写入一条 role="system" 的消息到接收方消息流
-                // 格式前缀 [AGENT_MSG:fromId] 用于 ChatViewModel 识别并作为异步上下文注入
-                val msgEntity = com.zaijian.zhoumuyun.data.db.entity.MessageEntity(
-                    id          = UUID.randomUUID().toString(),
-                    characterId = toCharId,
-                    role        = "system",
-                    content     = "[AGENT_MSG:$fromId] $content",
-                    createdAt   = System.currentTimeMillis(),
-                )
-                messageDao.insert(msgEntity)
-                ToolResult(
-                    toolName = name,
-                    success  = true,
-                    content  = "消息已发送给角色 $toCharId，对方在下次对话时将看到此消息。",
-                    userHint = "正在发送消息…",
-                )
-            } catch (e: kotlinx.coroutines.CancellationException) {
-                throw e
-            } catch (e: Throwable) {
-                toolFailure(name, "消息发送失败，请稍后重试。", "agent_message_failed", e)
-            }
-        }
-}
-
-// ═════════════════════════════════════════════════════════════
-//  ㉔ RoundtableTriggerTool — 主动发起圆桌讨论
-// ═════════════════════════════════════════════════════════════
-
-/**
- * 主动发起圆桌工具。
- *
- * 标签格式：
- *   <tool:roundtable_trigger topic="{议题}" participant_ids="{角色ID列表，逗号分隔，可选}"/>
- *
- * 实现：
- *   在 message DB 中写入一条 source="roundtable_trigger" 的系统消息，
- *   ChatViewModel / AppNavigation 通过 observeRoundtableTrigger() 检测该消息后自动导航到圆桌界面。
- *   此工具不直接操作 UI，通过 DB 事件驱动导航（与 Android ViewModel 架构兼容）。
- *
- * participant_ids 未填时由圆桌界面使用默认全员参与。
- */
-class RoundtableTriggerTool(
-    private val messageDao:          MessageRepository,
-    private val characterIdProvider: () -> Int,
-) : AgentTool {
-
-    override val name      = "roundtable_trigger"
-    // P1 修复（批次2审查报告问题1/2）：原 description 太薄，没说 participant_ids 是
-    // 逗号分隔的角色ID列表、可留空，也没说 topic 含引号时如何转义，容易导致 topic 被
-    // ToolParser 静默截断（见 ToolParser.kt detectUnescapedQuoteTruncation 的说明）。
-    override val description = "主动发起多角色圆桌讨论，用于「叫大家一起聊聊」这类场景"
-    override val usageNotes = "participant_ids 为逗号分隔的角色ID列表，留空表示全员参与；topic 若本身含双引号，需写成转义形式 \\\"，否则内容会在该处被截断"
-    override val paramKeys = listOf("topic", "participant_ids")
-
-    override suspend fun execute(params: Map<String, String>): ToolResult =
-        withContext(Dispatchers.IO) {
-            val topic          = params["topic"]?.trim()
-            val participantIds = params["participant_ids"]?.trim() ?: ""
-            val fromId         = params["__character_id"]?.toIntOrNull() ?: characterIdProvider()
-
-            if (topic.isNullOrEmpty()) {
-                return@withContext ToolResult(name, false, "", "需要 topic 参数")
-            }
-            // P3审查批次3修复：原先无 fromId < 0 检查，角色未初始化（fromId=-1）时
-            // 用 coerceAtLeast(0) 静默降级为角色ID 0 写入消息，可能关联到无效角色。
-            // 与 agent_message 的检查方式对齐，改为显式报错而非静默降级。
-            if (fromId < 0) {
-                return@withContext ToolResult(name, false, "", "角色未初始化")
-            }
-
-            return@withContext try {
-                // 构建触发内容，AppNavigation 监听此类消息并路由到圆桌
-                val triggerContent = org.json.JSONObject().apply {
-                    put("action",          "roundtable_start")
-                    put("topic",           topic)
-                    put("initiatorId",     fromId)
-                    put("participantIds",  participantIds)
-                }.toString()
-
-                val msgEntity = com.zaijian.zhoumuyun.data.db.entity.MessageEntity(
-                    id          = UUID.randomUUID().toString(),
-                    characterId = fromId,
-                    role        = "system",
-                    content     = "[ROUNDTABLE_TRIGGER] $triggerContent",
-                    createdAt   = System.currentTimeMillis(),
-                )
-                messageDao.insert(msgEntity)
-
-                val participantDesc = if (participantIds.isNotEmpty()) "（参与者：$participantIds）" else "（全员参与）"
-                ToolResult(
-                    toolName = name,
-                    success  = true,
-                    content  = "圆桌讨论已发起，议题：$topic$participantDesc",
-                    userHint = "正在发起圆桌…",
-                )
-            } catch (e: kotlinx.coroutines.CancellationException) {
-                throw e
-            } catch (e: Throwable) {
-                toolFailure(name, "圆桌发起失败，请稍后重试。", "roundtable_trigger_failed", e)
-            }
-        }
-}
-
-// ═════════════════════════════════════════════════════════════
 //  ㉕ TaskDelegateTool — 任务委托多个角色
 // ═════════════════════════════════════════════════════════════
 
@@ -1008,14 +856,6 @@ fun AgentToolRegistry.registerAgentMetaTools(
             goalDao             = goalDao,
             memoryDao           = memoryDao,
             fileExportTool      = fileExport,
-            characterIdProvider = { -1 },
-        ),
-        AgentMessageTool(
-            messageDao          = messageDao,
-            characterIdProvider = { -1 },
-        ),
-        RoundtableTriggerTool(
-            messageDao          = messageDao,
             characterIdProvider = { -1 },
         ),
         TaskDelegateTool(

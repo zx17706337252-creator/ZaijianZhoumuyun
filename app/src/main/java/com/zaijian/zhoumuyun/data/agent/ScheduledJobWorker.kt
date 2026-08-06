@@ -4,6 +4,7 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import androidx.room.withTransaction
 import androidx.work.CoroutineWorker
@@ -73,7 +74,13 @@ class ScheduledJobWorker(
         // P1-33 修复：与 ScheduleRepository.runLocalCompensation() 共用同一把
         // 认领锁。App 启动瞬间系统可能恰好也唤醒本 Worker 执行同一条到期任务，
         // 认领失败说明对方已经在处理，本次直接正常结束，不重复执行/重复通知。
-        val claimNow = System.currentTimeMillis()
+        // P1-18 修复：锁 TTL 用单调钟 SystemClock.elapsedRealtime() 而非墙钟。墙钟被手动拨快 /
+        // NTP 校正 / 夏令时前跳超过 3 分钟时，正在执行的 Worker 的锁会提前"过期"，另一个
+        // 执行路径（App 启动补偿或同任务被多次唤醒）会 claimJob 成功并重复执行同一非幂等
+        // 任务（email_send / GitHub 提交 / 提醒）。单调钟不受时钟跳变影响。wallClockNow 单独
+        // 保留给下方 nextRunAt 的二次校验（该字段是墙钟时间戳，必须用墙钟比较）。
+        val wallClockNow = System.currentTimeMillis()
+        val claimNow = SystemClock.elapsedRealtime()
         val lockExpiry = claimNow + LOCK_TTL_MS
         val claimed = scheduledJobDao.claimJob(jobId, claimNow, lockExpiry)
         if (claimed == 0) return Result.success()
@@ -86,7 +93,7 @@ class ScheduledJobWorker(
         // 再查一次 job，若 nextRunAt 已被推到未来（说明刚被执行过），直接释放锁退出。
         // GRACE_MS 容忍时钟微小漂移（5秒）。
         val refreshedJob = scheduledJobDao.findById(jobId)
-        if (refreshedJob != null && refreshedJob.nextRunAt > claimNow + GRACE_MS) {
+        if (refreshedJob != null && refreshedJob.nextRunAt > wallClockNow + GRACE_MS) {
             scheduledJobDao.releaseLock(jobId)
             return Result.success()
         }
@@ -258,7 +265,7 @@ class ScheduledJobWorker(
         // 触发的 PresenceEngine TaskCompletionToast 浮层（应用内通知）。原代码无条件发系统通知，
         // App 前台且用户在 CharacterScreen/FamilyScreen 时会产生两条通知（系统通知+Toast）。
         // 与 ZaijianMessagingService 的前台抑制范式对齐：FCM 路径前台时压制系统通知只转发 Toast。
-        if (!com.zaijian.zhoumuyun.domain.PresenceEngine.isAppInForeground) {
+        if (!com.zaijian.zhoumuyun.data.AppContainer.instance.isAppInForeground) {
             val notifTitle = if (success) "✅ ${job.title}" else "❌ ${job.title} 执行失败"
             val notifText  = toolResult?.content?.take(80) ?: toolResult?.error?.take(80) ?: "任务已执行"
             sendNotification(notifTitle, notifText, job.id, job.characterId)

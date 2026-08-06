@@ -15,8 +15,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
@@ -30,6 +28,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -46,6 +45,10 @@ import com.zaijian.zhoumuyun.ui.theme.AvatarSize
 import com.zaijian.zhoumuyun.ui.theme.Radius
 import com.zaijian.zhoumuyun.ui.theme.RingWidth
 import com.zaijian.zhoumuyun.ui.theme.Spacing
+import com.zaijian.zhoumuyun.ui.design.GhostGoldButton
+import com.zaijian.zhoumuyun.ui.design.RolePrimaryButton
+import com.zaijian.zhoumuyun.ui.design.SecondaryGoldButton
+import com.zaijian.zhoumuyun.ui.design.WashiTape
 import com.zaijian.zhoumuyun.ui.theme.Palette
 import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
 import com.zaijian.zhoumuyun.ui.viewmodel.CharacterPreviewViewModel
@@ -87,14 +90,29 @@ fun CharacterPreviewSheet(
         sheetState         = sheetState,
         containerColor     = colors.bgCard,
         shape              = RoundedCornerShape(topStart = Radius.lg, topEnd = Radius.lg),
-        dragHandle         = {
-            Box(
-                modifier = Modifier
-                    .padding(top = Spacing.sm)
-                    .size(width = 36.dp, height = 4.dp)
-                    .clip(CircleShape)
-                    .background(colors.border)
-            )
+        dragHandle = {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Box(
+                    modifier = Modifier
+                        .padding(top = Spacing.sm)
+                        .size(width = 36.dp, height = 4.dp)
+                        .clip(CircleShape)
+                        .background(colors.border)
+                )
+                // 内凹拱形饰线：拖拽把下方一条 0.6 宽的金色水平发丝线，
+                // 底边倒 50% 圆角模拟内凹拱形。
+                Box(
+                    modifier = Modifier
+                        .padding(top = 2.dp)
+                        .fillMaxWidth(0.6f)
+                        .height(1.dp)
+                        .clip(RoundedCornerShape(bottomStartPercent = 50, bottomEndPercent = 50))
+                        .background(Palette.GoldLine),
+                )
+            }
         },
     ) {
         Column(
@@ -150,6 +168,15 @@ fun CharacterPreviewSheet(
 
             Spacer(Modifier.height(Spacing.lg))
 
+            // 和纸胶带（融合方案 §3.3 书架预览装饰）：粉色胶带贴在最近记忆区域顶部
+            Box(
+                modifier = Modifier.fillMaxWidth(),
+                contentAlignment = Alignment.Center,
+            ) {
+                WashiTape(color = Color(0xFFEC93AE).copy(alpha = 0.7f))
+            }
+            Spacer(Modifier.height(4.dp))
+
             // ── 最近记忆（Phase 16：接入真实数据）──────────────
             Box(
                 modifier = Modifier
@@ -191,90 +218,76 @@ fun CharacterPreviewSheet(
 
             Spacer(Modifier.height(Spacing.lg))
 
-            // ── 按钮区 ─────────────────────────────────────────
+            // ── 按钮区（UI 升级 v2.0 融合方案帧06：按钮权重三级）─────────
+            // 酒红(RolePrimary) > 12%金(SecondaryGold) > 8%金(GhostGold) 三级权重。
+            // 发起对话 = 角色主按钮（角色色渐变+白字），查看档案 = 次按钮（12%金底），
+            // 查看家族 = 幽灵按钮（8%金底+金发丝边），视觉层级与操作频率对齐。
             // 批次4-7 修复：防重复点击——快速点击多个按钮时，
             // 多个 invokeOnCompletion 回调并发执行 onDismiss() + 导航，
             // 可能导致多个页面同时入栈，导航栈混乱。
             var isProcessing by remember { mutableStateOf(false) }
-            Row(
-                modifier              = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
-            ) {
-                // 发起对话按钮（主要）
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .then(
-                            if (!character.isUnlocked) Modifier.clickable {
-                                android.widget.Toast.makeText(
-                                    context,
-                                    "此角色尚未解锁，请先完成对应任务",
-                                    android.widget.Toast.LENGTH_SHORT
-                                ).show()
-                            } else Modifier
-                        )
-                ) {
-                Button(
+            // 纵向堆叠：发起对话(46dp) > 查看完整档案(42dp) > 查看家族(40dp)，
+            // 高度递进 46/42/40，每个按钮之间 8dp 间距，视觉层级与操作频率对齐。
+            Column(modifier = Modifier.fillMaxWidth()) {
+                // 发起对话（角色主按钮·46dp）
+                RolePrimaryButton(
+                    text      = "发起对话",
+                    roleColor = character.accentColor,
                     onClick = {
-                        if (isProcessing) return@Button
-                        isProcessing = true
-                        scope.launch { sheetState.hide() }.invokeOnCompletion {
-                            onDismiss()
-                            if (character.isUnlocked) onStartChat(character.id)
+                        if (!character.isUnlocked) {
+                            android.widget.Toast.makeText(
+                                context,
+                                "此角色尚未解锁，请先完成对应任务",
+                                android.widget.Toast.LENGTH_SHORT
+                            ).show()
+                        } else {
+                            if (isProcessing) return@RolePrimaryButton
+                            isProcessing = true
+                            scope.launch { sheetState.hide() }.invokeOnCompletion {
+                                onDismiss()
+                                onStartChat(character.id)
+                            }
                         }
                     },
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled  = character.isUnlocked,
-                    colors   = ButtonDefaults.buttonColors(
-                        containerColor = character.accentColor,
-                        contentColor   = Color.White,
-                    ),
-                    shape    = RoundedCornerShape(Radius.sm),
-                ) {
-                    Text("发起对话", style = type.button)
-                }
-                }
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .then(if (!character.isUnlocked) Modifier.alpha(0.45f) else Modifier),
+                    height = 46.dp,
+                )
 
-                // 查看档案按钮（次要）
-                Button(
+                Spacer(Modifier.height(8.dp))
+
+                // 查看完整档案（次按钮·12%金底·42dp）
+                SecondaryGoldButton(
+                    text    = "查看完整档案",
                     onClick = {
-                        if (isProcessing) return@Button
+                        if (isProcessing) return@SecondaryGoldButton
                         isProcessing = true
                         scope.launch { sheetState.hide() }.invokeOnCompletion {
                             onDismiss()
                             onViewProfile(character.id)
                         }
                     },
-                    modifier = Modifier.weight(1f),
-                    colors   = ButtonDefaults.buttonColors(
-                        containerColor = character.accentColor.copy(alpha = 0.12f),
-                        contentColor   = character.accentColor,
-                    ),
-                    shape    = RoundedCornerShape(Radius.sm),
-                ) {
-                    Text("查看完整档案", style = type.button)
-                }
-            }
+                    modifier = Modifier.fillMaxWidth(),
+                    height = 42.dp,
+                )
 
-            // ── A-1 Fix：家族页入口 ───────────────────────────
-            Spacer(Modifier.height(Spacing.xs))
-            Button(
-                onClick = {
-                    if (isProcessing) return@Button
-                    isProcessing = true
-                    scope.launch { sheetState.hide() }.invokeOnCompletion {
-                        onDismiss()
-                        onViewFamily(character.id)
-                    }
-                },
-                modifier = Modifier.fillMaxWidth(),
-                colors   = ButtonDefaults.buttonColors(
-                    containerColor = character.accentColor.copy(alpha = 0.08f),
-                    contentColor   = character.accentColor,
-                ),
-                shape    = RoundedCornerShape(Radius.sm),
-            ) {
-                Text("查看家族", style = type.button)
+                Spacer(Modifier.height(8.dp))
+
+                // 查看家族（幽灵按钮·8%金底·40dp）
+                GhostGoldButton(
+                    text    = "查看家族",
+                    onClick = {
+                        if (isProcessing) return@GhostGoldButton
+                        isProcessing = true
+                        scope.launch { sheetState.hide() }.invokeOnCompletion {
+                            onDismiss()
+                            onViewFamily(character.id)
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    height = 40.dp,
+                )
             }
         }
     }

@@ -69,8 +69,8 @@ class ProactiveMessageWorker(
                 goalDao  = db.characterGoalDao(),
                 eventDao = db.worldEventDao(),
                 onProactiveMessage = { msg ->
-                    val suppress = msg.characterId == PresenceEngine.foregroundChatCharacterId &&
-                        PresenceEngine.isAppInForeground
+                    val suppress = msg.characterId == com.zaijian.zhoumuyun.data.AppContainer.instance.foregroundChatCharacterId &&
+                        com.zaijian.zhoumuyun.data.AppContainer.instance.isAppInForeground
                     notifier.persistAndNotify(msg, suppressNotification = suppress)
                 },
                 messageDao            = messageRepository,
@@ -94,6 +94,8 @@ class ProactiveMessageWorker(
                                                               // 否则后台路径 memoryRepo 懒加载条件不满足，静默为 null
                 projectDao         = db.projectDao(),      // Tier2 项目驱动行为
                 eventDao           = db.worldEventDao(),   // Tier3 写入 PROJECT_UPDATED 事件
+                characterStateRepo = characterStateRepo,   // P1-5 修复：复用本函数已构造好的实例，
+                                                            // 让 Tier1 情绪与 chat 路径统一走同一真相来源
             )
 
             worldSimulation.runProactiveCheckForCharacters()

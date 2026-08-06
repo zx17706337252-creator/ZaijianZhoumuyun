@@ -9,9 +9,12 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
@@ -48,13 +51,15 @@ import coil.compose.rememberAsyncImagePainter
 import coil.request.CachePolicy
 import coil.request.ImageRequest
 import com.zaijian.zhoumuyun.data.AppContainer
+import com.zaijian.zhoumuyun.ui.design.ScrollVine
+import com.zaijian.zhoumuyun.ui.design.VineStyle
+import com.zaijian.zhoumuyun.ui.theme.AnimDuration
+import com.zaijian.zhoumuyun.ui.theme.AppBrushes
 import com.zaijian.zhoumuyun.ui.theme.AppTheme
 import com.zaijian.zhoumuyun.ui.theme.Palette
+import com.zaijian.zhoumuyun.ui.theme.WcAlpha
 import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeoutOrNull
 
 // ─────────────────────────────────────────────────────────────
 //  SplashScreen  — 启动画面（设计规范 §18 导航架构）
@@ -124,23 +129,12 @@ fun SplashScreen(onFinished: () -> Unit) {
     // 不会因为没设置就空白。
     //
     // P2-34 修复：原 collectAsStateWithLifecycle(initialValue = null) 导致第一帧
-    // 永远先画品牌 Logo（null 走兜底分支），DataStore 异步发射后才切到自定义图，
-    // 产生首帧闪烁。改为 setContent 后第一次 composition 时用 runBlocking 同步读
-    // 一次 DataStore 当前值（带 500ms 超时保护，防止 DataStore 异常时卡死 UI），
-    // 以此作为 collectAsStateWithLifecycle 的初始值——第一帧就能拿到正确配置，
-    // 消除闪烁。DataStore 首次读取通常毫秒级，Splash 本身也有 300ms 淡入动画
-    // 缓冲，不会感知到阻塞。后续更新仍通过 Flow 正常流动。
-    val initialConfig = remember {
-        runCatching {
-            runBlocking {
-                withTimeoutOrNull(500L) {
-                    AppContainer.instance.splashBackgroundDataStore.configFlow.first()
-                }
-            }
-        }.getOrNull()
-    }
+    // P2-8-2 修复：移除 setContent 首帧的 runBlocking 主线程同步读（最长阻塞 500ms，
+    // 低端机冷启动可感知卡顿）。改为纯异步流收集：首帧 initialValue=null 走品牌 Logo
+    // 兜底分支，DataStore 发射后切到自定义图。Splash 本身有 300ms 淡入动画缓冲，
+    // 配置在动画期间到达即可，既消除主线程卡顿又基本无可见闪烁。
     val splashBgConfig by AppContainer.instance.splashBackgroundDataStore.configFlow
-        .collectAsStateWithLifecycle(initialValue = initialConfig)
+        .collectAsStateWithLifecycle(initialValue = null)
 
     Box(
         modifier         = Modifier
@@ -160,6 +154,32 @@ fun SplashScreen(onFinished: () -> Unit) {
                             radius = size.width * 0.85f,
                         )
                     )
+                    // ── UI 升级 v2.0 帧01：四角水彩晕染 ──────────────
+                    // 融合方案帧01 启动页氛围装饰：四角各一抹极淡水彩，分属四位角色色，
+                    // 光源落在角点、向画面中心渐隐至透明，预算 WcAlpha.page(6%)。
+                    // 左上 火漆红·Wax / 右上 露娜蓝 / 左下 江凡蓝灰 / 右下 索菲娅橙。
+                    val washAlpha = if (colors.isDark) WcAlpha.pageDark else WcAlpha.page
+                    val cornerR = size.width * 0.55f
+                    // 左上 · 火漆红
+                    drawRect(Brush.radialGradient(
+                        colors = listOf(Palette.Wax.copy(alpha = washAlpha), Color.Transparent),
+                        center = Offset(0f, 0f), radius = cornerR,
+                    ))
+                    // 右上 · 露娜蓝
+                    drawRect(Brush.radialGradient(
+                        colors = listOf(Color(0xFFACC0E8).copy(alpha = washAlpha), Color.Transparent),
+                        center = Offset(size.width, 0f), radius = cornerR,
+                    ))
+                    // 左下 · 江凡蓝灰
+                    drawRect(Brush.radialGradient(
+                        colors = listOf(Color(0xFF5C7A8A).copy(alpha = washAlpha * 0.8f), Color.Transparent),
+                        center = Offset(0f, size.height), radius = cornerR,
+                    ))
+                    // 右下 · 索菲娅橙
+                    drawRect(Brush.radialGradient(
+                        colors = listOf(Color(0xFFE8935A).copy(alpha = washAlpha * 0.8f), Color.Transparent),
+                        center = Offset(size.width, size.height), radius = cornerR,
+                    ))
                 }
             },
         contentAlignment = Alignment.Center,
@@ -282,9 +302,37 @@ fun SplashScreen(onFinished: () -> Unit) {
             ) {
                 LogoMark(accentColor = colors.accent, alpha = screenAlpha.value)
                 Spacer(Modifier.height(24.dp))
-                SplashTitleText(alpha = screenAlpha.value, onImage = false)
+                // ── UI 升级 v2.0 帧01：卷草题献 ──────────────────────
+                // 融合方案帧01：应用名两侧各一卷草（CORNER 形态），如题献落款，
+                // 与四角水彩呼应，构成启动页的仪式感边框。仅品牌兜底视觉才画，
+                // 自定义背景图上不叠加（避免在用户图片上显得脏）。
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    SplashTitleText(alpha = screenAlpha.value, onImage = false)
+                    Spacer(Modifier.height(10.dp))
+                    // 卷草分隔带（VineStyle.DIVIDER）：标题下方一条金色卷草水平分隔，
+                    // 替代原先左右各一卷草 SIDE，仪式感边框改为标题落款分隔。
+                    ScrollVine(
+                        style = VineStyle.DIVIDER,
+                        tint = colors.accent,
+                        modifier = Modifier.graphicsLayer { alpha = screenAlpha.value * 0.7f },
+                    )
+                }
             }
         }
+
+        // ── 底部版本号（等宽字体，随 screenAlpha 淡入淡出）──────────
+        Text(
+            text  = "v1.3.5 · 昼梦云",
+            style = ZaijianTheme.typography.labelMono,
+            color = colors.textDisabled,
+            fontSize = 11.sp,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 24.dp)
+                .graphicsLayer { alpha = screenAlpha.value },
+        )
     }
 }
 
@@ -314,7 +362,7 @@ private fun SplashTitleText(alpha: Float, onImage: Boolean) {
     Spacer(Modifier.height(6.dp))
 
     Text(
-        text  = "九个人，九段故事，属于我们的世界。",
+        text  = "一 座 有 生 命 的 公 馆",
         style = ZaijianTheme.typography.caption,
         color = subtitleColor.copy(alpha = alpha * 0.8f),
     )
@@ -327,22 +375,24 @@ private fun SplashTitleText(alpha: Float, onImage: Boolean) {
 @Composable
 private fun LogoMark(accentColor: Color, alpha: Float) {
     // 呼吸动画：scale 1.00 → 1.04，glow alpha 0.25 → 0.45
+    // UI 升级 v2.0 帧01：呼吸周期对齐 AnimDuration.breath(4000ms 半周期)，
+    // 与公馆门环呼吸同频，世界层慢动效(≥1.8s)统一。
     val infiniteTransition = rememberInfiniteTransition(label = "splash_breath")
 
     val breathScale by infiniteTransition.animateFloat(
         initialValue = 1.00f,
         targetValue  = 1.04f,
         animationSpec = infiniteRepeatable(
-            animation  = tween(2000, easing = FastOutSlowInEasing),
+            animation  = tween(AnimDuration.breath, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Reverse,
         ),
         label = "breathScale",
     )
     val glowAlpha by infiniteTransition.animateFloat(
-        initialValue = 0.20f,
-        targetValue  = 0.40f,
+        initialValue = 0.25f,
+        targetValue  = 0.45f,
         animationSpec = infiniteRepeatable(
-            animation  = tween(2000, easing = FastOutSlowInEasing),
+            animation  = tween(AnimDuration.breath, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Reverse,
         ),
         label = "glowAlpha",
@@ -377,19 +427,16 @@ private fun LogoMark(accentColor: Color, alpha: Float) {
         }
 
         // 内层圆形 Logo 容器
+        // UI 升级 v2.0 帧01：圆章改黄铜三段渐变（AppBrushes.goldGradient），
+        // 外加 1px 金环（GoldBright 80%），整体随 screenAlpha 淡入淡出。
         Box(
             modifier         = Modifier
                 .size(64.dp)
                 .scale(breathScale)
+                .graphicsLayer { this.alpha = alpha }
                 .clip(CircleShape)
-                .background(
-                    Brush.linearGradient(
-                        listOf(
-                            accentColor.copy(alpha = alpha),
-                            accentColor.copy(alpha = alpha * 0.75f),
-                        )
-                    )
-                ),
+                .background(AppBrushes.goldGradient())
+                .border(1.dp, Palette.GoldBright.copy(alpha = 0.8f), CircleShape),
             contentAlignment = Alignment.Center,
         ) {
             // 28sp 为 Logo 圆形容器内单字展示专属尺寸，有意设计，非硬编码遗留
@@ -399,7 +446,7 @@ private fun LogoMark(accentColor: Color, alpha: Float) {
                     fontSize   = 28.sp,
                     fontWeight = FontWeight.Bold,
                 ),
-                color = Palette.White.copy(alpha = alpha),
+                color = Palette.White,
             )
         }
     }

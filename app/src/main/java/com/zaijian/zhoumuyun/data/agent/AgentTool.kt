@@ -300,7 +300,7 @@ object AgentToolRegistry {
      *
      * @param excludeNames 需要从描述块中排除的工具名集合（默认空，即全量返回，
      *   私聊等原有调用点行为不变）。用于场景化过滤——例如圆桌场景需要排除
-     *   `agent_message`/`roundtable_trigger`/`task_delegate` 这类跨角色协作工具。
+     *   `task_delegate` 这类跨角色协作工具。
      *   注意：这里的排除只影响"模型看到什么"（prompt 层），不代表执行层一定会
      *   拒绝该工具——执行层的强制拦截见 [ToolCallInterceptor.streamWithTools] 的
      *   `disabledToolNames` 参数，两者需配合使用才构成完整防御。
@@ -340,6 +340,21 @@ object AgentToolRegistry {
             appendLine("结果回传给你之后，你会有专门的一轮说话机会去描述，此时不需要提前交代。")
             appendLine("本轮唯一的任务是「决定调用」，不是「预告+调用」。")
             appendLine()
+            // 实时化重构：private_chat_send 现在是"拨号即返回"——execute 成功
+            // 只代表联系上了对方、对话开始在后台异步推进，返回内容里不会再带
+            // 逐字记录，调用那一轮永远不知道会聊些什么。这意味着"查聊了什么"
+            // 不再有"当前上下文里已经有完整记录"的例外情况，任何时候用户问起
+            // 私聊内容都必须实时查库，不存在可以跳过 private_chat_history 的场景。
+            appendLine("【私聊查询规则】private_chat_send 只是发起动作，成功返回不代表对话已经发生，")
+            appendLine("也不会告诉你聊了什么——真正的对话在后台异步进行。")
+            appendLine("因此无论是刚发起过私聊、还是更早之前发起过，只要用户问起")
+            appendLine("你们聊了什么、对方的态度、私聊的结果，都必须先调用 private_chat_history")
+            appendLine("查询逐字记录，再根据返回的实际内容回答，不能跳过这一步。")
+            appendLine("不要凭记忆或猜测回答私聊内容、也不要编造或预告尚未发生的对话——")
+            appendLine("只有 private_chat_history 返回的才是真实发生的对话。")
+            appendLine("如果查询结果显示「正在进行中」，如实告诉用户还没聊完、稍后再问。")
+            appendLine("如果查询结果显示「还没有私聊过」，不要编造任何聊天内容。")
+            appendLine()
             appendLine("可用工具：")
             visibleTools.sortedBy { it.name }.forEach { tool ->
                 val paramDesc = tool.paramKeys.joinToString(" ") { key -> "$key=\"...\"" }
@@ -373,6 +388,11 @@ object AgentToolRegistry {
                 "html_gen" to "<tool:html_gen title=\"产品介绍页\" content=\"展示核心功能、技术优势和应用场景\" theme=\"light\"/>",
                 "file_export" to "<tool:file_export name=\"config.yml\" content=\"server:\\n  port: 8080\" format=\"txt\"/>",
                 "zip_export" to "<tool:zip_export names=\"项目周报.docx,预算表.xlsx\"/>",
+                // 修复：补充私聊工具示例。缺少示例时 LLM 不确定调用格式，
+                // 倾向于直接用文字"冒领"结果（说"已经去找她聊了"但不实际调用工具），
+                // 或在用户追问时凭记忆编造聊天内容而不调用 private_chat_history。
+                "private_chat_send" to "<tool:private_chat_send target=\"顾澜\" directive=\"试探一下她对我的态度，聊得自然一点\"/>",
+                "private_chat_history" to "<tool:private_chat_history target=\"顾澜\"/>",
             )
             exampleMap.forEach { (toolName, example) ->
                 // 显式用 containsKey，避免 Kotlin 在 ConcurrentHashMap 上解析 `in`/`contains`

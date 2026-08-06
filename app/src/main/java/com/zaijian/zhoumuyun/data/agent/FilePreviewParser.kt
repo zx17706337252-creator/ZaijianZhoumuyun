@@ -45,12 +45,17 @@ object FilePreviewParser {
     )
     private val ENTITY_REGEX = Regex("&(?:amp|lt|gt|quot|apos|#(\\d+)|#x([0-9a-fA-F]+));")
 
-    private fun decodeXmlEntities(text: String): String {
+    internal fun decodeXmlEntities(text: String): String {
         if (!text.contains('&')) return text
         return ENTITY_REGEX.replace(text) { m ->
             // 数值字符引用优先（group 1 = 十进制，group 2 = 十六进制）
-            m.groupValues[1].takeIf { it.isNotEmpty() }?.toIntOrNull()?.toChar()?.toString()
-                ?: m.groupValues[2].takeIf { it.isNotEmpty() }?.toIntOrNull(16)?.toChar()?.toString()
+            // 注意：U+FFFF 以上的补充字符（如 emoji &#128512; → 😀、稀有 CJK）
+            // 不能用 Int.toChar()——它只取低 16 位，会得到错误的 BMP 字符。
+            // 必须用 Character.toChars(codePoint) 正确编码为 UTF-16 代理对。
+            m.groupValues[1].takeIf { it.isNotEmpty() }?.toIntOrNull()
+                ?.let { cp -> String(Character.toChars(cp)) }
+                ?: m.groupValues[2].takeIf { it.isNotEmpty() }?.toIntOrNull(16)
+                    ?.let { cp -> String(Character.toChars(cp)) }
                 ?: NAMED_ENTITIES[m.value]  // 具名实体
                 ?: m.value                  // 未识别的 &xxx;，原样保留
         }
@@ -601,7 +606,7 @@ object FilePreviewParser {
                     val lines = Regex("<a:p[ >]", RegexOption.DOT_MATCHES_ALL)
                         .split(xml)
                         .mapNotNull { chunk ->
-                            val text = Regex("<a:t>([^<]*)</a:t>")
+                            val text = Regex("<a:t[^>]*>([^<]*)</a:t>")
                                 .findAll(chunk)
                                 .joinToString("") { decodeXmlEntities(it.groupValues[1]) }
                                 .trim()

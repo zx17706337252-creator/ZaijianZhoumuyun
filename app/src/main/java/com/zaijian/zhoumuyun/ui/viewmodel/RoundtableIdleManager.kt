@@ -9,6 +9,7 @@ import com.zaijian.zhoumuyun.data.agent.VaultCallContext
 import com.zaijian.zhoumuyun.data.agent.VaultScope
 import com.zaijian.zhoumuyun.data.agent.withVaultContext
 import com.zaijian.zhoumuyun.data.AppContainer
+import com.zaijian.zhoumuyun.data.db.entity.MemoryEntity
 import com.zaijian.zhoumuyun.data.db.entity.RoundtableMessageEntity
 import com.zaijian.zhoumuyun.data.model.CharacterConfig
 import com.zaijian.zhoumuyun.data.model.CharacterStateLayer
@@ -31,6 +32,7 @@ import com.zaijian.zhoumuyun.data.repository.SkillRepository
 import com.zaijian.zhoumuyun.domain.ChatTagParser
 import com.zaijian.zhoumuyun.domain.MoodType
 import com.zaijian.zhoumuyun.domain.PresenceEngine
+import com.zaijian.zhoumuyun.domain.PresenceSnapshot
 import com.zaijian.zhoumuyun.domain.RelationshipEngine
 import com.zaijian.zhoumuyun.util.ZLog
 import kotlinx.coroutines.CancellationException
@@ -70,6 +72,9 @@ class RoundtableIdleManager(
     private val getCurrentRoundtableId: () -> String?,
     private val getIdleWatchJob: () -> Job?,
     private val setIdleWatchJob: (Job?) -> Unit,
+    // P1-4 修复：注入打断标记供自发发言读取（用户打字 interrupt() 时置为 true），
+    // 让自发发言与常规回复路径一致地响应打断，而不是每轮都走默认 { false }。
+    private val isInterruptedRef: () -> Boolean = { false },
     private val SPONTANEOUS_IDLE_MS: Long = 30_000L,
     private val REPLY_TIMEOUT_MS: Long = 60_000L,
 ) {
@@ -115,17 +120,43 @@ class RoundtableIdleManager(
         if (!_uiState.value.isSpontaneousEnabled) return
         getIdleWatchJob()?.cancel()
         setIdleWatchJob(viewModelScope.launch {
-            kotlinx.coroutines.delay(SPONTANEOUS_IDLE_MS)
-            // 空闲超时：仅在圆桌处于等待用户输入、没有生成任务时才触发
-            val state = _uiState.value
-            if (!state.waitingForUser) return@launch
-            if (state.activeMembers.isEmpty()) return@launch
-            val provider = com.zaijian.zhoumuyun.data.provider.ProviderManager.instance.activeProvider
-                ?: return@launch
-            val initiator = pickSpontaneousInitiator(state.activeMembers) ?: return@launch
-            generateSpontaneousReply(initiator, provider)
-            // 生成完毕后重新开始计时（循环空闲监测）
-            startIdleWatch()
+            try {
+                kotlinx.coroutines.delay(SPONTANEOUS_IDLE_MS)
+                // 空闲超时：仅在圆桌处于等待用户输入、没有生成任务时才触发
+                val state = _uiState.value
+                if (!state.waitingForUser) return@launch
+                if (state.activeMembers.isEmpty()) return@launch
+                val provider = com.zaijian.zhoumuyun.data.provider.ProviderManager.instance.activeProvider
+                    ?: return@launch
+                val initiator = pickSpontaneousInitiator(state.activeMembers) ?: return@launch
+                // #7 修复：generateSpontaneousReply 内部的 gather/build 阶段
+                // （gatherSpontaneousContextLayers / buildSpontaneousSystemPrompt，
+                // 含 Room 查询）在其自身的 try-catch 保护范围之外（该 try 从
+                // streamWithTools 才开始），此前这里裸调用，任一查询异常会
+                // 直接抛到 viewModelScope 顶层导致闪退。与 executeRound 里
+                // generateBotReply 调用点同一套包法——call site 兜底，不改
+                // generateSpontaneousReply 内部结构，保持与常规圆桌回复路径
+                // 一致的"调用方负责兜底"模式。
+                try {
+                    // P1-4 修复：传入真实 isInterruptedRef，自发发言才能响应打断。
+                    generateSpontaneousReply(initiator, provider, isInterruptedRef)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    // catch Throwable 而非 Exception：与 executeRound/
+                    // ChatMessageOrchestrator 同一原因——防止工具层 Error 击穿到
+                    // 独立 CoroutineScope 静默终止。自发发言路径更隐蔽：崩溃前
+                    // 用户往往什么都没做（纯空闲触发），容易被误以为"随机闪退"。
+                    ZLog.e("RoundtableViewModel", "自发发言生成异常（initiator=${initiator.name}）", e)
+                }
+            } finally {
+                // P2-7-10 修复：把重新排队下一轮空闲监测放进 finally。此前它在 try 之后、
+                // 但被上面多个 return@launch（waitingForUser false / 成员空 / provider 空 /
+                // 无发起人）绕过——任一提前返回后计时器不再重新武装，此后用户再发消息
+                // 也不会触发自发互动（永久停摆）。放进 finally 后，无论走哪个分支
+                // （提前 return / 正常完成 / catch 兜底）都会重排。
+                startIdleWatch()
+            }
         })
     }
 
@@ -186,14 +217,28 @@ class RoundtableIdleManager(
     }
 
     /**
-     * 用自发发言专用 prompt 驱动 [initiator] 生成一条主动发言，
-     * 追加到消息列表中（speakerId = initiator.id，turnIndex = 当前 turnIndex，
-     * 不新增 turnIndex——自发发言属于"同一轮上下文延续"，不算用户新一轮）。
+     * 自发发言上下文层收集结果（P1-5 拆分：generateSpontaneousReply 的 gather 段输出）。
      */
-    private suspend fun generateSpontaneousReply(
-        initiator: CharacterConfig,
-        provider: LLMProvider,
-    ) {
+    private data class SpontaneousContextLayers(
+        val coreMemories: List<MemoryEntity>,
+        val relationshipSnap: String,
+        val characterStateForPresence: CharacterStateLayer,
+        val daughterStateLayer: DaughterStateLayer?,
+        val daughterCustomEnums: DaughterCustomEnums?,
+        val presenceSnap: PresenceSnapshot?,
+        val recentContext: String,
+        val daughterPresentInScene: Boolean,
+        val toolDesc: String,
+        val skillCatalogBlock: String,
+    )
+
+    /**
+     * 自发发言上下文层收集（P1-5 拆分：generateSpontaneousReply 的 gather 段）。
+     *
+     * 与 generateBotReply 的处理逻辑对齐：presence fallback、女儿角色专属状态数据补齐、
+     * 最近 6 条消息上下文摘要、D4 女儿在场感知、圆桌工具排除名单、技能目录。
+     */
+    private suspend fun gatherSpontaneousContextLayers(initiator: CharacterConfig): SpontaneousContextLayers {
         val coreMemories     = memoryRepo.getCoreMemories(initiator.id)
         val relationshipSnap = relationshipEngine.buildPromptSnapshot(initiator.id)
         // presence fallback：缓存为空时（角色未打开过单人对话）主动计算一次，
@@ -244,47 +289,36 @@ class RoundtableIdleManager(
             repo = skillRepo,
         )
 
-        val spontaneousSystemPrompt = buildString {
-            append(PromptOrchestrator.buildSystemPrompt(
-                character               = initiator,
-                identityEntity          = identityDao.getById(initiator.id),
-                coreMemories            = coreMemories,
-                relevantMemories        = emptyList(),
-                presenceActivity        = presenceSnap?.activity ?: "",
-                presenceFocus           = presenceSnap?.goalTitle ?: "",
-                presenceMood            = presenceSnap?.mood?.name ?: "",
-                presenceEnergy          = presenceSnap?.energy ?: -1,
-                relationshipSnapshot    = relationshipSnap,
-                groupContextBlock       = "",
-                interCharRelBlock       = "",
-                agentPlanBlock          = "",
-                ruleLayerBlock          = "",
-                pregnancyState          = pregnancyRepo.getPregnancy(initiator.id),
-                characterState          = characterStateForPresence,
-                daughterStateLayer      = daughterStateLayer,
-                daughterCustomEnums     = daughterCustomEnums,
-                miscarriageAftermathPatch = "",
-                pregnancyAwarenessBlock = "",
-                // v1.36 问题3：自发发言场景 groupContextBlock 出于 Token 预算传空
-                // （见上），但这里仍然是圆桌（有其他角色在场），必须显式声明，
-                // 否则用户身份注入会误判成私聊、用错私下称谓。
-                isRoundtableContext     = true,
-                daughterPresentInScene  = daughterPresentInScene,
-                toolDescriptionBlock    = toolDesc,
-                skillCatalogBlock       = skillCatalogBlock,
-            ))
-            appendLine()
-            appendLine("【自发发言模式】")
-            appendLine("圆桌已经沉默了一段时间。请你以 ${initiator.name} 的身份，")
-            appendLine("根据当前氛围和你的心情，主动说一句话来打破沉默。")
-            appendLine("不要解释自己为什么要说话，直接说出你想说的内容。")
-            appendLine("字数控制在 30~80 字，语气自然，像真实的人一样开口。")
-            if (recentContext.isNotBlank()) {
-                appendLine()
-                appendLine("最近的对话上下文（供参考）：")
-                appendLine(recentContext)
-            }
-        }
+        return SpontaneousContextLayers(
+            coreMemories            = coreMemories,
+            relationshipSnap        = relationshipSnap,
+            characterStateForPresence = characterStateForPresence,
+            daughterStateLayer      = daughterStateLayer,
+            daughterCustomEnums     = daughterCustomEnums,
+            presenceSnap            = presenceSnap,
+            recentContext           = recentContext,
+            daughterPresentInScene  = daughterPresentInScene,
+            toolDesc                = toolDesc,
+            skillCatalogBlock       = skillCatalogBlock,
+        )
+    }
+
+    /**
+     * 用自发发言专用 prompt 驱动 [initiator] 生成一条主动发言，
+     * 追加到消息列表中（speakerId = initiator.id，turnIndex = 当前 turnIndex，
+     * 不新增 turnIndex——自发发言属于"同一轮上下文延续"，不算用户新一轮）。
+     */
+    private suspend fun generateSpontaneousReply(
+        initiator: CharacterConfig,
+        provider: LLMProvider,
+        // 打断检测（v10 裁定补上）：与 generateBotReply 对齐——用户正在忙/不想被打断时
+        // 角色不应强行插话。默认 false 保持既有调用方行为不变。
+        isInterruptedRef: () -> Boolean = { false },
+    ) {
+        val ctx = gatherSpontaneousContextLayers(initiator)
+
+        // 任务10 拆分：自发发言 prompt 组装独立成方法，主函数聚焦流式生成。
+        val spontaneousSystemPrompt = buildSpontaneousSystemPrompt(initiator, ctx)
 
         val msgId  = UUID.randomUUID().toString()
         val turnIdx = _uiState.value.turnIndex
@@ -319,6 +353,8 @@ class RoundtableIdleManager(
             } + LLMMessage("user", "（沉默了一会儿，请自然地开口说一句话）")
 
         var fullReply = ""
+        // 打断检测（v10 裁定补上）：用户正在忙/不想被打断时停止累积，避免角色强行插话。
+        var interrupted = false
         val config = LLMConfig(model = "", maxTokens = 50000, temperature = 0.92f, stream = true)
         // v1.39 圆桌工具调用接入：与常规回复路径同语义，暂存本轮工具产出的文件元数据。
         // v66（1.7 P3）：改用 list 收集本轮全部文件，与另外两条路径同步升级。
@@ -345,6 +381,13 @@ class RoundtableIdleManager(
                 ).collect { event ->
                     when (event) {
                         is StreamEvent.TextDelta -> {
+                            // 打断检测（v10 裁定补上）：与 generateBotReply 对齐——
+                            // 用户已触发打断（isInterruptedRef() 为 true）时停止累积，
+                            // 避免角色在用户正忙时仍强行插话。
+                            if (isInterruptedRef() && fullReply.isNotEmpty()) {
+                                interrupted = true
+                            }
+                            if (!interrupted) {
                             // event.text 已经过 ToolParser 清洗，不含 <tool:xxx> 标签，
                             // 与常规回复路径（RoundtableBotReplyGenerator）语义一致。
                             fullReply += event.text
@@ -357,6 +400,7 @@ class RoundtableIdleManager(
                                     if (msg.id == msgId) msg.copy(content = displayText, psychText = streamingPsych) else msg
                                 }.toImmutableList())
                             }
+                            } // if (!interrupted)
                         }
                         is StreamEvent.ToolStarted -> {
                             // 心迹（Window B 2.2.3）：记录工具调用"已发起"事件，sceneType=roundtable_idle。
@@ -457,7 +501,14 @@ class RoundtableIdleManager(
                             tableDataJson = pendingTablePayloadJson,
                         ) else msg
                     }.toImmutableList(),
-                    generationStatus = (s.generationStatus + (initiator.id to BotGenerationStatus.DONE)).toImmutableMap(),
+                    // v10 裁定补上：生成中被打断（interrupted=true，用户中断/不想听）时，
+                    // 设置为 INTERRUPTED 终态而非 DONE，供 UI 区分"完整回复"与"被截断回复"。
+                    // P1-4 修复：额外并入 isInterruptedRef()——interrupt() 取消 idleWatchJob
+                    // 时 collect 在挂起点抛 CancellationException，局部 `interrupted` 可能
+                    // 尚未置 true，这里补判一次真实标记，确保被 interrupt() 打断也收敛到
+                    // INTERRUPTED 而非 DONE。
+                    generationStatus = (s.generationStatus + (initiator.id to
+                        (if (interrupted || isInterruptedRef()) BotGenerationStatus.INTERRUPTED else BotGenerationStatus.DONE))).toImmutableMap(),
                 )
             }
 
@@ -495,6 +546,55 @@ class RoundtableIdleManager(
             // 记忆写入收窄为 Agent 主动工具调用，自发发言路径不再自动提取
             // 个人/群记忆候选（与 generateBotReply 路径一致）。自发发言不对应
             // 任何用户 MESSAGE 事件，故此处也无事件写入需要保留。
+        }
+    }
+
+    /**
+     * 任务10 拆分：组装自发发言 System Prompt（基础 Prompt + 自发发言模式指令 + 最近上下文）。
+     * 生成主流程（streamWithTools）聚焦在 [generateSpontaneousReply] 内。
+     */
+    private suspend fun buildSpontaneousSystemPrompt(
+        initiator: CharacterConfig,
+        ctx: SpontaneousContextLayers,
+    ): String = buildString {
+        append(PromptOrchestrator.buildSystemPrompt(
+            character               = initiator,
+            identityEntity          = identityDao.getById(initiator.id),
+            coreMemories            = ctx.coreMemories,
+            relevantMemories        = emptyList(),
+            presenceActivity        = ctx.presenceSnap?.activity ?: "",
+            presenceFocus           = ctx.presenceSnap?.goalTitle ?: "",
+            presenceMood            = ctx.presenceSnap?.mood?.name ?: "",
+            presenceEnergy          = ctx.presenceSnap?.energy ?: -1,
+            relationshipSnapshot    = ctx.relationshipSnap,
+            groupContextBlock       = "",
+            interCharRelBlock       = "",
+            agentPlanBlock          = "",
+            ruleLayerBlock          = "",
+            pregnancyState          = pregnancyRepo.getPregnancy(initiator.id),
+            characterState          = ctx.characterStateForPresence,
+            daughterStateLayer      = ctx.daughterStateLayer,
+            daughterCustomEnums     = ctx.daughterCustomEnums,
+            miscarriageAftermathPatch = "",
+            pregnancyAwarenessBlock = "",
+            // v1.36 问题3：自发发言场景 groupContextBlock 出于 Token 预算传空
+            // （见上），但这里仍然是圆桌（有其他角色在场），必须显式声明，
+            // 否则用户身份注入会误判成私聊、用错私下称谓。
+            isRoundtableContext     = true,
+            daughterPresentInScene  = ctx.daughterPresentInScene,
+            toolDescriptionBlock    = ctx.toolDesc,
+            skillCatalogBlock       = ctx.skillCatalogBlock,
+        ))
+        appendLine()
+        appendLine("【自发发言模式】")
+        appendLine("圆桌已经沉默了一段时间。请你以 ${initiator.name} 的身份，")
+        appendLine("根据当前氛围和你的心情，主动说一句话来打破沉默。")
+        appendLine("不要解释自己为什么要说话，直接说出你想说的内容。")
+        appendLine("字数控制在 30~80 字，语气自然，像真实的人一样开口。")
+        if (ctx.recentContext.isNotBlank()) {
+            appendLine()
+            appendLine("最近的对话上下文（供参考）：")
+            appendLine(ctx.recentContext)
         }
     }
 }

@@ -3,6 +3,7 @@ package com.zaijian.zhoumuyun.ui.screen
 import android.content.Intent
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -21,19 +22,23 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -43,6 +48,8 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.zaijian.zhoumuyun.ui.component.DetailTopBar
 import com.zaijian.zhoumuyun.ui.component.EmptyStateView
 import com.zaijian.zhoumuyun.ui.design.AppIcons
+import com.zaijian.zhoumuyun.ui.design.DangerVelvetButton
+import com.zaijian.zhoumuyun.ui.design.GhostGoldButton
 import com.zaijian.zhoumuyun.ui.design.IconBadge
 import com.zaijian.zhoumuyun.ui.design.WorldCard
 import com.zaijian.zhoumuyun.ui.theme.Palette
@@ -186,11 +193,17 @@ fun FileVaultScreen(
                     Text("确定删除「${target.name}」？$hint")
                 },
                 confirmButton = {
-                    TextButton(onClick = viewModel::confirmDelete) {
-                        Text("删除", color = Palette.TaskFailed)
-                    }
+                    DangerVelvetButton(
+                        text    = "删除",
+                        onClick = viewModel::confirmDelete,
+                    )
                 },
-                dismissButton = { TextButton(onClick = viewModel::cancelDelete) { Text("取消") } },
+                dismissButton = {
+                    GhostGoldButton(
+                        text    = "取消",
+                        onClick = viewModel::cancelDelete,
+                    )
+                },
             )
         }
 
@@ -234,7 +247,12 @@ private fun flattenTree(roots: List<VaultNode>, expanded: Set<String>): List<Fla
 }
 
 // ─────────────────────────────────────────────────────────────
-//  文件夹行
+//  文件夹行（v2.0 树形视觉引导线）
+//
+//  原实现仅用 padding 做深度缩进，展开后所有层级观感完全一致，
+//  无法区分父子层级。v2.0 方案第27帧明确要求"树形三段按深度缩进"，
+//  现为 depth≥1 的节点绘制竖向引导线 + 水平连接线，形成清晰的
+//  树形层级视觉语言，替代纯 padding 缩进。
 // ─────────────────────────────────────────────────────────────
 
 @Composable
@@ -248,57 +266,94 @@ private fun VaultFolderRow(
     val colors = ZaijianTheme.colors
     val type   = ZaijianTheme.typography
     val horizontalPad = Spacing.screenHorizontal + (Spacing.sm * depth)
+    val treeLineColor = colors.border.copy(alpha = 0.35f)
 
     WorldCard(modifier = Modifier.fillMaxWidth()) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable(onClick = onToggle)
-                .padding(start = horizontalPad + Spacing.sm, end = Spacing.sm, top = Spacing.sm, bottom = Spacing.sm),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(
-                imageVector = if (isExpanded) AppIcons.FolderOpen else AppIcons.Folder,
-                contentDescription = null,
-                tint = colors.accent,
-                modifier = Modifier.size(22.dp),
-            )
-            Spacer(Modifier.width(Spacing.sm))
-            Column(Modifier.weight(1f)) {
-                Text(
-                    text       = folder.scopeLabel,
-                    style      = type.body,
-                    color      = colors.textPrimary,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines   = 1,
-                    overflow   = TextOverflow.Ellipsis,
-                )
-                Text(
-                    text  = "${folder.fileCount} 个文件",
-                    style = type.label,
-                    color = colors.textSecondary,
-                )
+        Box(modifier = Modifier.fillMaxWidth()) {
+            // ── 树形引导线（depth ≥ 1 时绘制）──────────────────
+            if (depth > 0) {
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    val lineWidth = 1.dp.toPx()
+                    // 竖向引导线：每个祖先层级一条
+                    for (d in 1..depth) {
+                        val lineX = (Spacing.screenHorizontal + Spacing.sm * (d - 1) + Spacing.sm / 2).toPx()
+                        drawLine(
+                            color = treeLineColor,
+                            start = Offset(lineX, 0f),
+                            end   = Offset(lineX, size.height),
+                            strokeWidth = lineWidth,
+                        )
+                    }
+                    // 水平连接线：从最内层竖向线连到文件夹图标中心
+                    val connectorX = (Spacing.screenHorizontal + Spacing.sm * (depth - 1) + Spacing.sm / 2).toPx()
+                    val iconCenterX = (horizontalPad + Spacing.sm + 11.dp).toPx() // 22dp 图标中心
+                    val iconCenterY = size.height / 2f
+                    drawLine(
+                        color = treeLineColor,
+                        start = Offset(connectorX, iconCenterY),
+                        end   = Offset(iconCenterX, iconCenterY),
+                        strokeWidth = lineWidth,
+                    )
+                }
             }
-            Icon(
-                imageVector = AppIcons.ExpandMore,
-                contentDescription = if (isExpanded) "折叠" else "展开",
-                tint = colors.textSecondary,
-                modifier = Modifier.size(20.dp),
-            )
-            IconButton(onClick = onDelete, modifier = Modifier.size(36.dp).minimumInteractiveComponentSize()) {
+
+            // ── 内容行 ──────────────────────────────────────────
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onToggle)
+                    .padding(start = horizontalPad + Spacing.sm, end = Spacing.sm, top = Spacing.sm, bottom = Spacing.sm),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 Icon(
-                    imageVector = AppIcons.Delete,
-                    contentDescription = "删除文件夹",
-                    tint = Palette.TaskFailed,
-                    modifier = Modifier.size(18.dp),
+                    imageVector = if (isExpanded) AppIcons.FolderOpen else AppIcons.Folder,
+                    contentDescription = null,
+                    tint = colors.accent,
+                    modifier = Modifier.size(22.dp),
                 )
+                Spacer(Modifier.width(Spacing.sm))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        text       = folder.scopeLabel,
+                        style      = type.body,
+                        color      = colors.textPrimary,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines   = 1,
+                        overflow   = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        text  = "${folder.fileCount} 个文件",
+                        style = type.label,
+                        color = colors.textSecondary,
+                    )
+                }
+                Icon(
+                    imageVector = AppIcons.ExpandMore,
+                    contentDescription = if (isExpanded) "折叠" else "展开",
+                    tint = colors.textSecondary,
+                    modifier = Modifier.size(20.dp),
+                )
+                IconButton(onClick = onDelete, modifier = Modifier.size(36.dp).minimumInteractiveComponentSize()) {
+                    Icon(
+                        imageVector = AppIcons.Delete,
+                        contentDescription = "删除文件夹",
+                        tint = Palette.TaskFailed,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
             }
         }
     }
 }
 
 // ─────────────────────────────────────────────────────────────
-//  文件行
+//  文件行（v2.0 操作区收敛）
+//
+//  原实现文件行末尾排四个 IconButton（编辑/分享/导出/删除），
+//  视觉上拥挤且操作区分度低。v2.0 方案要求更克制的操作区：
+//  保留"导出"作为高频可见操作，其余三个（编辑/分享/删除）
+//  收进 ⋮ 溢出菜单。该菜单与 ProjectDetailMenu 模式一致，
+//  使用 Material3 DropdownMenu 标准组件。
 // ─────────────────────────────────────────────────────────────
 
 @Composable
@@ -315,6 +370,7 @@ private fun VaultFileRow(
     val type   = ZaijianTheme.typography
     val horizontalPad = Spacing.screenHorizontal + (Spacing.sm * depth)
     val canEditText = file.extension in TEXT_EDITABLE_EXT
+    var menuExpanded by remember { mutableStateOf(false) }
 
     WorldCard(modifier = Modifier.fillMaxWidth()) {
         Row(
@@ -348,19 +404,40 @@ private fun VaultFileRow(
                     color = colors.textSecondary,
                 )
             }
-            if (canEditText) {
-                IconButton(onClick = onEdit, modifier = Modifier.size(36.dp).minimumInteractiveComponentSize()) {
-                    Icon(AppIcons.Edit, "编辑", tint = colors.textSecondary, modifier = Modifier.size(18.dp))
-                }
-            }
-            IconButton(onClick = onShare, modifier = Modifier.size(36.dp).minimumInteractiveComponentSize()) {
-                Icon(AppIcons.Share, "分享", tint = colors.textSecondary, modifier = Modifier.size(18.dp))
-            }
+            // ── 高频可见操作：导出 ──────────────────────────────
             IconButton(onClick = onExport, modifier = Modifier.size(36.dp).minimumInteractiveComponentSize()) {
                 Icon(AppIcons.Download, "导出", tint = colors.textSecondary, modifier = Modifier.size(18.dp))
             }
-            IconButton(onClick = onDelete, modifier = Modifier.size(36.dp).minimumInteractiveComponentSize()) {
-                Icon(AppIcons.Delete, "删除", tint = Palette.TaskFailed, modifier = Modifier.size(18.dp))
+            // ── ⋮ 溢出菜单：编辑/分享/删除 ──────────────────────
+            Box {
+                IconButton(
+                    onClick  = { menuExpanded = true },
+                    modifier = Modifier.size(36.dp).minimumInteractiveComponentSize(),
+                ) {
+                    Icon(AppIcons.MoreVert, "更多操作", tint = colors.textSecondary, modifier = Modifier.size(18.dp))
+                }
+                DropdownMenu(
+                    expanded         = menuExpanded,
+                    onDismissRequest = { menuExpanded = false },
+                ) {
+                    if (canEditText) {
+                        DropdownMenuItem(
+                            text     = { Text("编辑") },
+                            onClick  = { menuExpanded = false; onEdit() },
+                            leadingIcon = { Icon(AppIcons.Edit, null, modifier = Modifier.size(16.dp)) },
+                        )
+                    }
+                    DropdownMenuItem(
+                        text     = { Text("分享") },
+                        onClick  = { menuExpanded = false; onShare() },
+                        leadingIcon = { Icon(AppIcons.Share, null, modifier = Modifier.size(16.dp)) },
+                    )
+                    DropdownMenuItem(
+                        text     = { Text("删除", color = Palette.TaskFailed) },
+                        onClick  = { menuExpanded = false; onDelete() },
+                        leadingIcon = { Icon(AppIcons.Delete, null, tint = Palette.TaskFailed, modifier = Modifier.size(16.dp)) },
+                    )
+                }
             }
         }
     }

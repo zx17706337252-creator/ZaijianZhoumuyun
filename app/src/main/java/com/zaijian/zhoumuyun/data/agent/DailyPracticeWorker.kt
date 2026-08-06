@@ -163,9 +163,12 @@ class DailyPracticeWorker(
         return Result.success()
     }
 
-    /** 读取用户配置的每日触发时间。v1 暂未做专门的设置 UI，先用默认值，
-     *  接口已经留好（专长档案页后续可以加"修改修炼时间"的入口，写入
-     *  SharedPreferences，这里改成读取即可，不需要再改 Worker 内部逻辑）。 */
+    /** 读取用户配置的每日触发时间。
+     *  P2-2-3 修复：此配置当前是"有意锁定"的——v1 未提供任何设置 UI 写入
+     *  daily_practice_hour/minute，接口已留好（SharedPreferences 读取），但入口
+     *  （专长档案页的"修改修炼时间"）尚未接入。因此实际恒为 DEFAULT_HOUR:00（21:00）。
+     *  若后续补设置入口，只需写入同名 key，Worker 无需改动；在入口落地前，此处
+     *  明确按默认值 21:00 调度，避免被误读为"可配置但失效"的死配置。 */
     private fun readConfiguredTime(): Pair<Int, Int> {
         val prefs = applicationContext.getSharedPreferences("specialty_evolution_prefs", Context.MODE_PRIVATE)
         val hour = prefs.getInt("daily_practice_hour", DailyPracticeScheduler.DEFAULT_HOUR)

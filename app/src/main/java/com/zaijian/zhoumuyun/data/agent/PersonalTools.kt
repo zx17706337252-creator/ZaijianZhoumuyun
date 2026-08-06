@@ -186,7 +186,7 @@ class ReminderTool(
             // 约 2^16 条同时存活的提醒才会有 50% 碰撞概率，对单机提醒场景足够安全）。
             val requestCode = id.toString().hashCode()
             if (triggerAtMs > System.currentTimeMillis()) {
-                scheduleAlarm(requestCode, text, triggerAtMs, characterId)
+                scheduleAlarm(requestCode, text, triggerAtMs, characterId, id)
             }
 
             val timeDesc = buildString {
@@ -293,7 +293,11 @@ class ReminderTool(
      * Android 12+ 需要 SCHEDULE_EXACT_ALARM 权限。
      */
     // 批次4-3-1 修复：改为 internal，供 BootReceiver 开机恢复提醒闹钟时复用
-    internal fun scheduleAlarm(requestCode: Int, text: String, triggerAtMs: Long, characterId: Int) {
+    // P2-2-1 修复：新增 reminderId（提醒持久化文件的真实 Long id）参数，写入 intent 供
+    // ReminderReceiver 触发后删除对应文件——此前 requestCode 已是 id.toString().hashCode()
+    // 的 32 位哈希，接收方无法反推文件名，提醒触发后文件永不清理、isCompleted 永不为 true，
+    // filesDir/reminders/ 无限增长且每次开机全量重扫。现在 Receiver 拿到真实 id 即可删除。
+    internal fun scheduleAlarm(requestCode: Int, text: String, triggerAtMs: Long, characterId: Int, reminderId: Long) {
         // #49 修复：原先 "as AlarmManager" 强转无防御，理论上 getSystemService 返回
         // null 时会直接抛 NPE（虽然真实设备上几乎不可能拿不到这个系统服务）。
         // 改为安全转换，取不到时直接跳过闹钟注册（提醒本身已经持久化到本地文件，
@@ -305,6 +309,8 @@ class ReminderTool(
             putExtra("reminder_id", requestCode)
             // U2 延伸修复：携带 characterId，供 ReminderReceiver 在通知上加「查看日程」按钮
             putExtra("character_id", characterId)
+            // P2-2-1 修复：携带真实 Long id（持久化文件名），供 Receiver 触发后删文件
+            putExtra("reminder_id_long", reminderId)
         }
         val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M)
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
@@ -313,17 +319,22 @@ class ReminderTool(
 
         val pendingIntent = PendingIntent.getBroadcast(context, requestCode, intent, flags)
 
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                alarmManager.setExactAndAllowWhileIdle(
-                    AlarmManager.RTC_WAKEUP, triggerAtMs, pendingIntent
-                )
-            } else {
-                alarmManager.setExact(AlarmManager.RTC_WAKEUP, triggerAtMs, pendingIntent)
-            }
-        } catch (e: SecurityException) {
-            // Android 12+ 未获得精确闹钟权限时降级到非精确
-            alarmManager.set(AlarmManager.RTC_WAKEUP, triggerAtMs, pendingIntent)
+        // P1-3 修复：此前单一依赖“抛 SecurityException”来判断是否需要降级，
+        // 但部分 OEM 对无权限的 setExactAndAllowWhileIdle 是静默接受并按非精确调度（不抛异常），
+        // 此时 catch 分支根本不会执行，降级也就失效了。
+        // 与 DailyPracticeScheduler.scheduleNext 对齐：改为主动前置检查 canScheduleExactAlarms()，
+        // 不再依赖异常是否被抛出来判断是否需要降级。
+        // 降级分支也不再用裸 set()（受 Doze 阻塞可让提醒晚数小时），
+        // 改用 setAndAllowWhileIdle（允许系统延迟最多几分钟，但不会被 Doze 长时间阻塞），
+        // 两个降级 API 不再不一致。
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && !alarmManager.canScheduleExactAlarms()) {
+            alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAtMs, pendingIntent)
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            alarmManager.setExactAndAllowWhileIdle(
+                AlarmManager.RTC_WAKEUP, triggerAtMs, pendingIntent
+            )
+        } else {
+            alarmManager.setExact(AlarmManager.RTC_WAKEUP, triggerAtMs, pendingIntent)
         }
     }
 }

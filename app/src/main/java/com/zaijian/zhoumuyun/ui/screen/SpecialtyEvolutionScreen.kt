@@ -10,6 +10,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import com.zaijian.zhoumuyun.data.model.CharacterConfig
 import com.zaijian.zhoumuyun.data.model.DefaultCharacters
 import com.zaijian.zhoumuyun.ui.component.DetailTopBar
 import com.zaijian.zhoumuyun.ui.design.WorldCard
@@ -18,6 +19,7 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
@@ -38,6 +40,10 @@ import androidx.activity.compose.BackHandler
 import androidx.lifecycle.compose.collectAsStateWithLifecycle // P1-11-2
 import kotlinx.coroutines.launch
 import com.zaijian.zhoumuyun.ui.design.AppIcons
+import com.zaijian.zhoumuyun.ui.design.DangerVelvetButton
+import com.zaijian.zhoumuyun.ui.design.GhostGoldButton
+import com.zaijian.zhoumuyun.ui.design.GoldPrimaryButton
+import com.zaijian.zhoumuyun.ui.design.SecondaryGoldButton
 
 // ─────────────────────────────────────────────────────────────
 //  SpecialtyEvolutionScreen（P6 专长进化系统）
@@ -74,6 +80,9 @@ fun SpecialtyEvolutionScreen(
 
     val profiles by viewModel.profiles.collectAsStateWithLifecycle()
     val selectedId by viewModel.selectedProfileId.collectAsStateWithLifecycle()
+    val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
+    // P2-7-9 修复：角色合并列表（DefaultCharacters + 女儿），供查名/查主题色。
+    val allCharacters by viewModel.characters.collectAsStateWithLifecycle()
     val snackbar by viewModel.snackbarMessage.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -124,6 +133,10 @@ fun SpecialtyEvolutionScreen(
             if (selectedId == null) {
                 SpecialtyListContent(
                     profiles = profiles,
+                    // P2-7-6 修复：传入加载中三态。
+                    isLoading = isLoading,
+                    // P2-7-9 修复：传入合并角色列表供卡片查主题色。
+                    allCharacters = allCharacters,
                     onSelect = { viewModel.selectProfile(it.id) },
                     onToggleActive = { viewModel.setActive(it.id, !it.isActive) },
                     onLongPressDelete = { profileToDelete = it },
@@ -154,13 +167,16 @@ fun SpecialtyEvolutionScreen(
             title = { Text("删除「${profile.domain}」？") },
             text = { Text("已积累的修炼记录、风格说明书都会被一并清空，无法恢复。") },
             confirmButton = {
-                TextButton(onClick = {
-                    viewModel.deleteSpecialty(profile.id, profile.domain)
-                    profileToDelete = null
-                }) { Text("删除", color = Palette.SemanticDanger) }  // P3-53 修复：colorScheme.error → Palette.SemanticDanger
+                DangerVelvetButton(
+                    text = "删除",
+                    onClick = {
+                        viewModel.deleteSpecialty(profile.id, profile.domain)
+                        profileToDelete = null
+                    },
+                )
             },
             dismissButton = {
-                TextButton(onClick = { profileToDelete = null }) { Text("取消") }
+                GhostGoldButton(text = "取消", onClick = { profileToDelete = null })
             },
         )
     }
@@ -173,12 +189,24 @@ fun SpecialtyEvolutionScreen(
 @Composable
 private fun SpecialtyListContent(
     profiles: List<SpecialtyProfileEntity>,
+    // P2-7-6 修复：新增 isLoading 三态，慢查询时显示加载中而非误导性的"空态"。
+    isLoading: Boolean,
+    // P2-7-9 修复：角色合并列表（DefaultCharacters + 女儿），供卡片查主题色。
+    allCharacters: List<CharacterConfig>,
     onSelect: (SpecialtyProfileEntity) -> Unit,
     onToggleActive: (SpecialtyProfileEntity) -> Unit,
     onLongPressDelete: (SpecialtyProfileEntity) -> Unit,
 ) {
     val colors = ZaijianTheme.colors
     val type = ZaijianTheme.typography
+
+    if (isLoading) {
+        // 查询进行中：显示进度指示器，避免把"仍在加载"误认为"没有专长"的空态。
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            CircularProgressIndicator(color = colors.accent)
+        }
+        return
+    }
 
     if (profiles.isEmpty()) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -212,6 +240,7 @@ private fun SpecialtyListContent(
         items(profiles, key = { it.id }) { profile ->
             SpecialtyCard(
                 profile = profile,
+                allCharacters = allCharacters,
                 onClick = { onSelect(profile) },
                 onToggleActive = { onToggleActive(profile) },
                 onLongPress = { onLongPressDelete(profile) },
@@ -223,6 +252,8 @@ private fun SpecialtyListContent(
 @Composable
 private fun SpecialtyCard(
     profile: SpecialtyProfileEntity,
+    // P2-7-9 修复：角色合并列表（DefaultCharacters + 女儿），供查主题色。
+    allCharacters: List<CharacterConfig>,
     onClick: () -> Unit,
     onToggleActive: () -> Unit,
     onLongPress: () -> Unit,
@@ -235,13 +266,17 @@ private fun SpecialtyCard(
         "FORMING" -> "成型期"
         else -> "稳定期"
     }
+    // UI 升级 v2.0（帧25 稳定期墨绿色）：摸索期(灰) → 成型期(金) → 稳定期(墨绿)
+    // 三阶段配色拉开区分度，稳定期不再与成型期同用 accent 金色，靠颜色即可辨识阶段。
+    val stableGreen = Color(0xFF5C8A6E)
     val stageColor = when (profile.maturityStage) {
         "EXPLORING" -> colors.textDisabled
         "FORMING" -> colors.accent
-        else -> colors.accent  // 稳定期同用强调色，与成型期视觉一致，靠文字标签和晋升图标区分阶段
+        else -> stableGreen  // 稳定期墨绿
     }
 
-    val characterColor = DefaultCharacters.find { it.id == profile.characterId }?.accentColor
+    // P2-7-9 修复：改用合并列表查女儿角色主题色。
+    val characterColor = allCharacters.find { it.id == profile.characterId }?.accentColor
 
     // WorldCard 接入（精修方案 v1.3）：SpecialtyProfileEntity.characterId 现成字段，明确归属角色。
     WorldCard(
@@ -374,13 +409,15 @@ private fun CreateSpecialtyDialog(
             }
         },
         confirmButton = {
-            TextButton(
-                onClick = { onConfirm(domain, intent) },
-                enabled = domain.isNotBlank() && intent.isNotBlank(),
-            ) { Text("开始") }
+            val startEnabled = domain.isNotBlank() && intent.isNotBlank()
+            GoldPrimaryButton(
+                text = "开始",
+                onClick = { if (startEnabled) onConfirm(domain, intent) },
+                modifier = Modifier.alpha(if (startEnabled) 1f else 0.4f),
+            )
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("取消") }
+            GhostGoldButton(text = "取消", onClick = onDismiss)
         },
     )
 }
@@ -401,17 +438,38 @@ private fun SpecialtyDetailContent(
     LaunchedEffect(profileId) { viewModel.selectProfile(profileId) }
     val detail by viewModel.profileDetail.collectAsStateWithLifecycle()
 
-    if (detail.isLoading || detail.profile == null) {
+    if (detail.isLoading) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             CircularProgressIndicator(color = colors.accent)
         }
         return
     }
+    // P2-7-7 修复：加载已结束但档案为 null（被删/失效）时，给出明确提示 + 返回列表，
+    // 避免页面空白/死循环转圈（与 JudgeProfileScreen 同款修法）。
+    if (detail.profile == null) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text("档案不存在或已失效", style = type.body, color = colors.textSecondary)
+                Spacer(Modifier.height(Spacing.md))
+                Text(
+                    text  = "返回列表",
+                    style = type.label,
+                    color = colors.accent,
+                    modifier = Modifier
+                        .clickable { viewModel.selectProfile(null) }
+                        .padding(Spacing.md),
+                )
+            }
+        }
+        return
+    }
     val profile = detail.profile!!
 
+    // P2-7-9 修复：改用合并列表（DefaultCharacters + 女儿）查主题色。
+    val allCharacters by viewModel.characters.collectAsStateWithLifecycle()
     // WorldCard ownerAccent（精修方案 v1.3）：本页按 characterId 进入，
     // PracticeRecordRow 明确归属该角色，与 264 行 SpecialtyCard 处同一取法。
-    val characterColor = DefaultCharacters.find { it.id == profile.characterId }?.accentColor
+    val characterColor = allCharacters.find { it.id == profile.characterId }?.accentColor
 
     // UI S4 修复：折叠/展开状态在进程死亡后应能恢复，改用 rememberSaveable
     var planHistoryExpanded by rememberSaveable { mutableStateOf(false) }
@@ -445,13 +503,10 @@ private fun SpecialtyDetailContent(
                 )
                 if (detail.planHistory.size > 1) {
                     Spacer(Modifier.height(Spacing.sm))
-                    TextButton(onClick = { planHistoryExpanded = !planHistoryExpanded }) {
-                        Text(
-                            text = if (planHistoryExpanded) "收起历史版本" else "查看历史版本（${detail.planHistory.size}个）",
-                            style = type.caption,
-                            color = colors.accent,
-                        )
-                    }
+                    GhostGoldButton(
+                        text = if (planHistoryExpanded) "收起历史版本" else "查看历史版本（${detail.planHistory.size}个）",
+                        onClick = { planHistoryExpanded = !planHistoryExpanded },
+                    )
                     if (planHistoryExpanded) {
                         detail.planHistory.filter { !it.isActive }.forEach { old ->
                             Column(modifier = Modifier.padding(top = Spacing.xs)) {
@@ -542,15 +597,11 @@ private fun SpecialtyDetailContent(
 
         // ── 窗口6：发起一轮竞赛入口 ──────────────────────────
         item {
-            OutlinedButton(
+            SecondaryGoldButton(
+                text = "发起一轮竞赛",
                 onClick = { onNavigateToCompetition(profile.domain) },
                 modifier = Modifier.fillMaxWidth(),
-                border = BorderStroke(0.5.dp, colors.accent.copy(alpha = 0.4f)),
-            ) {
-                Icon(AppIcons.EmojiEvents, contentDescription = null, tint = colors.accent)
-                Spacer(Modifier.width(Spacing.xs))
-                Text("发起一轮竞赛", color = colors.accent)
-            }
+            )
         }
     }
 }
@@ -660,9 +711,7 @@ private fun PracticeRecordRow(
                 Text(displayContent, style = type.caption, color = colors.textSecondary)
                 if (record.digestStatus == "RAW") {
                     Spacer(Modifier.height(Spacing.xs))
-                    TextButton(onClick = onMarkMilestone) {
-                        Text("标记为里程碑（不会被自动蒸馏）", style = type.label, color = colors.accent)
-                    }
+                    SecondaryGoldButton(text = "标记为里程碑（不会被自动蒸馏）", onClick = onMarkMilestone)
                 }
             }
         }
@@ -722,28 +771,34 @@ private fun SuggestionCard(
         Row(horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
             when {
                 suggestion.content.startsWith("CANDIDATE_CONFIRM::") -> {
-                    TextButton(onClick = { viewModel.confirmCandidate(profileId, suggestion) }) {
-                        Text("写进风格里", color = colors.accent)
-                    }
-                    TextButton(onClick = { viewModel.declineCandidate(profileId, suggestion) }) {
-                        Text("先不用", color = colors.textDisabled)
-                    }
+                    SecondaryGoldButton(
+                        text = "写进风格里",
+                        onClick = { viewModel.confirmCandidate(profileId, suggestion) },
+                    )
+                    GhostGoldButton(
+                        text = "先不用",
+                        onClick = { viewModel.declineCandidate(profileId, suggestion) },
+                    )
                 }
                 suggestion.content.startsWith("PROMOTION_REQUEST::") -> {
-                    TextButton(onClick = { viewModel.confirmPromotion(profileId, suggestion) }) {
-                        Text("写进她的本质里", color = colors.accent)
-                    }
-                    TextButton(onClick = { viewModel.declinePromotion(suggestion) }) {
-                        Text("暂不", color = colors.textDisabled)
-                    }
+                    SecondaryGoldButton(
+                        text = "写进她的本质里",
+                        onClick = { viewModel.confirmPromotion(profileId, suggestion) },
+                    )
+                    GhostGoldButton(
+                        text = "暂不",
+                        onClick = { viewModel.declinePromotion(suggestion) },
+                    )
                 }
                 else -> {
-                    TextButton(onClick = { viewModel.adoptSuggestion(suggestion.id) }) {
-                        Text("采纳", color = colors.accent)
-                    }
-                    TextButton(onClick = { viewModel.ignoreSuggestion(suggestion.id) }) {
-                        Text("忽略", color = colors.textDisabled)
-                    }
+                    SecondaryGoldButton(
+                        text = "采纳",
+                        onClick = { viewModel.adoptSuggestion(suggestion.id) },
+                    )
+                    GhostGoldButton(
+                        text = "忽略",
+                        onClick = { viewModel.ignoreSuggestion(suggestion.id) },
+                    )
                 }
             }
         }

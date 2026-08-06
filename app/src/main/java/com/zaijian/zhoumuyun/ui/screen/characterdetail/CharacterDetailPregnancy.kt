@@ -87,6 +87,7 @@ import com.zaijian.zhoumuyun.data.model.StatusType
 import com.zaijian.zhoumuyun.data.model.accentLight
 import com.zaijian.zhoumuyun.ui.component.BreathingAvatar
 import com.zaijian.zhoumuyun.ui.design.WorldCard
+import com.zaijian.zhoumuyun.ui.design.InfoChip
 import com.zaijian.zhoumuyun.ui.theme.AppTheme
 import com.zaijian.zhoumuyun.ui.theme.AppColors
 import com.zaijian.zhoumuyun.ui.theme.AppTypography
@@ -142,6 +143,7 @@ internal fun PregnancyPanel(
         WorldCard(
             modifier = Modifier.fillMaxWidth(),
             ownerAccent = accentColor,
+            accentWash = true,
         ) {
             Box(modifier = Modifier.padding(Spacing.md)) {
             if (state.isLoading) {
@@ -163,11 +165,27 @@ internal fun PregnancyPanel(
                         }
                         else -> "当前未怀孕"
                     }
-                    Text(
-                        text  = statusText,
-                        style = type.cardTitle,
-                        color = if (pregnancy.isPregnant) accentColor else colors.textPrimary,
-                    )
+                    // UI 升级 v2.0（§口径统一）：复用 InfoChip 组件展示孕期状态标签，
+                    // 与 BriefingCharacterCard 的"怀孕中"chip 保持同一视觉口径。
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(Spacing.xs),
+                    ) {
+                        Text(
+                            text  = statusText,
+                            style = type.cardTitle,
+                            color = if (pregnancy.isPregnant) accentColor else colors.textPrimary,
+                        )
+                        // InfoChip 状态标签
+                        val (chipText, chipColor) = when {
+                            pregnancy.isPregnant -> "怀孕中" to Palette.SemanticReminder
+                            pregnancy.miscarriedAt != null &&
+                                (pregnancy.miscarriageDaysAgo() ?: 0) <= 30 ->
+                                "流产恢复" to Palette.SemanticWarning
+                            else -> "未怀孕" to Palette.SemanticNeutral
+                        }
+                        InfoChip(text = chipText, color = chipColor)
+                    }
                     if (pregnancy.consecutiveFailCount > 0 && !pregnancy.isPregnant) {
                         Text(
                             text  = "连续失败 ${pregnancy.consecutiveFailCount} 次",

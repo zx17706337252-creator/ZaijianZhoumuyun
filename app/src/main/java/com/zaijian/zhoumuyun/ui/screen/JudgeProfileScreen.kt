@@ -15,6 +15,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSavedStateRegistryOwner
@@ -30,6 +31,7 @@ import com.zaijian.zhoumuyun.data.model.CompetitionRoundStatus.STATUS_JUDGING
 import com.zaijian.zhoumuyun.data.model.CompetitionRoundStatus.STATUS_CANCELLED
 import com.zaijian.zhoumuyun.data.db.entity.CompetitionRoundEntity
 import com.zaijian.zhoumuyun.data.db.entity.JudgeProfileEntity
+import com.zaijian.zhoumuyun.data.model.CharacterConfig
 import com.zaijian.zhoumuyun.data.model.DefaultCharacters
 import com.zaijian.zhoumuyun.ui.theme.*
 import com.zaijian.zhoumuyun.ui.viewmodel.JudgeProfileViewModel
@@ -38,6 +40,9 @@ import androidx.activity.compose.BackHandler
 import androidx.lifecycle.compose.collectAsStateWithLifecycle // P1-11-2
 import com.zaijian.zhoumuyun.util.TimeFormatUtils
 import com.zaijian.zhoumuyun.ui.design.AppIcons
+import com.zaijian.zhoumuyun.ui.design.GoldPrimaryButton
+import com.zaijian.zhoumuyun.ui.design.GhostGoldButton
+import com.zaijian.zhoumuyun.ui.design.SecondaryGoldButton
 
 // ─────────────────────────────────────────────────────────────
 //  JudgeProfileScreen — 裁判档案训练页（窗口 5B）
@@ -77,6 +82,8 @@ fun JudgeProfileScreen(
     // confirmCorrection 写入时置 true），但 Screen 从未订阅，用户点确认后完全
     // 看不到操作正在进行，容易误以为没反应而重复点击。现在接入。
     val actionLoading by viewModel.isLoading.collectAsStateWithLifecycle()
+    // P2-7-6 修复：Judge 列表级加载三态（区别于 action 的 isLoading）。
+    val listLoading by viewModel.listLoading.collectAsStateWithLifecycle()
 
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -90,8 +97,10 @@ fun JudgeProfileScreen(
     BackHandler(enabled = selectedId != null) { viewModel.selectProfile(null) }
 
     // 角色名（顶栏用）
-    val charName = remember(characterId) {
-        DefaultCharacters.find { it.id == characterId }?.name ?: "角色"
+    // P2-7-9 修复：改用合并列表（DefaultCharacters + 女儿）查名，女儿裁判也能显示真名。
+    val allCharacters by viewModel.characters.collectAsStateWithLifecycle()
+    val charName = remember(characterId, allCharacters) {
+        allCharacters.find { it.id == characterId }?.name ?: "角色"
     }
 
     Scaffold(
@@ -119,6 +128,10 @@ fun JudgeProfileScreen(
             if (selectedId == null) {
                 JudgeListContent(
                     profiles = profiles,
+                    // P2-7-6 修复：传入列表级加载三态。
+                    isLoading = listLoading,
+                    // P2-7-9 修复：传入合并角色列表供卡片查主题色。
+                    allCharacters = allCharacters,
                     onSelect = { viewModel.selectProfile(it) },
                 )
             } else {
@@ -140,10 +153,24 @@ fun JudgeProfileScreen(
 @Composable
 private fun JudgeListContent(
     profiles: List<JudgeProfileEntity>,
+    // P2-7-6 修复：新增列表级加载三态。
+    isLoading: Boolean,
+    // P2-7-9 修复：合并角色列表（DefaultCharacters + 女儿），供卡片查主题色。
+    allCharacters: List<CharacterConfig>,
     onSelect: (String) -> Unit,
 ) {
     val colors = ZaijianTheme.colors
     val type   = ZaijianTheme.typography
+
+    if (isLoading) {
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center,
+        ) {
+            CircularProgressIndicator(color = colors.accent)
+        }
+        return
+    }
 
     if (profiles.isEmpty()) {
         Box(
@@ -172,6 +199,7 @@ private fun JudgeListContent(
         items(profiles, key = { it.id }) { profile ->
             JudgeProfileCard(
                 profile = profile,
+                allCharacters = allCharacters,
                 onClick = { onSelect(profile.id) },
             )
         }
@@ -181,6 +209,8 @@ private fun JudgeListContent(
 @Composable
 private fun JudgeProfileCard(
     profile: JudgeProfileEntity,
+    // P2-7-9 修复：合并角色列表（DefaultCharacters + 女儿），供查主题色。
+    allCharacters: List<CharacterConfig>,
     onClick: () -> Unit,
 ) {
     val colors = ZaijianTheme.colors
@@ -193,7 +223,8 @@ private fun JudgeProfileCard(
         else        -> profile.maturityStage to colors.textDisabled
     }
 
-    val characterColor = DefaultCharacters.find { it.id == profile.characterId }?.accentColor
+    // P2-7-9 修复：改用合并列表查女儿裁判主题色。
+    val characterColor = allCharacters.find { it.id == profile.characterId }?.accentColor
 
     // WorldCard 接入（精修方案 v1.3）：评委即角色，characterId 现成可查 accentColor。
     WorldCard(
@@ -287,7 +318,26 @@ private fun JudgeDetailContent(
         return
     }
 
-    val profile = detail.profile ?: return
+    val profile = detail.profile
+    if (profile == null) {
+        // P2-7-7 修复：加载已结束但 profile 为 null（档案被删/失效）时，渲染明确的
+        // "档案不存在"提示 + 返回按钮，避免页面空白/死循环转圈。
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text("档案不存在或已失效", style = type.body, color = colors.textSecondary)
+                Spacer(Modifier.height(Spacing.md))
+                Text(
+                    text  = "返回列表",
+                    style = type.label,
+                    color = colors.accent,
+                    modifier = Modifier
+                        .clickable { viewModel.selectProfile(null) }
+                        .padding(Spacing.md),
+                )
+            }
+        }
+        return
+    }
 
     // 编辑评判标准 Dialog 的显示状态
     var showEditDialog by remember { mutableStateOf(false) }
@@ -356,29 +406,11 @@ private fun JudgeDetailContent(
                 // 审查报告问题10修复：isLoading 此前无 UI 消费方。这里用来在
                 // updateAnchorIntent/confirmCorrection 写入进行中禁用按钮，
                 // 避免用户看不到反馈而重复点击、触发并发写入。
-                OutlinedButton(
-                    onClick  = { showEditDialog = true },
-                    enabled  = !actionLoading,
-                    border   = androidx.compose.foundation.BorderStroke(0.5.dp, colors.accent.copy(alpha = 0.4f)),
+                SecondaryGoldButton(
+                    text = "编辑评判偏好",
+                    onClick = { showEditDialog = true },
                     modifier = Modifier.fillMaxWidth(),
-                ) {
-                    if (actionLoading) {
-                        CircularProgressIndicator(
-                            modifier    = Modifier.size(16.dp),
-                            strokeWidth = 2.dp,
-                            color       = colors.accent,
-                        )
-                    } else {
-                        Icon(
-                            AppIcons.Edit,
-                            contentDescription = null,
-                            tint     = colors.accent,
-                            modifier = Modifier.size(16.dp),
-                        )
-                    }
-                    Spacer(Modifier.width(Spacing.xs))
-                    Text("编辑评判偏好", color = colors.accent)
-                }
+                )
             }
         }
 
@@ -533,21 +565,17 @@ private fun CandidateCorrectionRow(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.End,
         ) {
-            TextButton(
-                onClick        = onDecline,
-                enabled        = !isLoading,
-                contentPadding = PaddingValues(horizontal = Spacing.sm, vertical = 0.dp),
-            ) {
-                Text("先不用", style = type.caption, color = colors.textDisabled)
-            }
+            GhostGoldButton(
+                text = "先不用",
+                onClick = { if (!isLoading) onDecline() },
+                modifier = Modifier.alpha(if (!isLoading) 1f else 0.4f),
+            )
             Spacer(Modifier.width(Spacing.xs))
-            TextButton(
-                onClick        = onConfirm,
-                enabled        = !isLoading,
-                contentPadding = PaddingValues(horizontal = Spacing.sm, vertical = 0.dp),
-            ) {
-                Text("写进标准", style = type.caption, color = colors.accent)
-            }
+            GoldPrimaryButton(
+                text = "写进标准",
+                onClick = { if (!isLoading) onConfirm() },
+                modifier = Modifier.alpha(if (!isLoading) 1f else 0.4f),
+            )
         }
     }
 }
@@ -673,21 +701,14 @@ private fun EditStandardDialog(
             }
         },
         confirmButton = {
-            Button(
-                onClick  = { if (text.isNotBlank()) onConfirm(text) },
-                enabled  = text.isNotBlank(),
-                colors   = ButtonDefaults.buttonColors(
-                    containerColor = colors.accent,
-                    contentColor   = colors.bgBase,
-                ),
-            ) {
-                Text("确定")
-            }
+            GoldPrimaryButton(
+                text = "确定",
+                onClick = { if (text.isNotBlank()) onConfirm(text) },
+                modifier = Modifier.alpha(if (text.isNotBlank()) 1f else 0.4f),
+            )
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("取消", color = colors.textSecondary)
-            }
+            GhostGoldButton(text = "取消", onClick = onDismiss)
         },
     )
 }

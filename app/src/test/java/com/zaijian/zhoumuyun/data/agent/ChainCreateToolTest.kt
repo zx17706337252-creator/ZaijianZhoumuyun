@@ -345,6 +345,6 @@ class ChainCreateToolTest {
         field.isAccessible = true
         @Suppress("UNCHECKED_CAST")
         val map = field.get(repo) as java.util.Map<String, ChainDefinitionEntity>
-        return map.values.toList()
+        return map.values().toList()
     }
 }

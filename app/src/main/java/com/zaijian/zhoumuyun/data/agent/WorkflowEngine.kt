@@ -1,6 +1,9 @@
 package com.zaijian.zhoumuyun.data.agent
 
 import com.zaijian.zhoumuyun.data.AppContainer
+import com.zaijian.zhoumuyun.data.agent.VaultCallContext
+import com.zaijian.zhoumuyun.data.agent.VaultScope
+import com.zaijian.zhoumuyun.data.agent.withVaultContext
 import com.zaijian.zhoumuyun.data.provider.chatSyncWithRetry
 import com.zaijian.zhoumuyun.data.db.entity.WorkflowJobEntity
 import com.zaijian.zhoumuyun.data.db.entity.WorkflowStepResultEntity
@@ -365,7 +368,14 @@ object WorkflowEngine {
             null
         } else {
             try {
-                tool.execute(paramsWithCharId)
+                // P1-12 修复：工作流后台执行文件类工具（file_export/file_edit/folder_create
+                // 等）必须绑定到 job.characterId 的 vault 上下文。否则 currentVaultContext()
+                // 回退到进程级 VaultCallContextHolder（最近一次聊天/圆桌 set 的角色），
+                // 文件会落错角色的私库（角色 B 的 workflow 写进角色 A 的 vault）。与
+                // AgentTaskJobExecutor 的 Fix E 同款做法。
+                withVaultContext(VaultCallContext(characterId, VaultScope.PERSONAL)) {
+                    tool.execute(paramsWithCharId)
+                }
             } catch (e: CancellationException) {
                 // #55 修复：同上，工具执行本身也可能在挂起点被取消（比如工具内部
                 // 有网络/DB IO），必须让 CancellationException 穿透而不是被当成

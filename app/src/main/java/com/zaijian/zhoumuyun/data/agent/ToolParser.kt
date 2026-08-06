@@ -512,8 +512,8 @@ class ToolParser {
 
         // P1 修复（批次3审查报告问题1，结构性修复）：
         // 原方案（批次2引入）只在检测到疑似截断时打 warning 日志，截断本身仍会发生——
-        // translate/file_export/agent_message/soul_update/narrative_memory_update/
-        // user_impression_update 六个长文本工具因此无一幸免（批次3审查报告核心结论）。
+        // translate/file_export/soul_update/narrative_memory_update/
+        // user_impression_update 五个长文本工具因此无一幸免（批次3审查报告核心结论）。
         //
         // 现改为真正修正：对每个被 ATTR_PATTERN 误截断的自由文本属性（判定逻辑复用
         // detectUnescapedQuoteTruncation 的"截断点之后是否像合法边界"），重新贪婪扫描——

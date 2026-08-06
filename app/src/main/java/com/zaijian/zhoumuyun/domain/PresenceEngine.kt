@@ -12,6 +12,7 @@ import com.zaijian.zhoumuyun.data.db.entity.WorldEventEntity
 import com.zaijian.zhoumuyun.data.model.CharacterConfig
 import com.zaijian.zhoumuyun.data.model.CharacterStateLayer
 import com.zaijian.zhoumuyun.data.model.DefaultCharacters
+import com.zaijian.zhoumuyun.data.model.StatusType
 import com.zaijian.zhoumuyun.data.model.toMoodType
 import com.zaijian.zhoumuyun.data.provider.LLMConfig
 import com.zaijian.zhoumuyun.data.provider.LLMMessage
@@ -224,54 +225,65 @@ class PresenceEngine(
         val now        = System.currentTimeMillis()
 
         // ── Phase 20：计算 mood 和 energy ───────────────────
-        val existing = presenceCache[characterId]
         // computeEnergy 按时间段给固定 delta，但 refreshPresence 在 Tier1 每 5 分钟被调用一次，
         // 若每次都叠加 delta，energy 会随调用次数而非真实时间衰减。改为：同一时段只应用一次 delta，
         // 时段切换时才重算；同一时段内的后续刷新直接复用上次 energy。
         // S2问题7修复：使用 compute() 原子操作替代读-判-写三步，避免时段切换瞬间并发重复计算
-        var periodChanged = false
-        lastEnergyPeriod.compute(characterId) { _, existingPeriod ->
-            if (existingPeriod == timePeriod) {
-                existingPeriod
-            } else {
-                periodChanged = true
-                timePeriod
+        //
+        // P1-16 修复：refreshPresence 可被 Tier1（持 tier1Mutex）与 Roundtable/Chat 的补算路径
+        // （绕开 tier1Mutex）并发调用。读 existing → 判时段 → 算 energy → 写 cache 必须作为一个
+        // 原子闭环，否则两协程并发命中时段切换窗口时各自算 energy、以旧值覆盖新值（丢更新/energy
+        // 回退）。用 per-character 分片锁串行化（复用 proactiveThrottleLocks，与文件 1055-1064
+        // 注释「分片加锁而非全局串行化」的既定意图一致）。
+        val snapshot = proactiveThrottleLockFor(characterId).withLock {
+            val existing = presenceCache[characterId]
+            var periodChanged = false
+            lastEnergyPeriod.compute(characterId) { _, existingPeriod ->
+                if (existingPeriod == timePeriod) {
+                    existingPeriod
+                } else {
+                    periodChanged = true
+                    timePeriod
+                }
             }
+            val newEnergy = if (existing != null && !periodChanged) {
+                existing.energy
+            } else {
+                // P2-4-3 说明：presenceCache 是进程内静态缓存，进程重启后为空，
+                // 此处 existing 为 null 时 energy 从 70 起步。这是**有意降级为会话内状态**：
+                // 未做"重启时从 world_events 回填最近 energy"（避免冷启动额外 DB 读取与
+                // 与 Tier1 的初始化竞态）。重启后首个 Tier1 周期会按新时段重算 energy，
+                // 长会话内 energy 演化仍是连贯的；跨重启的 energy 连贯性不在本模块承诺内。
+                computeEnergy(existing?.energy ?: 70, timePeriod)
+            }
+
+            // mood 计算：CharacterStateLayer 是唯一真相来源。
+            // 传入了角色当前情绪状态时，直接用 EmotionType 换算；
+            // 没有时（尚未接入 / 独处场景）才退回旧的目标进度+时间段猜测。
+            val newMood = if (characterState != null) {
+                characterState.emotionalState.primaryEmotion.toMoodType(
+                    intensity        = characterState.emotionalState.intensity,
+                    emotionalFatigue = characterState.emotionalState.emotionalFatigue,
+                )
+            } else {
+                computeMood(topGoal?.progress, timePeriod, newEnergy)
+            }
+
+            val noteText  = buildNoteText(topGoal?.title, topGoal?.progress, timePeriod)
+
+            // 1. 写内存缓存（在锁内完成，保证原子闭环）
+            PresenceSnapshot(
+                characterId   = characterId,
+                activity      = activity,
+                timePeriod    = timePeriod,
+                mood          = newMood,
+                energy        = newEnergy,
+                sourceGoalId  = topGoal?.id,
+                goalTitle     = topGoal?.title,
+                noteText      = noteText,
+                updatedAt     = now,
+            ).also { presenceCache[characterId] = it }
         }
-        val newEnergy = if (existing != null && !periodChanged) {
-            existing.energy
-        } else {
-            computeEnergy(existing?.energy ?: 70, timePeriod)
-        }
-
-        // mood 计算：CharacterStateLayer 是唯一真相来源。
-        // 传入了角色当前情绪状态时，直接用 EmotionType 换算；
-        // 没有时（尚未接入 / 独处场景）才退回旧的目标进度+时间段猜测。
-        val newMood = if (characterState != null) {
-            characterState.emotionalState.primaryEmotion.toMoodType(
-                intensity        = characterState.emotionalState.intensity,
-                emotionalFatigue = characterState.emotionalState.emotionalFatigue,
-            )
-        } else {
-            computeMood(topGoal?.progress, timePeriod, newEnergy)
-        }
-
-        val noteText  = buildNoteText(topGoal?.title, topGoal?.progress, timePeriod)
-
-        val snapshot = PresenceSnapshot(
-            characterId   = characterId,
-            activity      = activity,
-            timePeriod    = timePeriod,
-            mood          = newMood,
-            energy        = newEnergy,
-            sourceGoalId  = topGoal?.id,
-            goalTitle     = topGoal?.title,
-            noteText      = noteText,
-            updatedAt     = now,
-        )
-
-        // 1. 写内存缓存
-        presenceCache[characterId] = snapshot
 
         // 2. 持久化写入 world_events
         eventDao?.let { dao ->
@@ -281,8 +293,20 @@ class PresenceEngine(
                     put("activity", activity)
                     put("timePeriod", timePeriod.name)
                     put("goalTitle", topGoal?.title ?: "")
-                    put("mood", newMood.name)          // Phase 20 新增
-                    put("energy", newEnergy)           // Phase 20 新增
+                    put("mood", snapshot.mood.name)    // Phase 20 新增
+                    put("energy", snapshot.energy)     // Phase 20 新增
+                    // P2-4-1 修复：此前 payload 从不写 statusType，PresenceViewModel 读取端
+                    // optString("statusType", ACTIVE) 恒回落 ACTIVE，FOCUSED/IDLE 在事件轨道
+                    // 逻辑不可达。这里按当前状态补写：有目标且能量充足 → 专注；能量低 → 空闲；
+                    // 其余 → 活跃。（Tier1 刷新本就代表角色"在场"，此处不产生 OFFLINE。）
+                    put(
+                        "statusType",
+                        when {
+                            topGoal != null && snapshot.energy >= 70 -> StatusType.FOCUSED.name
+                            snapshot.energy < 40 -> StatusType.IDLE.name
+                            else -> StatusType.ACTIVE.name
+                        }
+                    )
                 }.toString()
 
                 dao.append(
@@ -319,12 +343,12 @@ class PresenceEngine(
         // 已正确设置，但 refreshPresence 路径遗漏了 setLastProactiveAt，
         // 导致 refreshPresence 路径的节流失效（每 5 分钟可能重复触发主动消息）。
         // 在此补上节流时间戳的设置。
-        if (newEnergy > 60 && topGoal != null) {
+        if (snapshot.energy > 60 && topGoal != null) {
             // 新发现修复：读 lastProactiveAt→判断→构建→写 lastProactiveAt 整体
             // 加锁，避免与 tryEmitContextualProactiveMessage()（同一节流键）或
             // 其他并发调用方对同一角色产生重复触发。
             proactiveThrottleLockFor(characterId).withLock {
-                val msg = buildProactiveMessage(characterId, topGoal.title, newMood)
+                val msg = buildProactiveMessage(characterId, topGoal.title, snapshot.mood)
                 if (msg != null) {
                     setLastProactiveAt(characterId, now)
                     emitProactiveMessage(msg)
@@ -332,7 +356,7 @@ class PresenceEngine(
             }
         }
 
-        Log.v(TAG, "Presence refreshed: char $characterId → $activity | mood=$newMood energy=$newEnergy")
+        Log.v(TAG, "Presence refreshed: char $characterId → $activity | mood=${snapshot.mood} energy=${snapshot.energy}")
         return snapshot
     }
 
@@ -1035,6 +1059,7 @@ class PresenceEngine(
         }
 
         // 主动消息全局开关（由 ProfileScreen 写入，此处读取）
+        @Volatile
         private var appContext: android.content.Context? = null
         fun init(ctx: android.content.Context) { appContext = ctx.applicationContext }
         fun isProactiveEnabled(): Boolean =

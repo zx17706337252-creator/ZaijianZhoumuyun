@@ -6,12 +6,18 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.statusBars
 
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.DarkMode
+import androidx.compose.material.icons.outlined.Notifications
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -29,6 +35,8 @@ import com.zaijian.zhoumuyun.data.provider.ProviderManager
 import com.zaijian.zhoumuyun.data.provider.ProviderType
 import com.zaijian.zhoumuyun.ui.component.OptionPickerDialog
 import com.zaijian.zhoumuyun.ui.component.RootTabTopBar
+import com.zaijian.zhoumuyun.ui.design.GhostGoldButton
+import com.zaijian.zhoumuyun.ui.design.SecondaryGoldButton
 import com.zaijian.zhoumuyun.ui.theme.AppTheme
 import com.zaijian.zhoumuyun.ui.theme.GlassOpacity
 import com.zaijian.zhoumuyun.ui.theme.Spacing
@@ -71,6 +79,7 @@ internal data class SettingGroup(
 //  ProfileScreen 主体
 // ─────────────────────────────────────────────────────────────
 
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 fun ProfileScreen(
     onNavigateToCharacter: (Int) -> Unit = {},
@@ -118,6 +127,10 @@ fun ProfileScreen(
     var showFontDialog     by remember { mutableStateOf(false) }
     var showBgStyleDialog  by remember { mutableStateOf(false) }
     var showChangelogDialog by remember { mutableStateOf(false) }
+    // UI 升级 v2.0（帧20 我的页）：外观/通知改成折叠跳转入口（外观›/通知›），
+    // 点击后弹出 ModalBottomSheet 承载原设置面板，符合设计稿"三行折叠"。
+    var showAppearanceSheet  by remember { mutableStateOf(false) }
+    var showNotificationSheet by remember { mutableStateOf(false) }
 
     // ── 门扉页（启动页）背景图设置 ──────────────────────────────
     // 与 sharedAppearanceDataStore 同一持有模式：优先用 AppContainer.instance
@@ -279,6 +292,17 @@ fun ProfileScreen(
                 Spacer(Modifier.height(Spacing.lg))
             }
 
+            // ── 角色管理（★ Phase 15 新增）────────────────────
+            // UI 升级 v2.0（帧20 我的页）：设计稿顺序为 统计卡 → 角色管理九宫格 → AI配置卡，
+            // 角色管理应紧跟统计卡，置于 AI 配置之前。调整 item 顺序对齐设计。
+            item {
+                CharacterManagementSection(
+                    onNavigateToCharacter = onNavigateToCharacter,
+                    avatarOverrides       = characterAvatarOverrides,
+                )
+                Spacer(Modifier.height(Spacing.lg))
+            }
+
             // ── AI 配置（接真实 ProviderManager）────────────
             item {
                 AiConfigSection()
@@ -291,76 +315,28 @@ fun ProfileScreen(
                 Spacer(Modifier.height(Spacing.lg))
             }
 
-            // ── 角色管理（★ Phase 15 新增）────────────────────
+            // ── 外观（折叠跳转入口，UI 升级 v2.0 帧20）──────────────
             item {
-                CharacterManagementSection(
-                    onNavigateToCharacter = onNavigateToCharacter,
-                    avatarOverrides       = characterAvatarOverrides,
+                ProfileMiscRow(
+                    icon          = { Icon(Icons.Outlined.DarkMode, contentDescription = null) },
+                    title         = "外观",
+                    subtitle      = "昼夜跟随系统",
+                    trailing      = "›",
+                    onClick       = { showAppearanceSheet = true },
                 )
                 Spacer(Modifier.height(Spacing.lg))
             }
 
-            // ── 外观设置 ──────────────────────────────────────
+            // ── 通知（折叠跳转入口，UI 升级 v2.0 帧20）──────────────
             item {
-                AppearanceSection(
-                    // P2-36 修复：DataStore 中可能存储了超出范围的索引值，
-                    // 直接索引访问会抛 IndexOutOfBoundsException，加 coerceIn 保护。
-                    themeLabel    = themeOptions[themeIndex.coerceIn(0, themeOptions.lastIndex)],
-                    fontSizeLabel = fontSizeOptions[fontSizeIndex.coerceIn(0, fontSizeOptions.lastIndex)],
-                    bgStyleLabel  = bgStyleOptions[bgStyleIndex.coerceIn(0, bgStyleOptions.lastIndex)],
-                    splashBgLabel = if (splashBgConfig != null) "已自定义" else "默认",
-                    onThemeClick    = { showThemeDialog   = true },
-                    onFontClick     = { showFontDialog    = true },
-                    onBgStyleClick  = { showBgStyleDialog = true },
-                    onSplashBgClick = {
-                        // 还没设置过图时直接打开选图器；已经设置过图时弹出
-                        // "更换图片 / 恢复默认"的小 AlertDialog，避免用户设置后
-                        // 无法撤销。
-                        if (splashBgConfig != null) {
-                            showSplashBgActionDialog = true
-                        } else {
-                            splashBgImageLauncher.launch(arrayOf("image/*"))
-                        }
-                    },
+                ProfileMiscRow(
+                    icon          = { Icon(Icons.Outlined.Notifications, contentDescription = null) },
+                    title         = "通知",
+                    subtitle      = "简报与牵挂",
+                    trailing      = "›",
+                    onClick       = { showNotificationSheet = true },
                 )
-                Spacer(Modifier.height(Spacing.md))
-            }
-
-            // ── 通知设置 ──────────────────────────────────────
-            item {
-                NotificationSection(
-                    notifyMessages   = notifyMessages,
-                    notifyTaskDone   = notifyTaskDone,
-                    proactiveEnabled = proactiveEnabled,
-                    systemNotificationsEnabled = systemNotificationsEnabled,
-                    onOpenSystemNotificationSettings = {
-                        val intent = android.content.Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
-                            putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName)
-                        }
-                        context.startActivity(intent)
-                    },
-                    onNotifyMessagesChange = { v ->
-                        notifyMessages = v
-                        userPrefs.edit().putBoolean("notify_messages", v).apply()
-                    },
-                    onNotifyTaskDoneChange = { v ->
-                        notifyTaskDone = v
-                        userPrefs.edit().putBoolean("notify_task_done", v).apply()
-                    },
-                    onProactiveEnabledChange = { v ->
-                        proactiveEnabled = v
-                        userPrefs.edit().putBoolean("proactive_enabled", v).apply()
-                        // 角色主动发消息：开关实时生效，不用等下次启动 App
-                        if (v) {
-                            com.zaijian.zhoumuyun.data.agent.WorkManagerScheduler
-                                .scheduleProactiveMessageCheck(context)
-                        } else {
-                            com.zaijian.zhoumuyun.data.agent.WorkManagerScheduler
-                                .cancelProactiveMessageCheck(context)
-                        }
-                    },
-                )
-                Spacer(Modifier.height(Spacing.md))
+                Spacer(Modifier.height(Spacing.lg))
             }
 
             // ── 孕育系统总开关（C3#9 修复）───────────────────────
@@ -371,19 +347,19 @@ fun ProfileScreen(
                         scope.launch { pregnancyPressureStore.setP5TriggerEnabled(v) }
                     },
                 )
-                Spacer(Modifier.height(Spacing.md))
+                Spacer(Modifier.height(Spacing.lg))
             }
 
             // ── 功能（角色关系头衔管理入口）──────────────────────
             item {
                 SettingGroupSection(featureGroup)
-                Spacer(Modifier.height(Spacing.md))
+                Spacer(Modifier.height(Spacing.lg))
             }
 
             // ── 关于 ──────────────────────────────────────────
             item {
                 SettingGroupSection(aboutGroup)
-                Spacer(Modifier.height(Spacing.md))
+                // 最后一项不需要 trailing Spacer，contentPadding bottom 已处理底部间距
             }
         }
 
@@ -442,20 +418,22 @@ fun ProfileScreen(
                 title = { Text("启动页背景图") },
                 text  = { Text("更换一张新图片，或恢复默认的品馆呼吸 Logo 视觉。") },
                 confirmButton = {
-                    androidx.compose.material3.TextButton(
+                    SecondaryGoldButton(
+                        text = "更换图片",
                         onClick = {
                             showSplashBgActionDialog = false
                             splashBgImageLauncher.launch(arrayOf("image/*"))
-                        }
-                    ) { Text("更换图片") }
+                        },
+                    )
                 },
                 dismissButton = {
-                    androidx.compose.material3.TextButton(
+                    GhostGoldButton(
+                        text = "恢复默认",
                         onClick = {
                             showSplashBgActionDialog = false
                             scope.launch { splashBgStore.clearBackground() }
-                        }
-                    ) { Text("恢复默认") }
+                        },
+                    )
                 },
             )
         }
@@ -499,13 +477,103 @@ fun ProfileScreen(
                     )
                 },
                 confirmButton = {
-                    androidx.compose.material3.TextButton(
-                        onClick = { showChangelogDialog = false }
-                    ) {
-                        Text("关闭")
-                    }
+                    GhostGoldButton(
+                        text = "关闭",
+                        onClick = { showChangelogDialog = false },
+                    )
                 },
             )
+        }
+
+        // ── 外观设置 ModalBottomSheet（UI 升级 v2.0 帧20 折叠入口承载）────
+        if (showAppearanceSheet) {
+            androidx.compose.material3.ModalBottomSheet(
+                onDismissRequest = { showAppearanceSheet = false },
+                sheetState        = androidx.compose.material3.rememberModalBottomSheetState(skipPartiallyExpanded = true),
+            ) {
+                androidx.compose.foundation.layout.Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = Spacing.lg),
+                ) {
+                    Text(
+                        text     = "外观",
+                        style    = com.zaijian.zhoumuyun.ui.theme.ZaijianTheme.typography.cardTitle,
+                        color    = com.zaijian.zhoumuyun.ui.theme.ZaijianTheme.colors.textPrimary,
+                        modifier = androidx.compose.ui.Modifier.padding(horizontal = Spacing.screenHorizontal, vertical = Spacing.md),
+                    )
+                    AppearanceSection(
+                        // P2-36 修复：DataStore 中可能存储了超出范围的索引值，
+                        // 直接索引访问会抛 IndexOutOfBoundsException，加 coerceIn 保护。
+                        themeLabel    = themeOptions[themeIndex.coerceIn(0, themeOptions.lastIndex)],
+                        fontSizeLabel = fontSizeOptions[fontSizeIndex.coerceIn(0, fontSizeOptions.lastIndex)],
+                        bgStyleLabel  = bgStyleOptions[bgStyleIndex.coerceIn(0, bgStyleOptions.lastIndex)],
+                        splashBgLabel = if (splashBgConfig != null) "已自定义" else "默认",
+                        onThemeClick    = { showThemeDialog   = true },
+                        onFontClick     = { showFontDialog    = true },
+                        onBgStyleClick  = { showBgStyleDialog = true },
+                        onSplashBgClick = {
+                            if (splashBgConfig != null) {
+                                showSplashBgActionDialog = true
+                            } else {
+                                splashBgImageLauncher.launch(arrayOf("image/*"))
+                            }
+                        },
+                    )
+                }
+            }
+        }
+
+        // ── 通知设置 ModalBottomSheet（UI 升级 v2.0 帧20 折叠入口承载）────
+        if (showNotificationSheet) {
+            androidx.compose.material3.ModalBottomSheet(
+                onDismissRequest = { showNotificationSheet = false },
+                sheetState        = androidx.compose.material3.rememberModalBottomSheetState(skipPartiallyExpanded = true),
+            ) {
+                androidx.compose.foundation.layout.Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = Spacing.lg),
+                ) {
+                    Text(
+                        text     = "通知",
+                        style    = com.zaijian.zhoumuyun.ui.theme.ZaijianTheme.typography.cardTitle,
+                        color    = com.zaijian.zhoumuyun.ui.theme.ZaijianTheme.colors.textPrimary,
+                        modifier = androidx.compose.ui.Modifier.padding(horizontal = Spacing.screenHorizontal, vertical = Spacing.md),
+                    )
+                    NotificationSection(
+                        notifyMessages   = notifyMessages,
+                        notifyTaskDone   = notifyTaskDone,
+                        proactiveEnabled = proactiveEnabled,
+                        systemNotificationsEnabled = systemNotificationsEnabled,
+                        onOpenSystemNotificationSettings = {
+                            val intent = android.content.Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                                putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName)
+                            }
+                            context.startActivity(intent)
+                        },
+                        onNotifyMessagesChange = { v ->
+                            notifyMessages = v
+                            userPrefs.edit().putBoolean("notify_messages", v).apply()
+                        },
+                        onNotifyTaskDoneChange = { v ->
+                            notifyTaskDone = v
+                            userPrefs.edit().putBoolean("notify_task_done", v).apply()
+                        },
+                        onProactiveEnabledChange = { v ->
+                            proactiveEnabled = v
+                            userPrefs.edit().putBoolean("proactive_enabled", v).apply()
+                            if (v) {
+                                com.zaijian.zhoumuyun.data.agent.WorkManagerScheduler
+                                    .scheduleProactiveMessageCheck(context)
+                            } else {
+                                com.zaijian.zhoumuyun.data.agent.WorkManagerScheduler
+                                    .cancelProactiveMessageCheck(context)
+                            }
+                        },
+                    )
+                }
+            }
         }
     }
 }

@@ -51,7 +51,12 @@ class Migration69to70Test {
     /**
      * 测试1：v58→v70 全链 runMigrationsAndValidate。
      *
-     * 依赖：schemas/58.json（已提交）+ schemas/70.json（应用本批次后 build 生成）。
+     * 验证 MIGRATION_58_59 ~ MIGRATION_69_70 十二个迁移连跑不抛异常，
+     * 且迁移后数据库结构与 70.json 期望 schema 完全一致（Room 逐表比对表/列/索引/外键）。
+     *
+     * 依赖：schemas/58.json + schemas/70.json。
+     * 70.json 来自 v70 时刻的历史快照（C:\tmp\zaijian，identityHash 85d90e62...），
+     * 已补回 schemas 目录，故恢复本方法的强校验（此前因缺 70.json 临时改为手动链）。
      */
     @Test
     fun testAllMigrations58to70Validate() {

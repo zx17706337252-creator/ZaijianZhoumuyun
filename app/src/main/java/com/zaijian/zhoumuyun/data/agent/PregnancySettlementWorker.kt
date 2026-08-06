@@ -2,6 +2,7 @@ package com.zaijian.zhoumuyun.data.agent
 
 import android.content.Context
 import android.content.Intent
+import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
@@ -211,7 +212,8 @@ class PregnancySettlementWorker(
             // 若本 Worker 跨批次多次触发，每次都从 3000 重新起跳，可能与前一批次残留的通知 ID 撞车。
             // 改为与项目内 CiCdPipelineWorker/WorkflowJobWorker 一致的做法：基于当前时间戳生成 ID，
             // 同时在批内对每条记录追加序号偏移，保证同一批次内多条通知互不覆盖。
-            val notifIdBase = System.currentTimeMillis().toInt()
+            // P1-20 修复：通知 ID 基值改用单调钟，避免跨批次/跨时间点碰撞导致通知被静默覆盖。
+            val notifIdBase = SystemClock.elapsedRealtime().toInt()
             for ((offset, record) in records.withIndex()) {
                 val notifId = notifIdBase + offset
                 try {

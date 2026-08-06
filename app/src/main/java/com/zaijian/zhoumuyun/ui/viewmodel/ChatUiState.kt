@@ -15,7 +15,10 @@ data class ChatUiState(
     val streamingHint: String? = null,
     val error: String? = null,
     val isApiKeyMissing: Boolean = false,
-    val chatMode: ChatMode = ChatMode.COMPANION,
+    // 修复：默认值曾是 COMPANION，但 ChatViewModel 全程无任何代码在初始化时重置它，
+    // 导致每次新开聊天都以陪伴模式起步（工具调用变为被动，需用户显式要求才触发），
+    // 与"主力功能默认可用"的产品预期不符。改为默认 WORK，用户可随时经顶栏切换。
+    val chatMode: ChatMode = ChatMode.WORK,
     val pendingEvaluationSessionId: String? = null,
     val pendingEvaluationReport: String? = null,
     val pendingAgentScore: Float? = null,

@@ -31,12 +31,17 @@ import com.zaijian.zhoumuyun.data.model.DefaultCharacters
 import com.zaijian.zhoumuyun.ui.component.EmptyStateView
 import com.zaijian.zhoumuyun.ui.component.RootTabTopBar
 import com.zaijian.zhoumuyun.ui.design.AppIcons
+import com.zaijian.zhoumuyun.ui.design.DangerVelvetButton
+import com.zaijian.zhoumuyun.ui.design.GhostGoldButton
+import com.zaijian.zhoumuyun.ui.design.GoldPillSegmentedControl
 import com.zaijian.zhoumuyun.ui.design.GridTabItem
+import com.zaijian.zhoumuyun.ui.design.SecondaryGoldButton
 import com.zaijian.zhoumuyun.ui.design.WorldCard
 import com.zaijian.zhoumuyun.ui.theme.*
 import com.zaijian.zhoumuyun.ui.viewmodel.TaskViewModel
 import com.zaijian.zhoumuyun.ui.viewmodel.TodayJobUiItem
 import com.zaijian.zhoumuyun.util.TimeFormatUtils
+import com.zaijian.zhoumuyun.util.safeAnimateScrollToItem
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 
@@ -63,6 +68,11 @@ fun TaskCenterScreen(
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     // UI S4 修复：Tab 选中位置在进程死亡后应能恢复，改用 rememberSaveable
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
+    // UI 升级 v2.0 融合方案帧12：IA 合并——事务 Tab 三段（任务/日程/项目）
+    // GoldPillSegmentedControl 驱动，0=任务（默认）/1=日程/2=项目。
+    // 日程/项目原先各自独立路由，现收编为页内段，保留 onNavigateToSchedule/
+    // onNavigateToProjects 作为「查看全部」深链入口。
+    var taskSegment by rememberSaveable { mutableIntStateOf(0) }
     var taskToDelete by remember { mutableStateOf<TaskEntity?>(null) }
 
     // Fix-pendingJobId：深链接跳入时高亮对应任务，消费后清空避免重复触发
@@ -117,13 +127,14 @@ fun TaskCenterScreen(
                 val absoluteIdx = listItems.indexOfFirst {
                     it is TodayListItem.ScheduledJob && it.item.job.id == targetId
                 }
+                // P1 崩溃修复：改用 safeAnimateScrollToItem，理由同 ChatScreen.kt。
                 if (absoluteIdx >= 0) {
-                    todayListState.animateScrollToItem(absoluteIdx)
+                    todayListState.safeAnimateScrollToItem(absoluteIdx, tag = "TaskCenterScreen")
                 }
             }
             1 -> {
                 val idx = uiState.activeTasks.indexOfFirst { it.id == targetId }
-                if (idx >= 0) activeListState.animateScrollToItem(idx)
+                if (idx >= 0) activeListState.safeAnimateScrollToItem(idx, tag = "TaskCenterScreen")
             }
         }
         delay(1200)  // 让高亮边框对用户可见足够长的时间
@@ -173,55 +184,38 @@ fun TaskCenterScreen(
                 headerBg = colors.bgBase,
             )
 
-            // ── 精修方案 v2.1 2.1：项目/日程迷你预览卡 ──────────
-            // 原「目标」按钮已删（底部「成长」Tab 一步直达，多余）；
-            // 「项目」「日程」从纯跳转按钮升级为两张 WorldCard 预览卡，
-            // 显示真实数据（进行中项目数/完成率、今日待办数），数字用 labelMono。
-            Row(
-                modifier = Modifier
+            // ── UI 升级 v2.0 融合方案帧12：IA 合并 GoldPillSegmentedControl ──
+            // 事务 Tab 三段（任务/日程/项目），日程/项目从独立路由收编为页内段。
+            // GoldPillSegmentedControl 驱动视图切换，GridTabBar 是任务段内的筛选标签。
+            GoldPillSegmentedControl(
+                items         = listOf("任务", "日程", "项目"),
+                selectedIndex = taskSegment,
+                onSelect      = { taskSegment = it },
+                modifier      = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = Spacing.screenHorizontal)
                     .padding(top = Spacing.sm),
-                horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
-            ) {
-                TaskCenterPreviewCard(
-                    modifier          = Modifier.weight(1f),
-                    icon              = com.zaijian.zhoumuyun.ui.design.AppIcons.Folder,
-                    title             = "项目",
-                    subtitle          = if (uiState.activeProjectCount > 0) {
-                        "${uiState.activeProjectCount}个进行中"
-                    } else {
-                        "暂无进行中项目"
-                    },
-                    countText         = uiState.latestProjectCompletionRate?.let { rate ->
-                        "${(rate * 100).toInt()}%"
-                    },
-                    onClick           = onNavigateToProjects,
+            )
+
+            // ── 今日日程摘要卡（常驻：任务段内始终显示）──────────
+            // 融合方案帧12：「今日日程摘要卡常驻」——任务段内无论 Tab 在哪个
+            // 子分类，摘要卡始终在顶部展示今日待办总数，一眼可知今天还有多少事。
+            if (taskSegment == 0) {
+                TodayScheduleSummaryCard(
+                    todayJobCount        = todayJobs.size,
+                    todayGrowthCount     = todayGrowthTasks.size,
+                    onNavigateToSchedule = onNavigateToSchedule,
                 )
-                TaskCenterPreviewCard(
-                    modifier          = Modifier.weight(1f),
-                    icon              = com.zaijian.zhoumuyun.ui.design.AppIcons.CalendarMonth,
-                    title             = "日程",
-                    subtitle          = "今日待办",
-                    countText         = (todayJobs.size + todayGrowthTasks.size).toString(),
-                    onClick           = onNavigateToSchedule,
-                )
-            }
 
             // ── Tab 栏 ─────────────────────────────────────────
-            // GridTabBar 接入（精修方案 v1.3 第6节）：原 ScrollableTabRow 已有
-            // Material3 原生下划线指示器，这次替换主要解决「计数数字用等宽字体」
-            // 这条规格——GridTabBar 把 label/count 拆开渲染，数字单独套 labelMono。
-            // 4 个 Tab 固定走 GridTabBar 的单行等分分支（≤4），不会触发换行，
-            // 视觉效果与原先单行平铺一致，不需要 ScrollableTabRow 的横向滚动能力
-            // （Tab 数量固定为 4，不会超出屏宽）。
             com.zaijian.zhoumuyun.ui.design.GridTabBar(
                 items         = tabItems,
                 selectedIndex = selectedTab,
                 onSelect      = { selectedTab = it },
                 modifier      = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = Spacing.screenHorizontal),
+                    .padding(horizontal = Spacing.screenHorizontal)
+                    .padding(top = Spacing.sm, bottom = Spacing.sm),
             )
 
             HorizontalDivider(color = colors.border, thickness = 0.5.dp)
@@ -287,6 +281,22 @@ fun TaskCenterScreen(
                     }
                 }
             }
+            } else if (taskSegment == 1) {
+                // ── 日程段：今日待办明细 + 查看全部日程 ──────────────
+                TodayScheduleSegment(
+                    todayJobs           = todayJobs,
+                    todayGrowthTasks    = todayGrowthTasks,
+                    characterMap        = uiState.characterMap,
+                    onNavigateToSchedule = onNavigateToSchedule,
+                )
+            } else {
+                // ── 项目段：进行中项目预览 + 查看全部项目 ─────────────
+                TodayProjectSegment(
+                    activeProjectCount   = uiState.activeProjectCount,
+                    completionRate       = uiState.latestProjectCompletionRate,
+                    onNavigateToProjects = onNavigateToProjects,
+                )
+            }
         }
     }
 
@@ -317,24 +327,20 @@ fun TaskCenterScreen(
                 )
             },
             confirmButton     = {
-                TextButton(onClick = {
-                    if (isCancelAction) {
-                        viewModel.cancelTask(task.id)
-                    } else {
-                        viewModel.deleteTask(task.id)
-                    }
-                    taskToDelete = null
-                }) {
-                    Text(
-                        if (isCancelAction) "取消任务" else "删除",
-                        color = Palette.SemanticDanger,
-                    )
-                }
+                DangerVelvetButton(
+                    text = if (isCancelAction) "取消任务" else "删除",
+                    onClick = {
+                        if (isCancelAction) {
+                            viewModel.cancelTask(task.id)
+                        } else {
+                            viewModel.deleteTask(task.id)
+                        }
+                        taskToDelete = null
+                    },
+                )
             },
             dismissButton     = {
-                TextButton(onClick = { taskToDelete = null }) {
-                    Text("再想想", color = ZaijianTheme.colors.accent)
-                }
+                GhostGoldButton(text = "再想想", onClick = { taskToDelete = null })
             },
         )
     }
@@ -824,7 +830,7 @@ private fun TodaySectionHeader(
         )
         Text(
             text  = label,
-            style = type.small.copy(fontWeight = FontWeight.Bold),
+            style = type.caption.copy(fontWeight = FontWeight.Bold),
             color = color,
         )
         HorizontalDivider(
@@ -902,7 +908,7 @@ private fun ScheduledJobCard(
         // 右侧卡片
         WorldCard(
             modifier = Modifier
-                .fillMaxWidth()
+                .weight(1f)
                 .padding(bottom = if (isLast) 0.dp else 12.dp)
                 .then(
                     if (isHighlighted)
@@ -1102,6 +1108,271 @@ private fun GrowthTaskItem(
 // ─────────────────────────────────────────────────────────────
 
 private fun formatTimestamp(epochMs: Long): String = TimeFormatUtils.formatRelativeTime(epochMs)
+
+// ─────────────────────────────────────────────────────────────
+//  UI 升级 v2.0 融合方案帧12：IA 合并新增组件
+//
+//  TodayScheduleSummaryCard — 今日日程摘要卡（常驻于任务段顶部）
+//  TodayScheduleSegment     — 日程段：今日待办明细 + 查看全部
+//  TodayProjectSegment      — 项目段：进行中项目预览 + 查看全部
+//  ScheduleItemCard         — 日程条目卡（日程段内复用）
+// ─────────────────────────────────────────────────────────────
+
+/** 今日日程摘要卡：常驻于任务段顶部，一眼可知今日待办总数。 */
+@Composable
+private fun TodayScheduleSummaryCard(
+    todayJobCount: Int,
+    todayGrowthCount: Int,
+    onNavigateToSchedule: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = ZaijianTheme.colors
+    val type   = ZaijianTheme.typography
+    val total  = todayJobCount + todayGrowthCount
+    WorldCard(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = Spacing.screenHorizontal)
+            .padding(top = Spacing.sm)
+            .clickable(onClick = onNavigateToSchedule),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = Spacing.sm, vertical = Spacing.xs),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            com.zaijian.zhoumuyun.ui.design.IconBadge(
+                icon               = AppIcons.CalendarMonth,
+                contentDescription = "今日日程",
+                size               = 14.dp,
+            )
+            Spacer(Modifier.width(6.dp))
+            Text(
+                text  = "今日日程",
+                style = type.cardTitle,
+                color = colors.textPrimary,
+            )
+            Spacer(Modifier.weight(1f))
+            Text(
+                text  = if (total > 0) "$total" else "—",
+                style = type.labelMono,
+                color = if (total > 0) colors.accent else colors.textDisabled,
+            )
+            if (total > 0) {
+                Spacer(Modifier.width(4.dp))
+                Text(
+                    text  = "项待办",
+                    style = type.caption,
+                    color = colors.textSecondary,
+                )
+            }
+        }
+    }
+}
+
+/** 日程段：今日成长任务 + 定时任务明细，底部「查看全部日程」深链。 */
+@Composable
+private fun TodayScheduleSegment(
+    todayJobs: List<TodayJobUiItem>,
+    todayGrowthTasks: List<TaskEntity>,
+    characterMap: Map<Int, CharacterConfig>,
+    onNavigateToSchedule: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = ZaijianTheme.colors
+    LazyColumn(
+        modifier = modifier.fillMaxSize(),
+        contentPadding = PaddingValues(
+            start  = Spacing.screenHorizontal,
+            end    = Spacing.screenHorizontal,
+            top    = Spacing.sm,
+            bottom = LocalBottomBarHeight.current + Spacing.md,
+        ),
+        verticalArrangement = Arrangement.spacedBy(Spacing.sm),
+    ) {
+        // 成长任务
+        if (todayGrowthTasks.isNotEmpty()) {
+            item {
+                TodaySectionHeader(
+                    icon  = AppIcons.Psychology,
+                    label = "成长任务 (${todayGrowthTasks.size})",
+                    color = colors.accent,
+                )
+            }
+            items(todayGrowthTasks, key = { it.id }) { task ->
+                ScheduleItemCard(
+                    title    = task.title,
+                    subtitle = characterMap[task.characterId]?.name ?: "角色${task.characterId}",
+                    timeText = null,
+                )
+            }
+        }
+        // 定时任务
+        if (todayJobs.isNotEmpty()) {
+            item {
+                TodaySectionHeader(
+                    icon  = AppIcons.CalendarMonth,
+                    label = "定时任务 (${todayJobs.size})",
+                    color = colors.accent,
+                )
+            }
+            items(todayJobs, key = { it.job.id }) { jobItem ->
+                ScheduleItemCard(
+                    title    = jobItem.job.title,
+                    subtitle = characterMap[jobItem.job.characterId]?.name
+                        ?: "角色${jobItem.job.characterId}",
+                    timeText = formatTimestamp(jobItem.job.nextRunAt),
+                )
+            }
+        }
+        // 空状态
+        if (todayGrowthTasks.isEmpty() && todayJobs.isEmpty()) {
+            item {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 80.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    EmptyStateView(
+                        icon  = AppIcons.CalendarMonth,
+                        title = "今日暂无日程安排",
+                    )
+                }
+            }
+        }
+        // 查看全部日程
+        item {
+            SecondaryGoldButton(
+                text    = "查看全部日程",
+                onClick = onNavigateToSchedule,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = Spacing.sm),
+            )
+        }
+    }
+}
+
+/** 项目段：进行中项目预览卡 + 「查看全部项目」深链。 */
+@Composable
+private fun TodayProjectSegment(
+    activeProjectCount: Int,
+    completionRate: Float?,
+    onNavigateToProjects: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = ZaijianTheme.colors
+    val type   = ZaijianTheme.typography
+    LazyColumn(
+        modifier = modifier.fillMaxSize(),
+        contentPadding = PaddingValues(
+            start  = Spacing.screenHorizontal,
+            end    = Spacing.screenHorizontal,
+            top    = Spacing.sm,
+            bottom = LocalBottomBarHeight.current + Spacing.md,
+        ),
+        verticalArrangement = Arrangement.spacedBy(Spacing.sm),
+    ) {
+        item {
+            WorldCard {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(Spacing.cardPadding),
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        com.zaijian.zhoumuyun.ui.design.IconBadge(
+                            icon               = AppIcons.Folder,
+                            contentDescription = "项目",
+                            size               = 14.dp,
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            text  = "进行中项目",
+                            style = type.cardTitle,
+                            color = colors.textPrimary,
+                        )
+                        Spacer(Modifier.weight(1f))
+                        Text(
+                            text  = "$activeProjectCount",
+                            style = type.labelMono,
+                            color = colors.accent,
+                        )
+                    }
+                    Spacer(Modifier.height(Spacing.xs))
+                    if (completionRate != null) {
+                        Text(
+                            text  = "最新项目完成率：${(completionRate * 100).toInt()}%",
+                            style = type.caption,
+                            color = colors.textSecondary,
+                        )
+                    } else if (activeProjectCount == 0) {
+                        Text(
+                            text  = "暂无进行中项目，去创建一个吧",
+                            style = type.caption,
+                            color = colors.textSecondary,
+                        )
+                    }
+                }
+            }
+        }
+        item {
+            SecondaryGoldButton(
+                text    = "查看全部项目",
+                onClick = onNavigateToProjects,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = Spacing.sm),
+            )
+        }
+    }
+}
+
+/** 日程条目卡：标题 + 角色名 + 可选时间。 */
+@Composable
+private fun ScheduleItemCard(
+    title: String,
+    subtitle: String,
+    timeText: String?,
+    modifier: Modifier = Modifier,
+) {
+    val colors = ZaijianTheme.colors
+    val type   = ZaijianTheme.typography
+    WorldCard(modifier = modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(Spacing.cardPadding),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text     = title,
+                    style    = type.body,
+                    color    = colors.textPrimary,
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    text  = subtitle,
+                    style = type.caption,
+                    color = colors.textSecondary,
+                )
+            }
+            if (timeText != null) {
+                Spacer(Modifier.width(Spacing.sm))
+                Text(
+                    text  = timeText,
+                    style = type.labelMono,
+                    color = colors.accent,
+                )
+            }
+        }
+    }
+}
 
 // ─────────────────────────────────────────────────────────────
 //  Preview

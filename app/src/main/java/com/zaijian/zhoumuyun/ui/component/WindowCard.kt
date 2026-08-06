@@ -12,6 +12,7 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.material3.ripple
@@ -28,7 +29,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.Shadow
@@ -48,6 +52,7 @@ import com.zaijian.zhoumuyun.data.model.PresenceState
 import com.zaijian.zhoumuyun.data.model.StatusType
 import com.zaijian.zhoumuyun.data.model.dotColor
 import com.zaijian.zhoumuyun.ui.theme.AnimDuration
+import com.zaijian.zhoumuyun.ui.theme.Palette
 import com.zaijian.zhoumuyun.ui.theme.RingWidth
 import com.zaijian.zhoumuyun.ui.theme.Spacing
 import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
@@ -136,6 +141,10 @@ fun WindowCard(
     // 故意不放数字（几代）——角标只回答"点了会不会弹菜单"这一个问题，
     // 具体几代由弹出的列表自己说明，格子层不需要剧透。
     hasDescendants: Boolean = false,
+    // UI 升级 v2.0 帧03：错峰 halo —— 九宫格每格的呼吸光晕错峰启动，
+    // 避免九个头像同步呼吸显得机械。staggerIndex 按角色在列表中的序号传入，
+    // 换算为 delayMillis 偏移（取模 breath 周期，分布在 0~4000ms 内）。
+    staggerIndex: Int = 0,
 ) {
     val colors = ZaijianTheme.colors
     val isDark  = colors.isDark
@@ -176,6 +185,7 @@ fun WindowCard(
             onLongClick       = onLongClick,
             a11yDesc          = a11yDesc,
             isDark            = isDark,
+            staggerIndex      = staggerIndex,
             modifier          = modifier,
         )
         return
@@ -231,9 +241,10 @@ fun WindowCard(
                 .clip(archShape),
             contentAlignment = Alignment.Center,
         ) {
+            // UI v2.0 帧04 校准：离线角色不起烛光（HTML 明确要求离线无烛光）
             BreathingAvatar(
                 imageUrl     = character.avatarUrlTall,
-                breathColor  = character.accentColor,
+                breathColor  = if (isDark) Palette.Idle else Palette.Gold,
                 statusType   = presence.statusType,
                 width        = avatarW,
                 height       = avatarH,
@@ -346,15 +357,20 @@ private fun WindowCardOnline(
     onLongClick: () -> Unit,
     a11yDesc: String,
     isDark: Boolean,
+    staggerIndex: Int = 0,
     modifier: Modifier = Modifier,
 ) {
     // 共享 InfiniteTransition：同时驱动外框光晕 + 头像内部呼吸动画
     val infiniteTransition = rememberInfiniteTransition(label = "window_breath_online")
+    // UI 升级 v2.0 帧03：错峰 halo —— 用 delayMillis 把首拍推迟 staggerIndex×444ms，
+    // infiniteRepeatable 的 delayMillis 只在首拍生效，后续周期保持同频但永久错相，
+    // 九个头像因此各自呼吸、不再齐刷刷同步。
+    val staggerMs = (staggerIndex * 444) % AnimDuration.breath
     val breathAlpha by infiniteTransition.animateFloat(
         initialValue  = if (presence.statusType == StatusType.ACTIVE) 0.20f else 0.10f,
         targetValue   = if (presence.statusType == StatusType.ACTIVE) 0.40f else 0.20f,
         animationSpec = infiniteRepeatable(
-            animation  = tween(AnimDuration.breath, easing = FastOutSlowInEasing),
+            animation  = tween(AnimDuration.breath, delayMillis = staggerMs, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Reverse,
         ),
         label = "window_glow",
@@ -380,7 +396,7 @@ private fun WindowCardOnline(
             .semantics { contentDescription = a11yDesc }
             .scale(scale)
             .presenceGlow(
-                color       = character.accentColor,
+                color       = if (isDark) Palette.Idle else Palette.Gold,
                 isActive    = true,
                 breathAlpha = breathAlpha,
             ),
@@ -394,12 +410,33 @@ private fun WindowCardOnline(
                 .clip(archShape),
             contentAlignment = Alignment.Center,
         ) {
+            // UI 升级 v2.0 帧04：窗内烛光（暗色帧专属）—— 夜纱下窗内透出暖烛光，
+            // 用暖橙径向渐变叠在头像底层，随呼吸 alpha 微动，模拟窗内烛火摇曳。
+            // 亮色模式不画（白天无需烛光）。
+            if (isDark) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .drawBehind {
+                            drawRect(
+                                Brush.radialGradient(
+                                    colors = listOf(
+                                        Palette.Idle.copy(alpha = breathAlpha * 0.35f),
+                                        Color.Transparent,
+                                    ),
+                                    center = Offset(size.width * 0.5f, size.height * 0.4f),
+                                    radius = size.minDimension * 0.7f,
+                                )
+                            )
+                        },
+                )
+            }
             // sharedTransition 传入，BreathingAvatar 内部直接复用，不新建动画器
             // v49_p18 修复：同离线路径，改传 width/height 精确矩形测量，
             // 不再用 maxOf(avatarW, avatarH) 强制正方形（真正根因见离线路径注释）。
             BreathingAvatar(
                 imageUrl          = character.avatarUrlTall,
-                breathColor       = character.accentColor,
+                breathColor       = if (isDark) Palette.Idle else Palette.Gold,
                 statusType        = presence.statusType,
                 width             = avatarW,
                 height            = avatarH,

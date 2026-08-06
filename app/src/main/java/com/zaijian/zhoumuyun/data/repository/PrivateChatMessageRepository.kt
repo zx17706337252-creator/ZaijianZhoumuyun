@@ -31,5 +31,9 @@ class PrivateChatMessageRepository(private val dao: PrivateChatMessageDao) {
     fun observeBySession(sessionId: String): Flow<List<PrivateChatMessageEntity>> =
         dao.observeBySession(sessionId)
 
+    // 修复 #5：续接 interrupted session 时用，取该 session 全部消息（正序）。
+    suspend fun getAllBySession(sessionId: String): List<PrivateChatMessageEntity> =
+        dao.getAllBySession(sessionId)
+
     suspend fun countByPair(pairId: String): Int = dao.countByPair(pairId)
 }

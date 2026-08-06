@@ -348,7 +348,7 @@ class VaultIoTest {
         assertEquals("应迁移 2 个文件", 2, result.moved)
         assertTrue("应写入迁移标记", File(vault, ".migrated").exists())
 
-        val project = File(File(File(vault, "shared"), "project"))
+        val project = File(File(vault, "shared"), "project")
         assertTrue("文件应出现在项目共享区", File(project, "1700000000000_report.md").exists())
         assertTrue("文件应出现在项目共享区", File(project, "1700000000001_data.json").exists())
         // 源文件应被删除
@@ -358,7 +358,7 @@ class VaultIoTest {
     @Test
     fun `migration handles same name conflict with timestamp prefix`() {
         val exports = File(filesDir, "exports").apply { mkdirs() }
-        val project = File(File(File(vault, "shared"), "project")).apply { mkdirs() }
+        val project = File(File(vault, "shared"), "project").apply { mkdirs() }
         // 目标已存在同名文件
         File(project, "1700000000000_report.md").writeText("已有内容")
         // 源也有同名文件
@@ -396,7 +396,7 @@ class VaultIoTest {
 
         val result = migrateExportsToVaultCore(filesDir)
         assertEquals("只迁移文件，不迁移子目录内容", 1, result.moved)
-        val project = File(File(File(vault, "shared"), "project"))
+        val project = File(File(vault, "shared"), "project")
         assertTrue(File(project, "file.txt").exists())
         assertFalse(File(project, "ignored.txt").exists())
     }

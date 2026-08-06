@@ -114,6 +114,7 @@ import com.zaijian.zhoumuyun.util.TimeFormatUtils
 import kotlinx.coroutines.launch
 import androidx.compose.runtime.snapshotFlow
 import com.zaijian.zhoumuyun.ui.design.AppIcons
+import com.zaijian.zhoumuyun.ui.design.WorldCard
 
 
 // ─────────────────────────────────────────────────────────────
@@ -200,15 +201,22 @@ internal fun RoundtableSettingsSheet(
                 modifier = Modifier.padding(vertical = Spacing.sm),
             )
         } else {
-            allMotherMembers.forEach { bot ->
-                val blocked = bot.id in blockedMemberIds
-                MemberSettingsRow(
-                    bot        = bot,
-                    action     = if (blocked) MemberAction.ADD else MemberAction.REMOVE,
-                    actionTint = if (blocked) colors.accent else Palette.SemanticDanger,
-                    onAction   = { onToggleMember(bot.id, !blocked) },
-                    dimmed     = blocked,
-                )
+            WorldCard(
+                modifier = Modifier.fillMaxWidth(),
+                cornerRadius = Radius.sm,
+            ) {
+                Column(modifier = Modifier.padding(horizontal = Spacing.sm, vertical = Spacing.xs)) {
+                    allMotherMembers.forEach { bot ->
+                        val blocked = bot.id in blockedMemberIds
+                        MemberSettingsRow(
+                            bot        = bot,
+                            action     = if (blocked) MemberAction.ADD else MemberAction.REMOVE,
+                            actionTint = if (blocked) colors.accent else Palette.SemanticDanger,
+                            onAction   = { onToggleMember(bot.id, !blocked) },
+                            dimmed     = blocked,
+                        )
+                    }
+                }
             }
         }
 
@@ -235,25 +243,32 @@ internal fun RoundtableSettingsSheet(
                 modifier = Modifier.padding(vertical = Spacing.sm),
             )
         } else {
-            extraDaughters.forEach { bot ->
-                val blocked = bot.id in blockedMemberIds
-                MemberSettingsRow(
-                    bot        = bot,
-                    action     = if (blocked) MemberAction.ADD else MemberAction.REMOVE,
-                    actionTint = if (blocked) colors.accent else Palette.SemanticDanger,
-                    onAction   = { onToggleMember(bot.id, !blocked) },
-                    dimmed     = blocked,
-                )
-            }
-            if (pullableDaughters.isNotEmpty()) {
-                if (extraDaughters.isNotEmpty()) Spacer(Modifier.height(Spacing.xs))
-                pullableDaughters.forEach { bot ->
-                    MemberSettingsRow(
-                        bot        = bot,
-                        action     = MemberAction.ADD,
-                        actionTint = colors.accent,
-                        onAction   = { onAddDaughter(bot.id) },
-                    )
+            WorldCard(
+                modifier = Modifier.fillMaxWidth(),
+                cornerRadius = Radius.sm,
+            ) {
+                Column(modifier = Modifier.padding(horizontal = Spacing.sm, vertical = Spacing.xs)) {
+                    extraDaughters.forEach { bot ->
+                        val blocked = bot.id in blockedMemberIds
+                        MemberSettingsRow(
+                            bot        = bot,
+                            action     = if (blocked) MemberAction.ADD else MemberAction.REMOVE,
+                            actionTint = if (blocked) colors.accent else Palette.SemanticDanger,
+                            onAction   = { onToggleMember(bot.id, !blocked) },
+                            dimmed     = blocked,
+                        )
+                    }
+                    if (pullableDaughters.isNotEmpty()) {
+                        if (extraDaughters.isNotEmpty()) Spacer(Modifier.height(Spacing.xs))
+                        pullableDaughters.forEach { bot ->
+                            MemberSettingsRow(
+                                bot        = bot,
+                                action     = MemberAction.ADD,
+                                actionTint = colors.accent,
+                                onAction   = { onAddDaughter(bot.id) },
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -342,27 +357,34 @@ internal fun RoundtableSettingsSheet(
             modifier = Modifier.padding(bottom = Spacing.sm),
         )
 
-        ScheduleModeOption(
-            icon        = AppIcons.AutoMode,
-            title       = "自动",
-            subtitle    = "短消息启发式 · 长消息 AI 调度",
-            selected    = scheduleMode == ScheduleMode.AUTO,
-            onClick     = { onModeChange(ScheduleMode.AUTO) },
-        )
-        ScheduleModeOption(
-            icon        = AppIcons.Speed,
-            title       = "启发式",
-            subtitle    = "基于规则调度，零 API 消耗",
-            selected    = scheduleMode == ScheduleMode.HEURISTIC,
-            onClick     = { onModeChange(ScheduleMode.HEURISTIC) },
-        )
-        ScheduleModeOption(
-            icon        = AppIcons.SmartToy,
-            title       = "AI 调度",
-            subtitle    = "每轮额外一次 API 调用，最自然",
-            selected    = scheduleMode == ScheduleMode.AI_ONLY,
-            onClick     = { onModeChange(ScheduleMode.AI_ONLY) },
-        )
+        WorldCard(
+            modifier = Modifier.fillMaxWidth(),
+            cornerRadius = Radius.sm,
+        ) {
+            Column(modifier = Modifier.padding(horizontal = Spacing.sm, vertical = Spacing.xs)) {
+                ScheduleModeOption(
+                    icon        = AppIcons.AutoMode,
+                    title       = "自动",
+                    subtitle    = "短消息启发式 · 长消息 AI 调度",
+                    selected    = scheduleMode == ScheduleMode.AUTO,
+                    onClick     = { onModeChange(ScheduleMode.AUTO) },
+                )
+                ScheduleModeOption(
+                    icon        = AppIcons.Speed,
+                    title       = "启发式",
+                    subtitle    = "基于规则调度，零 API 消耗",
+                    selected    = scheduleMode == ScheduleMode.HEURISTIC,
+                    onClick     = { onModeChange(ScheduleMode.HEURISTIC) },
+                )
+                ScheduleModeOption(
+                    icon        = AppIcons.SmartToy,
+                    title       = "AI 调度",
+                    subtitle    = "每轮额外一次 API 调用，最自然",
+                    selected    = scheduleMode == ScheduleMode.AI_ONLY,
+                    onClick     = { onModeChange(ScheduleMode.AI_ONLY) },
+                )
+            }
+        }
 
         Spacer(Modifier.height(Spacing.xl))
     }
@@ -408,6 +430,9 @@ private fun MemberSettingsRow(
                 .size(36.dp)
                 .alpha(contentAlpha)
                 .clip(CircleShape)
+                // 2026-08-03 修复：占位背景此前固定用 colors.accent（全局金色），
+                // 跟其余 Roundtable 头像（bot.accentColor/typingColor 等）不一致——
+                // 换成角色专属色，头像加载失败/加载中时占位色也能体现"这是谁"。
                 .background(bot.accentColor.copy(alpha = 0.3f)),
             error              = rememberVectorPainter(AppIcons.Person),
         )

@@ -14,7 +14,6 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -45,7 +44,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -113,6 +111,7 @@ import com.zaijian.zhoumuyun.util.TimeFormatUtils
 import kotlinx.coroutines.launch
 import androidx.compose.runtime.snapshotFlow
 import com.zaijian.zhoumuyun.ui.design.AppIcons
+import com.zaijian.zhoumuyun.ui.design.WorldCard
 
 
 // ─────────────────────────────────────────────────────────────
@@ -175,46 +174,42 @@ internal fun AtMentionPopup(
     val colors = ZaijianTheme.colors
     val type   = ZaijianTheme.typography
 
-    Column(
-        modifier = modifier
-            .heightIn(max = 240.dp)
-            .verticalScroll(rememberScrollState())
-            .clip(RoundedCornerShape(Radius.md))
-            .background(colors.bgElevated)
-            .border(
-                width = 0.5.dp,
-                color = colors.borderSubtle,
-                shape = RoundedCornerShape(Radius.md),
-            ),
+    WorldCard(
+        modifier = modifier.heightIn(max = 240.dp),
+        cornerRadius = Radius.sm,
     ) {
-        candidates.forEach { bot ->
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { onSelect(bot) }
-                    .padding(horizontal = Spacing.md, vertical = Spacing.sm),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
-            ) {
-                AsyncImage(
-                    model = ImageRequest.Builder(LocalContext.current)
-                        .data(bot.avatarUrl)
-                        .crossfade(true)
-                        .memoryCachePolicy(CachePolicy.ENABLED)
-                        .diskCachePolicy(CachePolicy.ENABLED)
-                        .build(),
-                    contentDescription = bot.name,
-                    modifier           = Modifier
-                        .size(28.dp)
-                        .clip(CircleShape)
-                        .background(bot.accentColor.copy(alpha = 0.3f)),
-                    error              = rememberVectorPainter(AppIcons.Person),
-                )
-                Text(
-                    text  = bot.name,
-                    style = type.body,
-                    color = colors.textPrimary,
-                )
+        Column(
+            modifier = Modifier.verticalScroll(rememberScrollState()),
+        ) {
+            candidates.forEach { bot ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onSelect(bot) }
+                        .padding(horizontal = Spacing.md, vertical = Spacing.sm),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
+                ) {
+                    AsyncImage(
+                        model = ImageRequest.Builder(LocalContext.current)
+                            .data(bot.avatarUrl)
+                            .crossfade(true)
+                            .memoryCachePolicy(CachePolicy.ENABLED)
+                            .diskCachePolicy(CachePolicy.ENABLED)
+                            .build(),
+                        contentDescription = bot.name,
+                        modifier           = Modifier
+                            .size(28.dp)
+                            .clip(CircleShape)
+                            .background(bot.accentColor.copy(alpha = 0.3f)),
+                        error              = rememberVectorPainter(AppIcons.Person),
+                    )
+                    Text(
+                        text  = bot.name,
+                        style = type.body,
+                        color = colors.textPrimary,
+                    )
+                }
             }
         }
     }
@@ -245,6 +240,7 @@ internal fun SequentialProgressBar(
             val label = when (status) {
                 BotGenerationStatus.GENERATING -> "${bot.name}⠿"
                 BotGenerationStatus.DONE       -> "${bot.name}✓"
+                BotGenerationStatus.INTERRUPTED -> "${bot.name}✗"
                 BotGenerationStatus.WAITING    -> "${bot.name}○"
                 BotGenerationStatus.IDLE       -> null
             }

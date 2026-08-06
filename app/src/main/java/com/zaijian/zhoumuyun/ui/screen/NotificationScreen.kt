@@ -14,6 +14,8 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -22,9 +24,13 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.zaijian.zhoumuyun.data.model.BriefingAttentionItem
 import com.zaijian.zhoumuyun.data.repository.GoodNewsItem
 import com.zaijian.zhoumuyun.ui.component.DetailTopBar
+import com.zaijian.zhoumuyun.ui.design.SecondaryGoldButton
 import com.zaijian.zhoumuyun.ui.screen.notification.NotificationAttentionSection
 import com.zaijian.zhoumuyun.ui.screen.notification.NotificationGoodNewsSection
+import com.zaijian.zhoumuyun.ui.theme.AppBrushes
+import com.zaijian.zhoumuyun.ui.theme.Palette
 import com.zaijian.zhoumuyun.ui.theme.Spacing
+import com.zaijian.zhoumuyun.ui.theme.WcAlpha
 import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
 import com.zaijian.zhoumuyun.ui.viewmodel.NotificationViewModel
 
@@ -79,13 +85,10 @@ fun NotificationScreen(
                     // P0修复3：全部已读按钮——仅有未读条目时显示
                     val hasUnread = uiState.attentionItems.any { it !in uiState.readItems }
                     if (hasUnread && !uiState.isLoading) {
-                        androidx.compose.material3.TextButton(onClick = { viewModel.markAllRead() }) {
-                            Text(
-                                text  = "全部已读",
-                                style = ZaijianTheme.typography.label,
-                                color = colors.accent,
-                            )
-                        }
+                        SecondaryGoldButton(
+                            text    = "全部已读",
+                            onClick = { viewModel.markAllRead() },
+                        )
                     }
                 },
             )
@@ -106,36 +109,52 @@ fun NotificationScreen(
                 ) { Text(uiState.error!!, color = colors.textSecondary) }
             }
             else -> {
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize().padding(innerPadding),
-                    contentPadding = PaddingValues(Spacing.screenHorizontal),
-                    verticalArrangement = Arrangement.spacedBy(Spacing.md),
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(innerPadding)
+                        .drawBehind {
+                            drawRect(
+                                brush = AppBrushes.watercolorWash(
+                                    color = Palette.Gold,
+                                    alpha = WcAlpha.page,
+                                    center = Offset(size.width * 0.9f, 0f),
+                                    radius = size.maxDimension * 0.8f,
+                                ),
+                            )
+                        },
                 ) {
-                    item {
-                        NotificationAttentionSection(
-                            items           = uiState.attentionItems,
-                            readItems       = uiState.readItems,
-                            daughterNameMap = uiState.daughterNameMap,
-                            onItemClick     = { item ->
-                                viewModel.markItemRead(item)
-                                routeAttentionItemClick(
-                                    item                             = item,
-                                    onNavigateToCharacterRelationTab = onNavigateToCharacterRelationTab,
-                                    onNavigateToChat                 = onNavigateToChat,
-                                )
-                            },
-                        )
-                    }
-                    item {
-                        NotificationGoodNewsSection(
-                            items = uiState.goodNewsItems,
-                            onItemClick = { item ->
-                                routeGoodNewsItemClick(
-                                    item                      = item,
-                                    onNavigateToCharacterDetail = onNavigateToCharacterDetail,
-                                )
-                            },
-                        )
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(Spacing.screenHorizontal),
+                        verticalArrangement = Arrangement.spacedBy(Spacing.md),
+                    ) {
+                        item {
+                            NotificationAttentionSection(
+                                items           = uiState.attentionItems,
+                                readItems       = uiState.readItems,
+                                daughterNameMap = uiState.daughterNameMap,
+                                onItemClick     = { item ->
+                                    viewModel.markItemRead(item)
+                                    routeAttentionItemClick(
+                                        item                             = item,
+                                        onNavigateToCharacterRelationTab = onNavigateToCharacterRelationTab,
+                                        onNavigateToChat                 = onNavigateToChat,
+                                    )
+                                },
+                            )
+                        }
+                        item {
+                            NotificationGoodNewsSection(
+                                items = uiState.goodNewsItems,
+                                onItemClick = { item ->
+                                    routeGoodNewsItemClick(
+                                        item                      = item,
+                                        onNavigateToCharacterDetail = onNavigateToCharacterDetail,
+                                    )
+                                },
+                            )
+                        }
                     }
                 }
             }
@@ -170,6 +189,9 @@ private fun routeAttentionItemClick(
         is BriefingAttentionItem.RelationWorsened -> {
             item.fromId.toIntOrNull()?.let(onNavigateToCharacterRelationTab)
         }
+        // 叙事类：点击进该角色聊天
+        is BriefingAttentionItem.QuoteReference -> onNavigateToChat(item.character.id)
+        is BriefingAttentionItem.AgreementDue -> onNavigateToChat(item.character.id)
     }
 }
 

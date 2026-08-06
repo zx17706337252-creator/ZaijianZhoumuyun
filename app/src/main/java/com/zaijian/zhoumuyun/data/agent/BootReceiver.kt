@@ -76,7 +76,13 @@ class BootReceiver : BroadcastReceiver() {
                                 val id = json.optLong("id", triggerAtMs)
                                 val requestCode = id.toString().hashCode()
                                 val characterId = json.optInt("characterId", -1)
-                                reminderTool.scheduleAlarm(requestCode, text, triggerAtMs, characterId)
+                                reminderTool.scheduleAlarm(requestCode, text, triggerAtMs, characterId, id)
+                            } else {
+                                // P2-2-1 修复：已过期（triggerAtMs <= now，本应已触发）或已完成的
+                                // 提醒文件在此清扫时顺手删除，避免 filesDir/reminders/ 无限增长、
+                                // 且每次开机全量重扫这些已无意义的文件。触发后正常由 ReminderReceiver
+                                // 删除；此分支兜底处理"触发时设备关机/Receiver 未跑"的过期残留。
+                                file.delete()
                             }
                         } catch (_: Throwable) {
                             // 单条提醒文件损坏不影响其他提醒的恢复

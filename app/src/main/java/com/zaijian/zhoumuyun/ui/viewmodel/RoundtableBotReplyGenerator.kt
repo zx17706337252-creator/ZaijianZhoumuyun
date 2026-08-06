@@ -7,7 +7,6 @@ import com.zaijian.zhoumuyun.data.agent.ToolCallInterceptor
 import com.zaijian.zhoumuyun.data.agent.VaultCallContext
 import com.zaijian.zhoumuyun.data.agent.VaultScope
 import com.zaijian.zhoumuyun.data.agent.withVaultContext
-import com.zaijian.zhoumuyun.data.AppContainer
 import com.zaijian.zhoumuyun.data.db.entity.RoundtableMessageEntity
 import com.zaijian.zhoumuyun.data.manager.PregnancyTriggerManager
 import com.zaijian.zhoumuyun.data.model.CharacterConfig
@@ -49,12 +48,9 @@ import java.util.UUID
 /**
  * 圆桌场景排除的工具名单（v1.39 圆桌工具调用接入）。
  *
- * `agent_message`（异步给其他角色发消息）、`roundtable_trigger`（发起圆桌讨论）、
- * `task_delegate`（委托任务）三个工具是为"跨角色协作"设计的，语义假设是私聊
- * 场景（一个角色单独面对用户，需要"叫" 其他角色介入）。圆桌场景里角色之间本来
- * 就能直接对话，这三个工具要么语义重复（agent_message 的"异步、下次对话才看到"
- * 在圆桌里不自然），要么可能引发混乱（roundtable_trigger 在已经身处圆桌讨论中
- * 再次触发，语义不清）。
+ * `task_delegate`（委托任务）是为"跨角色协作"设计的，语义假设是私聊场景
+ * （一个角色单独面对用户，需要"叫"其他角色介入）。圆桌场景里角色之间本来
+ * 就能直接对话，这个工具有时语义重复。
  *
  * 双层防御：此常量同时用于①prompt 层过滤（不让模型看到这些工具描述，见
  * [RoundtableBotReplyGenerator] 和 [RoundtableIdleManager] 里 buildSystemPrompt
@@ -66,10 +62,8 @@ import java.util.UUID
  * 各写一份、后续增删工具名时忘记同步。
  */
 internal val ROUNDTABLE_DISABLED_TOOL_NAMES = setOf(
-    "agent_message",
-    "roundtable_trigger",
     "task_delegate",
-    // 主聊天工具接入 · 角色间私聊（PrivateChatAgentTools.kt）：与 agent_message 同理，
+    // 主聊天工具接入 · 角色间私聊（PrivateChatAgentTools.kt）：与 task_delegate 同理，
     // 圆桌场景下角色已经在同一个多角色频道里说话，不应该再额外触发一条独立私聊线程。
     // private_chat_history（只读查询）不在此列——圆桌里角色引用自己过去的私聊记录无害。
     "private_chat_send",
@@ -93,6 +87,13 @@ class RoundtableBotReplyGenerator(
     // 分工协作的项目群，每个角色进圆桌发言时同样应该能看到并复用自己的技能库，
     // 不应该只有私聊角色才有这个能力。范式对齐 ChatMessageOrchestrator 的 skillRepo。
     private val skillRepo: SkillRepository,
+    // DI 收口：此前 ToolStarted/ToolDone 分支直接读 AppContainer.instance.agentActivityRepo，
+    // 绕过了本类其余全部依赖统一走构造注入的约定（RoundtableViewModel 侧已把心迹面板的
+    // agentActivityRepo 收口为 container 的委托属性，见 RoundtableViewModel.agentActivityRepo）。
+    // 单例本身能正常工作，不是功能性 bug，但和这个类的其它 xxxRepo 参数一样，应该由调用方
+    // （RoundtableViewModel）传入，而不是在这里再开一条访问单例的路径——否则将来 agentActivityRepo
+    // 换绑定/加测试替身时，这个类会成为漏改的角落。
+    private val agentActivityRepo: AgentActivityRepository,
     private val getCurrentRoundtableId: () -> String?,
     private val isInterruptedRef: () -> Boolean,
     private val viewModelScope: CoroutineScope,
@@ -142,7 +143,7 @@ class RoundtableBotReplyGenerator(
         // 待办6 Step4：把 isAutoDiscussing/discussionRound 透传给 buildGroupContextBlock，
         // 用于在续轮场景追加收敛引导文案。两者都是 Step3 已有的 uiState 字段，
         // 这里只是读取后透传，不引入新的数据结构。
-        val groupContextBlock = PromptOrchestrator.buildGroupContextBlock(
+        val groupContextBlock = com.zaijian.zhoumuyun.data.prompt.TaskRulePromptBuilder.buildGroupContextBlock(
             alreadyReplied     = alreadyReplied,
             memberNameMap      = memberNameMap,
             respondingOtherBot = intent == SpeakIntent.RESPOND_OTHER_BOT,
@@ -208,7 +209,7 @@ class RoundtableBotReplyGenerator(
                 .filter { it.id != bot.id }
                 .mapNotNull { m -> pregnancyRepo.getPregnancy(m.id).takeIf { it.isPregnant }?.let { m.name } }
         }
-        val pregnancyAwarenessBlock = PromptOrchestrator.buildPregnancyAwarenessLine(otherPregnantNames)
+        val pregnancyAwarenessBlock = com.zaijian.zhoumuyun.data.prompt.PregnancyPromptBuilder.buildPregnancyAwarenessLine(otherPregnantNames)
 
         // D4 女儿在场感知修复：判断当前圆桌在场成员（除 bot 自己）里是否有
         // 女儿角色（id >= 1000），只有确实在场时母亲角色才会被告知"你是妈妈"。
@@ -217,7 +218,7 @@ class RoundtableBotReplyGenerator(
         // ── 补全 AgentPlan Layer（角色自己写的进化方案）──
         val activePlan = agentPlanDao.getActive(bot.id)
         val agentPlanBlock = activePlan?.let {
-            PromptOrchestrator.buildAgentPlanBlock(it.title, it.content)
+            com.zaijian.zhoumuyun.data.prompt.TaskRulePromptBuilder.buildAgentPlanBlock(it.title, it.content)
         } ?: ""
 
         // ── 补全 LearningGoal Layer（isLocked=true 的能力规则，按目标分组）──
@@ -227,7 +228,7 @@ class RoundtableBotReplyGenerator(
                 .getLockedRules(bot.id, goal.id)
                 .map { it.content }
         }
-        val ruleLayerBlock = PromptOrchestrator.buildRuleLayerBlock(rulesByGoal)
+        val ruleLayerBlock = com.zaijian.zhoumuyun.data.prompt.TaskRulePromptBuilder.buildRuleLayerBlock(rulesByGoal)
 
         // v1.39 圆桌工具调用接入：此前圆桌角色的 systemPrompt 从未传入
         // toolDescriptionBlock（用默认值 ""），角色不知道自己能调用任何工具。
@@ -396,7 +397,7 @@ class RoundtableBotReplyGenerator(
                         is StreamEvent.ToolStarted -> {
                             // 心迹（Window B 2.2.3）：记录工具调用"已发起"事件，sceneType=roundtable_bot。
                             try {
-                                AppContainer.instance.agentActivityRepo.recordEvent(
+                                agentActivityRepo.recordEvent(
                                     characterId    = bot.id,
                                     sessionRef     = msgId,
                                     sceneType      = AgentActivityRepository.SceneType.ROUNDTABLE_BOT,
@@ -416,7 +417,7 @@ class RoundtableBotReplyGenerator(
                         is StreamEvent.ToolDone -> {
                             // 心迹（Window B 2.2.3）：记录工具调用终态事件，sceneType=roundtable_bot。
                             try {
-                                AppContainer.instance.agentActivityRepo.recordEvent(
+                                agentActivityRepo.recordEvent(
                                     characterId  = bot.id,
                                     sessionRef   = msgId,
                                     sceneType    = AgentActivityRepository.SceneType.ROUNDTABLE_BOT,

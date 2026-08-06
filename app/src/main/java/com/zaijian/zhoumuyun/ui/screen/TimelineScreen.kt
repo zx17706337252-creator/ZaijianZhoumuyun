@@ -1,20 +1,26 @@
 package com.zaijian.zhoumuyun.ui.screen
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle // P1-11-2
@@ -23,6 +29,8 @@ import com.zaijian.zhoumuyun.data.db.entity.WorldEventEntity
 import com.zaijian.zhoumuyun.ui.component.DetailTopBar
 import com.zaijian.zhoumuyun.ui.design.GhostGoldButton
 import com.zaijian.zhoumuyun.ui.design.GoldPrimaryButton
+import com.zaijian.zhoumuyun.ui.design.WashiTape
+import com.zaijian.zhoumuyun.ui.design.WaxSealBadge
 import com.zaijian.zhoumuyun.ui.design.WorldCard
 import com.zaijian.zhoumuyun.ui.theme.Palette
 import com.zaijian.zhoumuyun.ui.theme.Spacing
@@ -203,32 +211,85 @@ private fun TimelineEventCard(event: WorldEventEntity, colors: com.zaijian.zhoum
         Spacer(Modifier.width(Spacing.sm))
         // WorldCard 接入（精修方案 v1.3 第2/6节）：L0-L2 常态层。时间线事件
         // 不归属单一角色（characterId 可为 null，表示跨角色总览），eventColor
-        // 已通过左侧时间轴圆点+竖线表达"事件类型"语义，与 L3 身份脊（归属
+        // 已通过左侧时间轴圆点+竖线表达“事件类型”语义，与 L3 身份脊（归属
         // 哪位角色）是不同维度信息，故不传 ownerAccent。
-        WorldCard(
-            modifier = Modifier.weight(1f),
+        //
+        // UI 升级 v2.0（帧18 时间线手账拼贴）：WorldCard 外层包一层 Box，
+        // 叠加和纸胶带 / 火漆印 / 邮票章三类手账装饰，整张卡 ±0.6° 微旋营造
+        // 手写拼贴感。微旋角度用 remember 缓存，每张卡固定、不每帧重算。
+        val rotationAngle = remember { -0.6f + kotlin.random.Random.nextFloat() * 1.2f }
+        // 关系升阶类事件（关系变化）→ 右上角火漆印「缔」
+        val isRelationshipMilestone = event.type == EventType.RELATIONSHIP_CHANGED.name
+        // 已完成里程碑类事件（里程碑 / 任务完成）→ 左下角偏出的邮票章
+        val isCompletedMilestone =
+            event.type == EventType.PROJECT_MILESTONE.name ||
+                event.type == EventType.TASK_COMPLETED.name
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .graphicsLayer { rotationZ = rotationAngle },
         ) {
-            Column(modifier = Modifier.padding(Spacing.sm)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(eventIcon, style = type.body)  // P3-32 修复：emoji 图标 fontSize 替换为主题排印
-                    Spacer(Modifier.width(4.dp))
-                    Text(
-                        text = eventTypeLabel(event.type),
-                        style = type.caption,
-                        fontWeight = FontWeight.SemiBold,
-                        color = eventColor,
-                    )
-                    Spacer(Modifier.weight(1f))
-                    Text(timeStr, style = type.small, color = colors.textSecondary)
+            WorldCard(
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(modifier = Modifier.padding(Spacing.sm)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(eventIcon, style = type.body)  // P3-32 修复：emoji 图标 fontSize 替换为主题排印
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            text = eventTypeLabel(event.type),
+                            style = type.caption,
+                            fontWeight = FontWeight.SemiBold,
+                            color = eventColor,
+                        )
+                        Spacer(Modifier.weight(1f))
+                        Text(timeStr, style = type.small, color = colors.textSecondary)
+                    }
+                    if (event.payload.isNotEmpty()) {
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            text = event.payload.take(100),
+                            style = type.small,
+                            color = colors.textSecondary,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 }
-                if (event.payload.isNotEmpty()) {
-                    Spacer(Modifier.height(2.dp))
+            }
+            // 和纸胶带：卡顶中央偏左，半条露出卡外（y=-9.dp）
+            WashiTape(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .offset(x = (-12).dp, y = (-9).dp),
+                color = Palette.Gold.copy(alpha = 0.38f),
+            )
+            // 关系升阶类事件：右上角火漆印「缔」
+            if (isRelationshipMilestone) {
+                WaxSealBadge(
+                    char = "缔",
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .offset(x = (-9).dp, y = (-9).dp),
+                )
+            }
+            // 已完成里程碑类事件：左下角偏出的邮票章（半透白底 + 绿描边 + -6° 微旋）
+            if (isCompletedMilestone) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .offset(x = (-8).dp, y = 8.dp)
+                        .rotate(-6f)
+                        .border(1.5.dp, Color(0xFF3F9E57), RoundedCornerShape(3.dp))
+                        .background(Color.White.copy(alpha = 0.72f))
+                        .padding(horizontal = 6.dp, vertical = 2.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
                     Text(
-                        text = event.payload.take(100),
-                        style = type.small,
-                        color = colors.textSecondary,
-                        maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
+                        text = "已完成",
+                        fontSize = 10.sp,
+                        letterSpacing = 0.18.em,
+                        color = Color(0xFF3F9E57),
                     )
                 }
             }

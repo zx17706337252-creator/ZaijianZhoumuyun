@@ -3,6 +3,8 @@ package com.zaijian.zhoumuyun.data.agent
 import android.content.Context
 import com.zaijian.zhoumuyun.data.db.AppDatabase
 import com.zaijian.zhoumuyun.data.db.entity.MessageEntity
+import com.zaijian.zhoumuyun.ui.viewmodel.FILE_READ_MARK_PREFIX
+import com.zaijian.zhoumuyun.ui.viewmodel.TOOL_TRACE_MARK_PREFIX
 import com.zaijian.zhoumuyun.data.db.entity.ScheduledJobEntity
 import com.zaijian.zhoumuyun.data.model.CharacterConfig
 import com.zaijian.zhoumuyun.data.model.DaughterDataException
@@ -125,7 +127,8 @@ object AgentTaskJobExecutor {
 
         // 历史消息 role 映射：复用 ChatMessageOrchestrator.kt 第145-156 行的既有规则（已核实）
         //   - "user" / "assistant" 原样保留
-        //   - "system" 中带 [AGENT_MSG: / [ROUNDTABLE_TRIGGER] 前缀的是内部控制信号，丢弃
+        //   - "system" 中带 [AGENT_MSG: / [ROUNDTABLE_TRIGGER] 前缀的是历史遗留内部控制信号
+//     （工具已删除），仅作数据卫生防御——老 DB 残留行不透传给角色，丢弃
         //   - 其余 "system"（如文件导入提示）按 user 身份带进历史
         //   - role = characterId.toString() 的主动消息映射为 "assistant"
         // P1-10 修复（#6）：全量加载角色对话历史（getByCharacter），长期使用后可达
@@ -137,9 +140,21 @@ object AgentTaskJobExecutor {
         val history = messageRepo.getByCharacterForContext(job.characterId).takeLast(MAX_HISTORY).mapNotNull { msg ->
             when (msg.role) {
                 "user", "assistant" -> LLMMessage(role = msg.role, content = msg.content)
-                "system" -> if (msg.content.startsWith("[AGENT_MSG:") ||
-                                msg.content.startsWith("[ROUNDTABLE_TRIGGER]")) null
-                            else LLMMessage(role = "user", content = msg.content)
+                "system" -> when {
+                    msg.content.startsWith("[AGENT_MSG:") ||
+                        msg.content.startsWith("[ROUNDTABLE_TRIGGER]") -> null
+                    // 修复（角色污染，此前已存在但未点名）：这条分支此前落到最后一个
+                    // else，把带 [FILE_READ_MARK] 字面量前缀的原文整段当 user 内容透传，
+                    // 让内部标记泄漏进模型上下文。剥离前缀、只留摘要正文（与
+                    // ChatMessageOrchestrator.persistUserMessageAndLoadCharacter 同款处理）。
+                    msg.content.startsWith(FILE_READ_MARK_PREFIX) ->
+                        LLMMessage(role = "user", content = msg.content.removePrefix(FILE_READ_MARK_PREFIX))
+                    // 工具结果跨消息保留：同上，剥离前缀，避免 [TOOL_TRACE_MARK] 字面量
+                    // 泄漏进工单路径的模型上下文。
+                    msg.content.startsWith(TOOL_TRACE_MARK_PREFIX) ->
+                        LLMMessage(role = "user", content = msg.content.removePrefix(TOOL_TRACE_MARK_PREFIX))
+                    else -> LLMMessage(role = "user", content = msg.content)
+                }
                 else -> LLMMessage(role = "assistant", content = msg.content)
             }
         }
@@ -163,7 +178,7 @@ object AgentTaskJobExecutor {
 
         // stream=false：Worker 后台执行不需要打字机效果，整段返回更稳。
         // model="" 与 ChatMessageOrchestrator 一致——由 provider 内部按用户配置选模型。
-        val config = LLMConfig(model = "", maxTokens = 50000, temperature = 0.8f, stream = false)
+        val config = LLMConfig(model = "", maxTokens = 100000, temperature = 0.8f, stream = false)
 
         // 3. 走完整推理 + 工具调用（复用 ToolCallInterceptor，不重新实现）
         //    streamWithTools 内部：流式接收 LLM 输出 → 解析 <tool:xxx/> → 执行工具

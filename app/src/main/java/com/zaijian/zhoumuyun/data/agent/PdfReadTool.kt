@@ -47,7 +47,7 @@ class PdfReadTool(
 
     private companion object {
         /** text 模式提取文本的最大字符数，防止超大 PDF 撑爆 LLM 上下文。 */
-        const val MAX_TEXT_CHARS = 20000
+        const val MAX_TEXT_CHARS = 50000
     }
 
     override suspend fun execute(params: Map<String, String>): ToolResult = withContext(Dispatchers.IO) {
@@ -88,7 +88,14 @@ class PdfReadTool(
                         PdfExtractor.extractText(context, stream)
                     }
                     val truncated = text.length > MAX_TEXT_CHARS
-                    val body = if (truncated) text.take(MAX_TEXT_CHARS) else text
+                    // 截断时优先在段落边界（双换行）截断，避免切断句子/词组。
+                    val body = if (truncated) {
+                        val cut = text.take(MAX_TEXT_CHARS)
+                        val lastPara = cut.lastIndexOf("\n\n")
+                        if (lastPara > MAX_TEXT_CHARS / 2) cut.substring(0, lastPara) else cut
+                    } else {
+                        text
+                    }
                     val suffix = if (truncated) "\n\n[已截断，原文共 ${text.length} 字符]" else ""
                     ToolResult(
                         toolName = name,

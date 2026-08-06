@@ -13,6 +13,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import com.zaijian.zhoumuyun.ui.design.GoldPrimaryButton
 import com.zaijian.zhoumuyun.ui.theme.Spacing
 import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
 
@@ -77,14 +78,11 @@ internal fun HtmlPreviewEditor(
                     .padding(horizontal = Spacing.screenHorizontal),
                 textStyle = type.labelMono.copy(fontFamily = FontFamily.Monospace),
             )
-            Button(
+            GoldPrimaryButton(
+                text = "保存",
                 onClick = { onSave(editSource) },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(Spacing.md),
-            ) {
-                Text("保存")
-            }
+                modifier = Modifier.fillMaxWidth(),
+            )
         } else {
             // WebView 渲染
             // Fix-预览闪退（html 专属风险排查）：WebView() 构造函数在部分设备上

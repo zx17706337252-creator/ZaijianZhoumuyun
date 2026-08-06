@@ -8,8 +8,11 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.zaijian.zhoumuyun.data.agent.FilePreviewParser
+import com.zaijian.zhoumuyun.data.agent.VaultCallContext
+import com.zaijian.zhoumuyun.data.agent.VaultScope
 import com.zaijian.zhoumuyun.data.agent.resolveVaultPath
 import com.zaijian.zhoumuyun.data.agent.VaultPathResolution
+import com.zaijian.zhoumuyun.data.agent.withVaultContext
 import com.zaijian.zhoumuyun.data.agent.writeVaultText
 import com.zaijian.zhoumuyun.ui.screen.filepreview.PreviewContent
 import com.zaijian.zhoumuyun.util.TimeFormatUtils
@@ -70,25 +73,52 @@ class FilePreviewViewModel(
 
     // ── 加载 ─────────────────────────────────────────────────
 
+    /**
+     * 从文件路径推断保险库权限上下文。
+     *
+     * FilePreviewViewModel 不经路由接收 characterId（FilePreview 路由仅传 encodedPath），
+     * 而 resolveVaultPath 依赖 VaultCallContext 做权限校验。此前所有 resolveVaultPath
+     * 调用都未包裹 withVaultContext，导致 currentVaultContext() 回退到进程级
+     * VaultCallContextHolder（可能为 UNINITIALIZED，characterId=-1），对
+     * vault/personal/{X}/ 路径因 X≠-1 被拒，用户无法预览/保存/导出角色私库文件。
+     *
+     * 本函数从 vault 路径段推断正确的 scope/characterId/roundtableId：
+     * - vault/personal/{id}/  → PERSONAL + id
+     * - vault/shared/roundtable/{rtId}/  → ROUNDTABLE + rtId 的首个参与者
+     * - vault/shared/project/  → PROJECT（对所有角色开放）
+     * - 其他路径（非 vault）  → PERSONAL + -1（resolveVaultPath 对非 vault 路径直接放行）
+     */
+    private fun inferVaultContextFromPath(path: String): VaultCallContext {
+        val personalMatch = Regex("vault/personal/(\\d+)/").find(path)
+        if (personalMatch != null) {
+            val cid = personalMatch.groupValues[1].toIntOrNull() ?: -1
+            return VaultCallContext(cid, VaultScope.PERSONAL)
+        }
+        val rtMatch = Regex("vault/shared/roundtable/([^/]+)/").find(path)
+        if (rtMatch != null) {
+            val rtId = rtMatch.groupValues[1]
+            val cid = rtId.split("_").firstNotNullOfOrNull { it.toIntOrNull() } ?: -1
+            return VaultCallContext(cid, VaultScope.ROUNDTABLE, rtId)
+        }
+        if (path.contains("vault/shared/project/")) {
+            return VaultCallContext(-1, VaultScope.PROJECT)
+        }
+        return VaultCallContext(-1, VaultScope.PERSONAL)
+    }
+
     /** 从文件路径加载（文件模式）。 */
     fun loadFromPath(path: String) {
         _uiState.value = UiState.Loading
         viewModelScope.launch {
             val content = withContext(Dispatchers.IO) {
-                // Fix-预览闪退：resolveVaultPath 此前裸调用在 runCatching 之外——
-                // 本函数内其余 4 个入口（saveText/saveTable/saveHtml/exportToDownloads）
-                // 都把 resolveVaultPath 包在 try-catch 里，唯独这里漏了。
-                // resolveVaultPath 内部会调用 File.canonicalPath()（受环境/文件系统影响，
-                // 理论上可抛 IOException）以及协程上下文读取，一旦在某些设备/路径上抛出
-                // 未捕获异常，会从 withContext(Dispatchers.IO) 直接冒到 viewModelScope.launch，
-                // 那是个没有 CoroutineExceptionHandler 的协程——异常不会停在这个函数里，
-                // 而是直接打崩整个 App 进程。这个函数对所有可预览格式（md/txt/csv/xlsx/
-                // docx/html/json/xml/log/yml/yaml）都是唯一入口，不是 md 专属问题，
-                // 所以这里补齐 runCatching，和 parse() 一致地兜底成 Error 状态。
-                val resolution = runCatching {
-                    resolveVaultPath(getApplication(), path)
-                }.getOrElse {
-                    com.zaijian.zhoumuyun.util.ZLog.e("FilePreview", "路径解析失败: $path", it)
+                val resolution = try {
+                    withVaultContext(inferVaultContextFromPath(path)) {
+                        resolveVaultPath(getApplication(), path)
+                    }
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    com.zaijian.zhoumuyun.util.ZLog.e("FilePreview", "路径解析失败: $path", e)
                     _uiState.value = UiState.Error("加载失败：路径解析异常")
                     return@withContext null
                 }
@@ -100,11 +130,13 @@ class FilePreviewViewModel(
                     is VaultPathResolution.Allowed -> resolution.file
                 }
                 currentFile = file  // xlsx 多 sheet 切换用
-                runCatching {
+                try {
                     FilePreviewParser.parse(file)
-                }.getOrElse {
-                    com.zaijian.zhoumuyun.util.ZLog.e("FilePreview", "解析失败: ${file.name}", it)
-                    _uiState.value = UiState.Error("加载失败：${it.message?.take(80)}")
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    com.zaijian.zhoumuyun.util.ZLog.e("FilePreview", "解析失败: ${file.name}", e)
+                    _uiState.value = UiState.Error("加载失败：${e.message?.take(80)}")
                     return@withContext null
                 }
             }
@@ -139,6 +171,18 @@ class FilePreviewViewModel(
         )
     }
 
+    /**
+     * P1-24 修复：暂存（memory）模式缓存 miss 时置 Error 终态。
+     *
+     * PreviewMemoryCache 是静态内存 Map，进程被杀后清空；导航恢复 back stack 到
+     * file_preview/memory?tempKey=... 路由时 tempKey 已失效，consume 返回 null。
+     * 此前 Screen 在 consume 为 null 时既不 loadFromMemory 也不 loadFromTable，uiState
+     * 保持初始 Loading，用户永久卡在空白加载页。这里显式置 Error，让 UI 显示可退出的提示。
+     */
+    fun setMemoryCacheMiss() {
+        _uiState.value = UiState.Error("预览内容已失效，请返回重新打开")
+    }
+
     // ── xlsx 多 sheet 切换 ───────────────────────────────────────
 
     /**
@@ -155,8 +199,12 @@ class FilePreviewViewModel(
         if (sheetIndex !in current.sheetNames.indices) return
         viewModelScope.launch {
             val content = withContext(Dispatchers.IO) {
-                runCatching { FilePreviewParser.parseXlsxSheet(file, sheetIndex) }.getOrElse {
-                    com.zaijian.zhoumuyun.util.ZLog.e("FilePreview", "切换 sheet 失败: ${file.name}", it)
+                try {
+                    FilePreviewParser.parseXlsxSheet(file, sheetIndex)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    com.zaijian.zhoumuyun.util.ZLog.e("FilePreview", "切换 sheet 失败: ${file.name}", e)
                     null
                 }
             }
@@ -178,8 +226,10 @@ class FilePreviewViewModel(
             val result = withContext(Dispatchers.IO) {
                 try {
                     if (current.sourceFilePath != null) {
-                        // P2-47 修复：收口到 resolveVaultPath 权限校验
-                        val resolution = resolveVaultPath(getApplication(), current.sourceFilePath)
+                        // P2-47 修复：收口到 resolveVaultPath 权限校验（含 withVaultContext 身份注入）
+                        val resolution = withVaultContext(inferVaultContextFromPath(current.sourceFilePath)) {
+                            resolveVaultPath(getApplication(), current.sourceFilePath)
+                        }
                         val saveFile = when (resolution) {
                             is VaultPathResolution.Denied -> {
                                 com.zaijian.zhoumuyun.util.ZLog.w("FilePreview", "保存被拒：${resolution.reason}")
@@ -238,8 +288,10 @@ class FilePreviewViewModel(
                 try {
                     val csvText = FilePreviewParser.toCsv(columns, rows)
                     if (current.sourceFilePath != null) {
-                        // P2-47 修复：收口到 resolveVaultPath 权限校验
-                        val resolution = resolveVaultPath(getApplication(), current.sourceFilePath)
+                        // P2-47 修复：收口到 resolveVaultPath 权限校验（含 withVaultContext 身份注入）
+                        val resolution = withVaultContext(inferVaultContextFromPath(current.sourceFilePath)) {
+                            resolveVaultPath(getApplication(), current.sourceFilePath)
+                        }
                         val saveFile = when (resolution) {
                             is VaultPathResolution.Denied -> {
                                 com.zaijian.zhoumuyun.util.ZLog.w("FilePreview", "保存被拒：${resolution.reason}")
@@ -287,8 +339,10 @@ class FilePreviewViewModel(
             val result = withContext(Dispatchers.IO) {
                 try {
                     if (current.sourceFilePath != null) {
-                        // P2-47 修复：收口到 resolveVaultPath 权限校验
-                        val resolution = resolveVaultPath(getApplication(), current.sourceFilePath)
+                        // P2-47 修复：收口到 resolveVaultPath 权限校验（含 withVaultContext 身份注入）
+                        val resolution = withVaultContext(inferVaultContextFromPath(current.sourceFilePath)) {
+                            resolveVaultPath(getApplication(), current.sourceFilePath)
+                        }
                         val saveFile = when (resolution) {
                             is VaultPathResolution.Denied -> {
                                 com.zaijian.zhoumuyun.util.ZLog.w("FilePreview", "保存被拒：${resolution.reason}")
@@ -330,19 +384,47 @@ class FilePreviewViewModel(
     /** 导出到系统 Downloads（复用 FileVaultViewModel 的 MediaStore 逻辑）。 */
     fun exportToDownloads(filePath: String, fileName: String) {
         viewModelScope.launch {
+            // 修复：用可空 String 区分"已设置错误消息"与"成功"。
+            // 此前 Denied 分支在 withContext 内部设置了具体错误消息后 return null，
+            // 外部 _uiState.update 统一覆盖成"导出失败，请检查存储权限"——
+            // 用户看不到真正的权限拒绝原因。现在 null 表示"错误消息已设置，
+            // 不要覆盖"；非 null 表示导出成功，值为文件名。
+            var errorMsg: String? = null
             val result = withContext(Dispatchers.IO) {
                 try {
                     val context = getApplication<Application>()
-                    // P2-47 修复：收口到 resolveVaultPath 权限校验
-                    val resolution = resolveVaultPath(context, filePath)
+                    // P2-47 修复：收口到 resolveVaultPath 权限校验（含 withVaultContext 身份注入）
+                    val resolution = withVaultContext(inferVaultContextFromPath(filePath)) {
+                        resolveVaultPath(context, filePath)
+                    }
                     val srcFile = when (resolution) {
                         is VaultPathResolution.Denied -> {
-                            _uiState.value = UiState.Error("无权导出：${resolution.reason}")
+                            errorMsg = "无权导出：${resolution.reason}"
                             return@withContext null
                         }
                         is VaultPathResolution.Allowed -> resolution.file
                     }
-                    if (!srcFile.exists()) return@withContext null
+                    if (!srcFile.exists()) {
+                        errorMsg = "源文件不存在，可能已被删除"
+                        return@withContext null
+                    }
+
+                    // #9 复核修复：与 FileVaultViewModel.exportToDownloads 同一处
+                    // 核实结论——copyTo() 是 8KB 分块流式拷贝，不是"一次性读入内存"，
+                    // 不存在报告描述的 OOM 机制；真实风险是磁盘空间不足导致导出到
+                    // 一半失败、留下半截文件。同款可用空间预检查。
+                    val downloadsDirForSpaceCheck = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                        context.filesDir
+                    } else {
+                        android.os.Environment.getExternalStoragePublicDirectory(
+                            android.os.Environment.DIRECTORY_DOWNLOADS,
+                        )
+                    }
+                    val freeSpace = downloadsDirForSpaceCheck.usableSpace
+                    if (freeSpace in 1 until srcFile.length()) {
+                        errorMsg = "存储空间不足，无法导出（文件 ${srcFile.length() / 1024 / 1024}MB，可用 ${freeSpace / 1024 / 1024}MB）"
+                        return@withContext null
+                    }
 
                     val ext = fileName.substringAfterLast(".", "")
                     val mimeType = FilePreviewParser.guessMimeType(ext)
@@ -373,14 +455,21 @@ class FilePreviewViewModel(
                         srcFile.copyTo(dest, overwrite = true)
                         dest.name
                     }
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
                 } catch (e: Throwable) {
                     com.zaijian.zhoumuyun.util.ZLog.e("FilePreview", "导出失败：$fileName", e)
                     null
                 }
             }
-            _uiState.update {
-                if (result != null) UiState.Saved("已导出到下载目录：$result")
-                else UiState.Error("导出失败，请检查存储权限")
+            // 修复：仅当 result 为 null 且 errorMsg 也为 null（即 catch 分支兜住的异常）
+            // 时才使用通用消息；Denied/文件不存在等已设置具体 errorMsg 的场景不覆盖。
+            if (result != null) {
+                _uiState.value = UiState.Saved("已导出到下载目录：$result")
+            } else if (errorMsg != null) {
+                _uiState.value = UiState.Error(errorMsg!!)
+            } else {
+                _uiState.value = UiState.Error("导出失败，请检查存储权限")
             }
         }
     }

@@ -97,7 +97,10 @@ internal fun resolveFileSystemPath(context: Context, path: String): File? {
         )
         // 过滤空串（externalFilesDir 为 null 时回退为 ""，path.startsWith("")
         // 恒为 true 会令前缀校验失效），并按规范化路径做前缀匹配。
-        if (allowed.none { it.isNotEmpty() && normalizedPath.startsWith(it) }) return null
+        // P1-13 修复：前缀匹配加分隔符边界——原 startsWith(it) 会把 filesDir 的兄弟路径
+        // （如 /data/user/0/com.zaijian/filesXYZ/...）误判为允许范围（共享前缀但实际在
+        // 沙箱目录之外）。改为「等于该目录」或「以 it + "/" 开头」才算命中。
+        if (allowed.none { it.isNotEmpty() && (normalizedPath == it || normalizedPath.startsWith(it + "/")) }) return null
         return file
     }
 
@@ -919,17 +922,27 @@ class FileOrganizeTool(
 
             val digitLen = sorted.size.toString().length.coerceAtLeast(2)
             var renamed = 0
+            var skipped = 0
             for ((index, item) in sorted.withIndex()) {
                 val cleanName = item.name.replaceFirst(orderPrefixRegex, "")
                 val newName = "${(index + 1).toString().padStart(digitLen, '0')}_$cleanName"
                 if (newName != item.name) {
+                    val target = File(item.parentFile, newName)
+                    // 专项审查报告问题13：Android 的 File.renameTo 底层走 rename(2)，
+                    // 对已存在的目标会静默覆盖。重命名前先判目标是否存在，存在则跳过
+                    // 该文件（不覆盖），避免已有文件被无提示地覆盖、数据丢失。
+                    if (target.exists()) {
+                        skipped++
+                        continue
+                    }
                     // 批次4-2-9 修复：renameTo 返回值未检查，renamed 计数器无论成败都递增。
-                    val ok = item.renameTo(File(item.parentFile, newName))
+                    val ok = item.renameTo(target)
                     if (ok) renamed++
                 }
             }
 
-            ToolResult(name, true, "[文件已整理]\n目录：$dirPath\n排序：$orderBy ${direction}\n重命名：$renamed 项")
+            val skippedNote = if (skipped > 0) "\n跳过重命名：$skipped 项（目标已存在，未覆盖）" else ""
+            ToolResult(name, true, "[文件已整理]\n目录：$dirPath\n排序：$orderBy ${direction}\n重命名：$renamed 项$skippedNote")
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Throwable) {

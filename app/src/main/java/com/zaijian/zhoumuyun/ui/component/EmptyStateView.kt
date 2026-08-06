@@ -1,6 +1,7 @@
 package com.zaijian.zhoumuyun.ui.component
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -90,7 +91,8 @@ fun EmptyStateView(
                 modifier = Modifier
                     .size(64.dp)
                     .clip(CircleShape)
-                    .background(Palette.GoldSoft.copy(alpha = 0.50f)),
+                    .background(Palette.GoldSoft.copy(alpha = 0.50f))
+                    .border(1.dp, Palette.Gold.copy(alpha = 0.3f), CircleShape),
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(

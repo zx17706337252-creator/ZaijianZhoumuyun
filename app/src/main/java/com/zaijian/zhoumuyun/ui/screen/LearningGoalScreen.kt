@@ -20,6 +20,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import kotlinx.coroutines.flow.map
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -53,6 +54,10 @@ import com.zaijian.zhoumuyun.ui.viewmodel.LearningGoalViewModel
 import com.zaijian.zhoumuyun.ui.viewmodel.ProjectGrowthData
 import com.zaijian.zhoumuyun.util.TimeFormatUtils
 import com.zaijian.zhoumuyun.ui.design.AppIcons
+import com.zaijian.zhoumuyun.ui.design.DangerVelvetButton
+import com.zaijian.zhoumuyun.ui.design.GhostGoldButton
+import com.zaijian.zhoumuyun.ui.design.GoldPrimaryButton
+import com.zaijian.zhoumuyun.ui.design.GoldPillSegmentedControl
 
 // ─────────────────────────────────────────────────────────────
 //  LearningGoalScreen（Phase 23 新增，Phase 27 扩展）
@@ -76,6 +81,7 @@ fun LearningGoalScreen(
     onBack: () -> Unit             = {},
     onNavigateToChat: (Int) -> Unit = {},
     onNavigateToProject: (String) -> Unit = {},
+    onNavigateToCompetition: (String) -> Unit = {},
     viewModel: LearningGoalViewModel = viewModel(),
 ) {
     val colors       = ZaijianTheme.colors
@@ -92,6 +98,9 @@ fun LearningGoalScreen(
 
     // 长按删除确认
     var goalToDelete by remember { mutableStateOf<LearningGoalEntity?>(null) }
+
+    // UI 升级 v2.0（§IA整合）：成长Tab三段式分段控件
+    var growthTab by rememberSaveable { mutableIntStateOf(0) }
 
     // Snackbar
     val snackbarHostState = remember { SnackbarHostState() }
@@ -220,6 +229,18 @@ fun LearningGoalScreen(
 
             Spacer(Modifier.height(Spacing.sm))
 
+            // ── 成长Tab三段式分段控件（目标/专长/竞赛）─────────
+            GoldPillSegmentedControl(
+                items        = listOf("目标", "专长", "竞赛"),
+                selectedIndex = growthTab,
+                onSelect      = { growthTab = it },
+                modifier      = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = Spacing.screenHorizontal),
+            )
+
+            Spacer(Modifier.height(Spacing.sm))
+
             // ── 主内容列表 ────────────────────────────────────
             if (uiState.isLoading) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -241,7 +262,7 @@ fun LearningGoalScreen(
                     ),
                     verticalArrangement = Arrangement.spacedBy(Spacing.sm),
                 ) {
-                    // ── 今日概览卡 ─────────────────────────────
+                    // ── 今日概览卡（三段共用）─────────────────────
                     item(key = "summary_card") {
                         GrowthSummaryCard(
                             characterName = characterName,
@@ -250,56 +271,74 @@ fun LearningGoalScreen(
                         )
                     }
 
-                    // ── 进化项目区块标题 ───────────────────────
-                    item(key = "project_header") {
-                        GrowthSectionHeader(
-                            icon  = AppIcons.Spa,
-                            label = "进化项目",
-                            color = Palette.GrowthGreen,
-                        )
-                    }
-
-                    if (uiState.projectCards.isEmpty()) {
-                        item(key = "project_empty") {
-                            ProjectEmptyHint(characterName = characterName)
-                        }
-                    } else {
-                        items(uiState.projectCards, key = { "proj_${it.project.id}" }) { card ->
-                            ProjectGrowthCard(
-                                data        = card,
-                                onClick     = { onNavigateToProject(card.project.id) },
-                                accentColor = selectedCharacter?.accentColor,
+                    // ── 分段内容 ─────────────────────────────────
+                    if (growthTab == 0) {
+                        // ═══ 目标段 ═══
+                        item(key = "goal_header") {
+                            GrowthSectionHeader(
+                                icon  = AppIcons.EmojiEvents,
+                                label = "学习目标",
+                                color = colors.accent,
                             )
                         }
-                    }
 
-                    // ── 学习目标区块标题 ───────────────────────
-                    item(key = "goal_header") {
-                        Spacer(Modifier.height(Spacing.xs))
-                        GrowthSectionHeader(
-                            icon  = AppIcons.EmojiEvents,
-                            label = "学习目标",
-                            color = colors.accent,
-                        )
-                    }
+                        if (uiState.goalsWithRules.isEmpty()) {
+                            item(key = "goal_empty") {
+                                EmptyGoalHint(characterName = characterName)
+                            }
+                        } else {
+                            val sorted = uiState.goalsWithRules.sortedWith(
+                                compareByDescending<GoalWithRules> { it.goal.isActive }
+                                    .thenByDescending { it.goal.updatedAt }
+                            )
+                            items(sorted, key = { it.goal.id }) { goalWithRules ->
+                                GoalCard(
+                                    goalWithRules       = goalWithRules,
+                                    isRulePanelExpanded = goalWithRules.goal.id in uiState.expandedRulePanels,
+                                    onToggleRulePanel   = { viewModel.toggleRulePanel(goalWithRules.goal.id) },
+                                    onEdit              = { viewModel.openEditDraft(goalWithRules.goal) },
+                                    onDelete            = { goalToDelete = goalWithRules.goal },
+                                    onToggle            = { viewModel.toggleActive(goalWithRules.goal) },
+                                )
+                            }
+                        }
+                    } else if (growthTab == 1) {
+                        // ═══ 专长段 ═══
+                        item(key = "project_header") {
+                            GrowthSectionHeader(
+                                icon  = AppIcons.Spa,
+                                label = "进化项目",
+                                color = Palette.GrowthGreen,
+                            )
+                        }
 
-                    if (uiState.goalsWithRules.isEmpty()) {
-                        item(key = "goal_empty") {
-                            EmptyGoalHint(characterName = characterName)
+                        if (uiState.projectCards.isEmpty()) {
+                            item(key = "project_empty") {
+                                ProjectEmptyHint(characterName = characterName)
+                            }
+                        } else {
+                            items(uiState.projectCards, key = { "proj_${it.project.id}" }) { card ->
+                                ProjectGrowthCard(
+                                    data        = card,
+                                    onClick     = { onNavigateToProject(card.project.id) },
+                                    accentColor = selectedCharacter?.accentColor,
+                                )
+                            }
                         }
                     } else {
-                        val sorted = uiState.goalsWithRules.sortedWith(
-                            compareByDescending<GoalWithRules> { it.goal.isActive }
-                                .thenByDescending { it.goal.updatedAt }
-                        )
-                        items(sorted, key = { it.goal.id }) { goalWithRules ->
-                            GoalCard(
-                                goalWithRules       = goalWithRules,
-                                isRulePanelExpanded = goalWithRules.goal.id in uiState.expandedRulePanels,
-                                onToggleRulePanel   = { viewModel.toggleRulePanel(goalWithRules.goal.id) },
-                                onEdit              = { viewModel.openEditDraft(goalWithRules.goal) },
-                                onDelete            = { goalToDelete = goalWithRules.goal },
-                                onToggle            = { viewModel.toggleActive(goalWithRules.goal) },
+                        // ═══ 竞赛段 ═══
+                        item(key = "competition_header") {
+                            GrowthSectionHeader(
+                                icon  = AppIcons.EmojiEvents,
+                                label = "竞赛挑战",
+                                color = Palette.CompetitionOrange,
+                            )
+                        }
+                        item(key = "competition_entry") {
+                            CompetitionEntryCard(
+                                characterName = characterName,
+                                accentColor   = selectedCharacter?.accentColor ?: colors.accent,
+                                onNavigate    = { domain -> onNavigateToCompetition(domain) },
                             )
                         }
                     }
@@ -335,17 +374,16 @@ fun LearningGoalScreen(
                 )
             },
             confirmButton     = {
-                TextButton(onClick = {
-                    viewModel.delete(goal.id, goal.title)
-                    goalToDelete = null
-                }) {
-                    Text("删除", color = MaterialTheme.colorScheme.error)
-                }
+                DangerVelvetButton(
+                    text = "删除",
+                    onClick = {
+                        viewModel.delete(goal.id, goal.title)
+                        goalToDelete = null
+                    },
+                )
             },
             dismissButton     = {
-                TextButton(onClick = { goalToDelete = null }) {
-                    Text("取消")
-                }
+                GhostGoldButton(text = "取消", onClick = { goalToDelete = null })
             },
             containerColor    = ZaijianTheme.colors.bgCard,
             titleContentColor = ZaijianTheme.colors.textPrimary,
@@ -377,58 +415,132 @@ private fun GrowthSummaryCard(
         modifier    = modifier.fillMaxWidth(),
         ownerAccent = accentColor,
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(Spacing.cardPadding),
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    imageVector        = AppIcons.Spa,
-                    contentDescription = null,
-                    tint               = growthGreen,
-                    modifier           = Modifier.size(16.dp),
-                )
-                Spacer(Modifier.width(Spacing.xs))
-                Text(
-                    text  = "$characterName · 今日概览",
-                    style = type.label.copy(fontWeight = FontWeight.SemiBold),
-                    color = colors.textPrimary,
-                )
-            }
-
-            Spacer(Modifier.height(Spacing.sm))
-
-            Row(
-                modifier              = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceEvenly,
+        // UI 升级 v2.0（帧15 拱檐造型）：卡顶 3dp 黄铜渐变拱形檐口装饰，
+        // 满宽贴 WorldCard 顶边（RoundedCornerShape 999 顶部 → 拱形）。
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(3.dp)
+                    .background(
+                        AppBrushes.goldGradient(),
+                        RoundedCornerShape(topStart = 999.dp, topEnd = 999.dp),
+                    ),
+            )
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(Spacing.cardPadding),
             ) {
-                SummaryStatItem(
-                    icon  = AppIcons.Spa,
-                    label = "活跃项目",
-                    value = summary.activeProjectCount.toString(),
-                    color = growthGreen,
-                )
-                SummaryStatItem(
-                    icon  = AppIcons.Assignment,
-                    label = "今日任务",
-                    value = summary.todayTaskTotal.toString(),
-                    color = colors.accent,
-                )
-                SummaryStatItem(
-                    icon  = AppIcons.CheckCircle,
-                    label = "已完成",
-                    value = summary.todayTaskDone.toString(),
-                    color = Palette.SemanticSuccess,
-                )
-                SummaryStatItem(
-                    icon  = AppIcons.EmojiEvents,
-                    label = "学习目标",
-                    value = summary.activeGoalCount.toString(),
-                    color = colors.accent,
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector        = AppIcons.Spa,
+                        contentDescription = null,
+                        tint               = growthGreen,
+                        modifier           = Modifier.size(16.dp),
+                    )
+                    Spacer(Modifier.width(Spacing.xs))
+                    Text(
+                        text  = "$characterName · 今日概览",
+                        style = type.label.copy(fontWeight = FontWeight.SemiBold),
+                        color = colors.textPrimary,
+                    )
+                }
+
+                Spacer(Modifier.height(Spacing.sm))
+
+                Row(
+                    modifier              = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                ) {
+                    SummaryStatItem(
+                        icon  = AppIcons.Spa,
+                        label = "活跃项目",
+                        value = summary.activeProjectCount.toString(),
+                        color = growthGreen,
+                    )
+                    SummaryStatItem(
+                        icon  = AppIcons.Assignment,
+                        label = "今日任务",
+                        value = summary.todayTaskTotal.toString(),
+                        color = colors.accent,
+                    )
+                    SummaryStatItem(
+                        icon  = AppIcons.CheckCircle,
+                        label = "已完成",
+                        value = summary.todayTaskDone.toString(),
+                        color = Palette.SemanticSuccess,
+                    )
+                    SummaryStatItem(
+                        icon  = AppIcons.EmojiEvents,
+                        label = "学习目标",
+                        value = summary.activeGoalCount.toString(),
+                        color = colors.accent,
+                    )
+                }
             }
         }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+//  CompetitionEntryCard — 竞赛入口卡（成长Tab · 竞赛段）
+//  UI 升级 v2.0（§IA整合）：成长Tab三段式之"竞赛"段的内容卡，
+//  展示竞赛机制简介并提供入口。竞赛按专长方向(domain)组织，
+//  点击后跳转 CompetitionScreen。
+// ─────────────────────────────────────────────────────────────
+
+@Composable
+private fun CompetitionEntryCard(
+    characterName: String,
+    accentColor: Color,
+    onNavigate: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = ZaijianTheme.colors
+    val type   = ZaijianTheme.typography
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(Radius.md))
+            .background(colors.bgCard)
+            .border(1.dp, colors.border, RoundedCornerShape(Radius.md))
+            .padding(Spacing.md),
+        verticalArrangement = Arrangement.spacedBy(Spacing.sm),
+    ) {
+        // 标题行
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Spacing.xs),
+        ) {
+            Icon(
+                imageVector        = AppIcons.EmojiEvents,
+                contentDescription = null,
+                tint               = accentColor,
+                modifier           = Modifier.size(20.dp),
+            )
+            Text(
+                text  = "竞赛挑战",
+                style = type.cardTitle,
+                color = colors.textPrimary,
+            )
+        }
+
+        // 说明文字
+        Text(
+            text  = "$characterName 可参与按专长方向组织的竞赛挑战，" +
+                    "通过裁判评分与对手对决来检验成长成果。",
+            style = type.body,
+            color = colors.textSecondary,
+        )
+
+        // 默认入口
+        GoldPrimaryButton(
+            text     = "进入竞赛",
+            onClick  = { onNavigate("综合") },
+            modifier = Modifier.fillMaxWidth(),
+        )
     }
 }
 
@@ -451,10 +563,12 @@ private fun SummaryStatItem(
         // 2dp 是图标与数值间的贴近间距，比最小档 Spacing.xs(4dp) 更紧，
         // 套用会让间距翻倍、视觉变松，故保留裸值
         Spacer(Modifier.height(2.dp))
+        // UI 升级 v2.0（帧15）：四列统计数字改金色（accentDeep）+ 思源宋体
         Text(
-            text  = value,
-            style = type.body.copy(fontWeight = FontWeight.Bold),
-            color = colors.textPrimary,
+            text       = value,
+            style      = type.body.copy(fontWeight = FontWeight.Bold),
+            color      = colors.accentDeep,
+            fontFamily = SerifSC,
         )
         Text(
             text  = label,
@@ -695,11 +809,6 @@ private fun CharacterSelectorRow(
     ) {
         items(DefaultCharacters, key = { it.id }) { char ->
             val isSelected = char.id == selectedId
-            val borderColor by animateColorAsState(
-                targetValue   = if (isSelected) colors.accent else Color.Transparent,
-                animationSpec = tween(200),
-                label         = "borderColor",
-            )
 
             Column(
                 modifier            = Modifier
@@ -710,7 +819,11 @@ private fun CharacterSelectorRow(
                 Box(
                     modifier = Modifier
                         .size(52.dp)
-                        .border(2.dp, borderColor, CircleShape)
+                        // UI 升级 v2.0（帧15）：选中态从角色色单色边框改为黄铜渐变金环
+                        .then(
+                            if (isSelected) Modifier.border(2.dp, AppBrushes.goldGradient(), CircleShape)
+                            else Modifier
+                        )
                         // 2dp 内边距与上面2dp边框宽度对应，做出等宽的头像内缩效果，
                         // 换成 Spacing.xs(4dp) 会让缩进比边框宽一倍、视觉不对称，保留裸值
                         .padding(2.dp)
@@ -901,7 +1014,15 @@ private fun GoalCard(
             // ── Phase 27：规则面板切换按钮 ────────────────────
             if (goalWithRules.totalRuleCount > 0 || goal.isActive) {
                 Spacer(Modifier.height(Spacing.sm))
-                HorizontalDivider(color = colors.border.copy(alpha = 0.5f))
+                // 用极细 accent 色块替代 HorizontalDivider，
+                // 与 RulePanel 内部两组规则之间的过渡方式保持一致。
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(2.dp)
+                        .clip(RoundedCornerShape(1.dp))
+                        .background(colors.accent.copy(alpha = 0.12f)),
+                )
                 Spacer(Modifier.height(Spacing.xs))
                 RulePanelToggleRow(
                     lockedCount    = goalWithRules.lockedCount,
@@ -931,7 +1052,12 @@ private fun GoalCard(
 }
 
 // ─────────────────────────────────────────────────────────────
-//  Phase 27：规则面板切换行（锁定规则数 + 展开/收起按钮）
+//  Phase 27：规则面板切换行
+//
+//  v2.0 重写：原实现为"盾牌图标 + 文字 + 旋转箭头"，是典型的
+//  iOS 设置页手势提示范式。现改为以规则数量徽章作为视觉锚点，
+//  锁定数用 accent 色小圆徽章呈现，折叠/展开指示改用
+//  UnfoldMore/UnfoldLess 图标对（替代旋转箭头），整体更克制。
 // ─────────────────────────────────────────────────────────────
 
 @Composable
@@ -944,12 +1070,6 @@ private fun RulePanelToggleRow(
     val colors = ZaijianTheme.colors
     val type   = ZaijianTheme.typography
 
-    val chevronAngle by animateFloatAsState(
-        targetValue   = if (isExpanded) 180f else 0f,
-        animationSpec = tween(250),
-        label         = "chevron",
-    )
-
     Row(
         modifier          = Modifier
             .fillMaxWidth()
@@ -957,31 +1077,42 @@ private fun RulePanelToggleRow(
             .padding(vertical = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(
-            imageVector        = AppIcons.Shield,
-            contentDescription = null,
-            tint               = if (lockedCount > 0) colors.accent else colors.textDisabled,
-            modifier           = Modifier.size(14.dp),
-        )
-        Spacer(Modifier.width(Spacing.xs))
+        // ── 规则数量徽章（视觉锚点）───────────────────────────
+        if (totalCount > 0) {
+            Box(
+                modifier = Modifier
+                    .size(20.dp)
+                    .clip(CircleShape)
+                    .background(
+                        if (lockedCount > 0) colors.accent.copy(alpha = 0.15f)
+                        else colors.border.copy(alpha = 0.3f)
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text  = "$totalCount",
+                    style = type.label.copy(fontWeight = FontWeight.Bold),
+                    color = if (lockedCount > 0) colors.accent else colors.textSecondary,
+                )
+            }
+            Spacer(Modifier.width(Spacing.xs))
+        }
         Text(
             text  = when {
                 totalCount == 0  -> "暂无规则"
-                lockedCount == 0 -> "$totalCount 条候选规则"
-                else             -> "$lockedCount 条锁定 · $totalCount 条总计"
+                lockedCount == 0 -> "候选规则"
+                else             -> "已锁定 $lockedCount 条"
             },
-            // P3-32 修复：移除硬编码 fontSize
             style = type.caption.copy(fontWeight = FontWeight.Medium),
             color = if (lockedCount > 0) colors.accent else colors.textSecondary,
             modifier = Modifier.weight(1f),
         )
+        // ── 折叠/展开指示（图标对，非旋转箭头）─────────────────
         Icon(
-            imageVector        = AppIcons.ExpandMore,
-            contentDescription = if (isExpanded) "收起" else "展开",
+            imageVector        = if (isExpanded) AppIcons.UnfoldLess else AppIcons.UnfoldMore,
+            contentDescription = if (isExpanded) "收起规则" else "展开规则",
             tint               = colors.textDisabled,
-            modifier           = Modifier
-                .size(18.dp)
-                .rotate(chevronAngle),
+            modifier           = Modifier.size(16.dp),
         )
     }
 }
@@ -1042,12 +1173,17 @@ private fun RulePanel(
             }
         }
 
-        // ── 两组之间的间隔 ─────────────────────────────────
+        // ── 两组之间的色块过渡 ─────────────────────────────
         if (lockedRules.isNotEmpty() && candidateRules.isNotEmpty()) {
             Spacer(Modifier.height(Spacing.sm))
-            HorizontalDivider(
-                color    = colors.border.copy(alpha = 0.4f),
-                modifier = Modifier.padding(horizontal = Spacing.xs),
+            // 用一条极细的 accent 色块替代 HorizontalDivider，
+            // 视觉上更柔和，与卡片整体金色基调一致，不引入"设置页分隔线"联想。
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(2.dp)
+                    .clip(RoundedCornerShape(1.dp))
+                    .background(colors.accent.copy(alpha = 0.12f)),
             )
             Spacer(Modifier.height(Spacing.sm))
         }
@@ -1484,25 +1620,17 @@ private fun GoalEditSheet(
                 modifier              = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.End,
             ) {
-                OutlinedButton(
+                GhostGoldButton(
+                    text = "取消",
                     onClick = onDismiss,
-                    border  = BorderStroke(1.dp, colors.border),
-                    colors  = ButtonDefaults.outlinedButtonColors(contentColor = colors.textSecondary),
-                ) {
-                    Text("取消")
-                }
+                    modifier = Modifier.weight(1f),
+                )
                 Spacer(Modifier.width(Spacing.sm))
-                Button(
-                    onClick  = onSave,
-                    enabled  = draft.title.trim().isNotEmpty(),
-                    colors   = ButtonDefaults.buttonColors(
-                        containerColor  = colors.accent,
-                        contentColor    = colors.bgBase,
-                        disabledContainerColor = colors.border,
-                    ),
-                ) {
-                    Text(if (isNew) "创建" else "保存")
-                }
+                GoldPrimaryButton(
+                    text = if (isNew) "创建" else "保存",
+                    onClick = onSave,
+                    modifier = Modifier.weight(1f),
+                )
             }
         }
     }

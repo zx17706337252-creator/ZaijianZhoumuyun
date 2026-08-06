@@ -172,12 +172,17 @@ internal val MIGRATION_3_4 = object : Migration(3, 4) {
             USING fts4(
                 content=`project_knowledge`,
                 `title`,
-                `content`,
-                tokenize=unicode61
+                `content`
             )
         """.trimIndent())
-        // ⚠️ 手工 trigger 已移除：project_knowledge_fts 使用 @Fts4(contentEntity = ProjectKnowledgeEntity::class)
-        // Room 会自动管理 content= 触发器，手工 trigger 与之重复会导致 FTS 双写。
+        // ⚠️ 修正：content= 外部内容表的同步触发器，Room 只在全新安装（onCreate）自动生成。
+        // 迁移路径（onUpgrade）必须手工补建，否则 validateMigration 比对触发器缺失抛 IllegalStateException
+        // （release 下被 fallbackToDestructiveMigration 静默清库），且 FTS 永不随主表同步。
+        // 4 条触发器定义与 80.json 期望 schema 逐字一致，不会与 Room 生成的触发器重复（IF NOT EXISTS 幂等）。
+        db.execSQL("CREATE TRIGGER IF NOT EXISTS room_fts_content_sync_project_knowledge_fts_BEFORE_UPDATE BEFORE UPDATE ON `project_knowledge` BEGIN DELETE FROM `project_knowledge_fts` WHERE `docid`=OLD.`rowid`; END")
+        db.execSQL("CREATE TRIGGER IF NOT EXISTS room_fts_content_sync_project_knowledge_fts_BEFORE_DELETE BEFORE DELETE ON `project_knowledge` BEGIN DELETE FROM `project_knowledge_fts` WHERE `docid`=OLD.`rowid`; END")
+        db.execSQL("CREATE TRIGGER IF NOT EXISTS room_fts_content_sync_project_knowledge_fts_AFTER_UPDATE AFTER UPDATE ON `project_knowledge` BEGIN INSERT INTO `project_knowledge_fts`(`docid`, `title`, `content`) VALUES (NEW.`rowid`, NEW.`title`, NEW.`content`); END")
+        db.execSQL("CREATE TRIGGER IF NOT EXISTS room_fts_content_sync_project_knowledge_fts_AFTER_INSERT AFTER INSERT ON `project_knowledge` BEGIN INSERT INTO `project_knowledge_fts`(`docid`, `title`, `content`) VALUES (NEW.`rowid`, NEW.`title`, NEW.`content`); END")
     }
 }
 

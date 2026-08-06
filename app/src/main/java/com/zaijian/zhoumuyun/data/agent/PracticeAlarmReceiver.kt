@@ -28,7 +28,15 @@ import android.content.Intent
  */
 class PracticeAlarmReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        DailyPracticeScheduler.scheduleNext(context)
+        // P1-19 修复：此处是"每日修炼"次日闹钟重排的主路径，此前直接 scheduleNext(context)
+        // 落到默认 21:00，忽略了用户配置的修炼时间（BootReceiver 开机恢复时却正确读取配置），
+        // 三处重排路径不一致。当用户配置了非 21:00 的修炼时间，且触发时刻设备离线导致
+        // DailyPracticeWorker 的 finally 修正被 WorkManager 挂起时，次日修炼会被静默挪到 21:00。
+        // 这里与 BootReceiver 保持一致，读取配置的 hour/minute 再重排。
+        val prefs = context.getSharedPreferences("specialty_evolution_prefs", Context.MODE_PRIVATE)
+        val hour   = prefs.getInt("daily_practice_hour",   DailyPracticeScheduler.DEFAULT_HOUR)
+        val minute = prefs.getInt("daily_practice_minute", DailyPracticeScheduler.DEFAULT_MINUTE)
+        DailyPracticeScheduler.scheduleNext(context, hour, minute)
         DailyPracticeScheduler.dispatchWorker(context)
     }
 }

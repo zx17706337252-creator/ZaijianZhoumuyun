@@ -18,11 +18,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -32,6 +29,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
@@ -48,6 +46,8 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImagePainter
 import coil.compose.rememberAsyncImagePainter
+import com.zaijian.zhoumuyun.ui.design.GhostGoldButton
+import com.zaijian.zhoumuyun.ui.design.GoldPrimaryButton
 import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
 
 // ─────────────────────────────────────────────────────────────
@@ -130,7 +130,7 @@ fun AvatarCropDialog(
     // 切换到 TALL_RECT 步骤时，Compose 只是在原地重组、并不会重新
     // remember——isConfirming 在圆形步骤点确认时被设成 true 后就再也
     // 没有机会复位，导致矩形步骤的「确认」按钮每次点击都被
-    // `if (isConfirming) return@Button` 挡掉、表现为按钮点不动；
+    // `if (isConfirming) return@GoldPrimaryButton` 挡掉、表现为按钮点不动；
     // 同时 scale/offsetX/offsetY 也会把圆形步骤的手势状态带进矩形
     // 步骤。用 `uri to shape` 作为 key，每次裁剪形状切换（或换了张图）
     // 都会重新初始化这组状态，isConfirming 保证每次进入弹窗都是干净
@@ -495,21 +495,18 @@ fun AvatarCropDialog(
                         .padding(horizontal = 32.dp),
                     verticalAlignment   = Alignment.CenterVertically,
                 ) {
-                    TextButton(
+                    GhostGoldButton(
+                        text     = "取消",
                         onClick  = onDismiss,
                         modifier = Modifier.weight(1f),
-                    ) {
-                        Text(
-                            text  = "取消",
-                            color = Color.White.copy(alpha = 0.70f),
-                        )
-                    }
+                    )
 
                     Spacer(Modifier.width(16.dp))
 
-                    Button(
+                    GoldPrimaryButton(
+                        text     = "确认",
                         onClick  = {
-                            if (isConfirming) return@Button
+                            if (isConfirming) return@GoldPrimaryButton
                             isConfirming = true
                             when (shape) {
                                 CropShape.CIRCLE -> {
@@ -539,12 +536,8 @@ fun AvatarCropDialog(
                                 }
                             }
                         },
-                        modifier = Modifier.weight(1f),
-                        shape    = RoundedCornerShape(12.dp),
-                        colors   = ButtonDefaults.buttonColors(containerColor = accent),
-                    ) {
-                        Text("确认", color = Color.White)
-                    }
+                        modifier = Modifier.weight(1f).alpha(if (!isConfirming) 1f else 0.4f),
+                    )
                 }
 
                 Spacer(Modifier.height(32.dp))

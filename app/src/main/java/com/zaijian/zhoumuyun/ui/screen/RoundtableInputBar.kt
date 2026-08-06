@@ -97,6 +97,7 @@ import com.zaijian.zhoumuyun.data.model.CharacterConfig
 import com.zaijian.zhoumuyun.data.model.DefaultCharacters
 import com.zaijian.zhoumuyun.ui.component.SendButton
 import com.zaijian.zhoumuyun.ui.theme.AnimDuration
+import com.zaijian.zhoumuyun.ui.theme.AppBrushes
 import com.zaijian.zhoumuyun.ui.theme.AppTheme
 import com.zaijian.zhoumuyun.ui.theme.AvatarSize
 import com.zaijian.zhoumuyun.ui.theme.BubbleDimen
@@ -144,6 +145,14 @@ internal fun RoundtableInputBar(
     Row(
         modifier = modifier
             .background(bgColor)
+            .drawBehind {
+                // v2.0 金色视觉：顶部 1dp 金色渐变线
+                drawRect(
+                    brush    = AppBrushes.cardBorderGradient(colors.isDark),
+                    topLeft  = Offset(0f, 0f),
+                    size     = androidx.compose.ui.geometry.Size(size.width, 1.dp.toPx()),
+                )
+            }
             .border(
                 width = 0.5.dp,
                 color = colors.borderSubtle,

@@ -462,6 +462,17 @@ class CompetitionRoundManager(
         val entries = db.competitionEntryDao().getAllForRound(roundId)
         if (entries.isEmpty()) {
             ZLog.w(TAG, "[runJudging] 没有参赛条目，无法评审 roundId=$roundId")
+            // 修复：原先直接 return false，若当前状态是 COLLECTED（全体参赛者
+            // 生成失败导致 entries 为空，但仍被 runCollecting 标记为"收集完成"），
+            // 轮次会永久卡在 COLLECTED——retryRound 把 COLLECTED 分派给
+            // retryJudging→runJudging，只会再次撞上这里，形成死循环；而 UI
+            // 重试按钮又要求 entries.isNotEmpty()，用户连重试入口都看不到。
+            // 与下方 judgeRound 解析失败的处理保持一致：回退到 COLLECTING，
+            // 这样 retryRound 会正确分派到 retryCollecting（重新生成作品），
+            // 而不是继续调 runJudging（评审一份不存在的作品）。若本来就是
+            // COLLECTING/JUDGING 进来的，回退是幂等的，不产生副作用。
+            db.competitionRoundDao().updateStatus(roundId, STATUS_COLLECTING)
+            ZLog.i(TAG, "[runJudging] 状态回退 → COLLECTING（参赛条目为空，可重新收集）roundId=$roundId")
             return@withLock false
         }
 

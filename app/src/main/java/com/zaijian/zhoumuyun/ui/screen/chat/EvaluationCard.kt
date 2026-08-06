@@ -89,6 +89,7 @@ internal fun EvaluationCard(
         WorldCard(
             modifier = Modifier.fillMaxWidth(),
             ownerAccent = accentColor,
+            accentWash = true,
         ) {
         Column(
             modifier = Modifier

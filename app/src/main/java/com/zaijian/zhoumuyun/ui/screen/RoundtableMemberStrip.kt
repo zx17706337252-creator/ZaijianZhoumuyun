@@ -100,7 +100,6 @@ import com.zaijian.zhoumuyun.ui.theme.AvatarSize
 import com.zaijian.zhoumuyun.ui.theme.BubbleDimen
 import com.zaijian.zhoumuyun.ui.theme.DotSize
 import com.zaijian.zhoumuyun.ui.theme.GlassOpacity
-import com.zaijian.zhoumuyun.ui.theme.Palette
 import com.zaijian.zhoumuyun.ui.theme.Radius
 import com.zaijian.zhoumuyun.ui.theme.Spacing
 import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
@@ -113,6 +112,7 @@ import com.zaijian.zhoumuyun.util.TimeFormatUtils
 import kotlinx.coroutines.launch
 import androidx.compose.runtime.snapshotFlow
 import com.zaijian.zhoumuyun.ui.design.AppIcons
+import com.zaijian.zhoumuyun.ui.design.FlorPulseMark
 
 
 // ─────────────────────────────────────────────────────────────
@@ -187,11 +187,14 @@ private fun MemberChip(
     val dotColor = when (status) {
         BotGenerationStatus.GENERATING -> colors.statusIdle.copy(alpha = pulseAlpha)
         BotGenerationStatus.DONE       -> colors.statusActive
+        BotGenerationStatus.INTERRUPTED -> colors.textDisabled.copy(alpha = 0.4f)
         BotGenerationStatus.WAITING    -> colors.accent.copy(alpha = 0.45f)
         BotGenerationStatus.IDLE       -> colors.textDisabled.copy(alpha = 0.4f)
     }
 
     Row(
+        // 帧17 退后：非发言者(其余成员)降至 62% 不透明度，发言者满显突出
+        modifier = Modifier.graphicsLayer { alpha = if (isActive) 1f else 0.62f },
         verticalAlignment     = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(5.dp),
     ) {
@@ -242,23 +245,33 @@ private fun MemberChip(
                         .size(4.dp)
                         .offset(y = 3.dp)
                         .clip(CircleShape)
-                        .background(Palette.Gold),
+                        .background(colors.accentDeep),
                 )
             }
         }
 
-        Text(
-            text  = bot.name,
-            style = type.label,
-            // UI 升级 v2.0：发言中名字用深金 accentDeep（帧17：衬线署名的视觉落点
-            // 在发言者身上），其余状态沿用墨色层级不变。
-            color = when (status) {
-                BotGenerationStatus.GENERATING -> colors.accentDeep
-                BotGenerationStatus.WAITING    -> colors.textSecondary
-                BotGenerationStatus.DONE       -> colors.textSecondary
-                else                           -> colors.textDisabled
-            },
-        )
+        // 帧17 ✦脉冲：发言中名字旁加金色✦呼吸（1.4s），非发言态不显示。
+        // 保留头像底部金点的 alpha 脉冲作为光晕，名字旁的✦是额外的报幕符号。
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            Text(
+                text  = bot.name,
+                style = type.label,
+                // UI 升级 v2.0：发言中名字用深金 accentDeep（帧17：衬线署名的视觉落点
+                // 在发言者身上），其余状态沿用墨色层级不变。
+                color = when (status) {
+                    BotGenerationStatus.GENERATING -> colors.accentDeep
+                    BotGenerationStatus.WAITING    -> colors.textSecondary
+                    BotGenerationStatus.DONE       -> colors.textSecondary
+                    else                           -> colors.textDisabled
+                },
+            )
+            if (isActive) {
+                FlorPulseMark()
+            }
+        }
 
         // 生成状态点
         Box(

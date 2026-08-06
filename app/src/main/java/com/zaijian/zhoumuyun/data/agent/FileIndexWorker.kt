@@ -5,6 +5,7 @@ import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.zaijian.zhoumuyun.data.db.AppDatabase
 import com.zaijian.zhoumuyun.data.db.entity.FileIndexEntity
+import com.zaijian.zhoumuyun.util.ChineseTokenizer
 import com.zaijian.zhoumuyun.util.PdfExtractor
 import com.zaijian.zhoumuyun.util.ZLog
 import java.io.File
@@ -52,6 +53,12 @@ class FileIndexWorker(
                 sizeBytes = file.length(),
                 createdAt = file.lastModified(),
                 indexedAt = System.currentTimeMillis(),
+                // 修复 #6：写入侧分词，与 MemoryEngine/AgentCoreTools 同款
+                // ChineseTokenizer.tokenizeJoined() 用法一致——文件名 + 正文
+                // 一起分词后空格拼接，供 file_index_fts.keywords 列索引。
+                keywords = ChineseTokenizer.tokenizeJoined(
+                    listOfNotNull(file.name, extractedText).joinToString(" ")
+                ),
             )
             AppDatabase.getInstance(applicationContext).fileIndexDao().upsert(entity)
             Result.success()
@@ -86,7 +93,7 @@ class FileIndexWorker(
             val entry = zip.getEntry("word/document.xml") ?: return@use null
             val xml = zip.getInputStream(entry).use { it.readBytes().toString(Charsets.UTF_8) }
             val text = Regex("<w:t[^>]*>([^<]*)</w:t>").findAll(xml)
-                .joinToString("") { it.groupValues[1] }
+                .joinToString("") { FilePreviewParser.decodeXmlEntities(it.groupValues[1]) }
             text.ifBlank { null }
         }
     } catch (e: Throwable) {
@@ -94,7 +101,12 @@ class FileIndexWorker(
     }
 
     private fun tryReadText(file: File): String? = try {
-        val text = file.readText()
+        // 编码检测修复：原直接 file.readText() 默认 UTF-8，对 Windows 导出的
+        // GBK 中文 txt/md 会产生乱码（U+FFFD 替换字符），导致全文搜索无法命中。
+        // 复用 detectFileCharset 自动识别 UTF-8/GBK/UTF-16，与 FileReadTool、
+        // FilePreviewParser 保持一致。
+        val charset = detectFileCharset(file)
+        val text = file.readText(charset)
         text.ifBlank { null }
     } catch (e: Throwable) {
         null

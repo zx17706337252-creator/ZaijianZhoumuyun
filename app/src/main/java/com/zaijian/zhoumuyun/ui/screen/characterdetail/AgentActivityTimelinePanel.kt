@@ -17,7 +17,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.zaijian.zhoumuyun.ui.component.ContentBlockRenderer
+import com.zaijian.zhoumuyun.ui.design.WorldCard
 import com.zaijian.zhoumuyun.ui.theme.Palette
+import com.zaijian.zhoumuyun.ui.theme.Radius
 import com.zaijian.zhoumuyun.ui.theme.Spacing
 import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
 import com.zaijian.zhoumuyun.ui.viewmodel.AgentActivityViewModel
@@ -92,17 +94,24 @@ internal fun AgentActivityTimelinePanel(
             // 贯通核心：ContentBlockRenderer 在此接收经 ContentBlockAdapter
             // 转换的 Agent 过程类块（ToolCall/Thinking/MemoryUpdate/
             // WorkflowStep/SkillActivity），5个结构化渲染器被真正触发。
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = Spacing.md),
-                verticalArrangement = Arrangement.spacedBy(Spacing.sm),
+            WorldCard(
+                modifier = Modifier.fillMaxWidth(),
+                ownerAccent = accentColor,
+                cornerRadius = Radius.sm,
+                accentWash = true,
             ) {
-                ContentBlockRenderer(
-                    blocks = uiState.blocks,
-                    textColor = colors.textPrimary,
-                    style = type.body,
-                )
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = Spacing.md),
+                    verticalArrangement = Arrangement.spacedBy(Spacing.sm),
+                ) {
+                    ContentBlockRenderer(
+                        blocks = uiState.blocks,
+                        textColor = colors.textPrimary,
+                        style = type.body,
+                    )
+                }
             }
         }
     }

@@ -6,7 +6,10 @@ package com.zaijian.zhoumuyun.data.model
  * 控制 Output Layer 的约束规则和工具调用权限：
  *
  * - [WORK]      工作模式：允许工具调用，结构化输出，回复长度不限
- * - [COMPANION] 陪伴模式：禁止工具注入，语气柔化，回复控制在 3-5 句
+ * - [COMPANION] 陪伴模式：语气柔化，回复控制在 3-5 句；默认不主动汇报/不主动用工具，
+ *               但这是 prompt 层面的软引导，不是硬禁用——用户明确提出具体请求
+ *               （如"发给我""提醒我"）时角色仍应正常调用工具，见
+ *               [com.zaijian.zhoumuyun.data.prompt.OutputPromptBuilder] 中的实际约束文案。
  *
  * 在 ChatViewModel 中通过 [setChatMode] 切换，
  * 切换后 PromptOrchestrator 动态替换 Output Layer（层位 8）。

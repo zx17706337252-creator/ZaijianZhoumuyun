@@ -53,9 +53,20 @@ class PrivateChatWorker(
         val engine = AppContainer.instance.privateChatEngine
 
         return try {
-            when (engine.runSession(pairId, initiatorId, directive = directive)) {
-                is PrivateChatSessionResult.Completed -> Result.success()
-                is PrivateChatSessionResult.Skipped -> Result.success()
+            when (val result = engine.runSession(pairId, initiatorId, directive = directive)) {
+                is PrivateChatSessionResult.Completed -> {
+                    notifySuccess(pairId, result.turnCount)
+                    Result.success()
+                }
+                is PrivateChatSessionResult.Skipped -> {
+                    // 修复：Skipped 不再静默吞没。此前 Skipped 直接返回 success()，
+                    // 既不记日志也不通知用户——而 PrivateChatSendTool 已向 LLM 返回
+                    // "已经去找B聊天了"，用户被告知"已出发"但实际什么都没发生。
+                    // 现在记录日志并通知用户跳过原因，让用户知道真实情况。
+                    ZLog.w(TAG, "私聊会话被跳过: ${result.reason}, pairId=$pairId")
+                    notifySkipped(pairId, result.reason)
+                    Result.success()
+                }
             }
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e  // 不吞 CancellationException
@@ -88,34 +99,90 @@ class PrivateChatWorker(
             val nameB = resolveCharacterName(pair.characterIdB, daughterRepo)
             val text = "$nameA 和 $nameB 的私聊没能完成，可以重新试试"
 
-            val openIntent = Intent(applicationContext, MainActivity::class.java).apply {
-                action = Intent.ACTION_VIEW
-                data = Uri.parse("zaijian://private_chat/$pairId")
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            }
-            val pendingIntent = PendingIntent.getActivity(
-                applicationContext,
-                pairId.hashCode(),
-                openIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-            )
-
-            val notif = NotificationCompat.Builder(applicationContext, CHANNEL_ID)
-                .setSmallIcon(android.R.drawable.ic_dialog_info)
-                .setContentTitle("私聊未完成")
-                .setContentText(text)
-                .setStyle(NotificationCompat.BigTextStyle().bigText(text))
-                .setAutoCancel(true)
-                .setContentIntent(pendingIntent)
-                .build()
-
-            // C类审查 #47 修复：改用统一的权限检查入口
-            com.zaijian.zhoumuyun.util.NotificationPermissionUtils.safeNotify(
-                applicationContext, pairId.hashCode(), notif, TAG,
-            )
+            sendNotification(pairId, "私聊未完成", text)
         } catch (ne: Throwable) {
             ZLog.w(TAG, "notifyFailure itself failed", ne)
         }
+    }
+
+    /**
+     * 修复：私聊成功完成时发送通知，告知用户可以去查看聊天记录。
+     * 此前 Completed 直接返回 success() 无任何通知——用户在 ChatScreen 对 A 说
+     * "去找B聊聊"后，完全不知道私聊何时完成、去哪里查看 A-B 的聊天记录。
+     */
+    private suspend fun notifySuccess(pairId: String, turnCount: Int) {
+        try {
+            val container = AppContainer.instance
+            val pair = container.privateChatPairRepo.get(pairId) ?: return
+            val daughterRepo = container.daughterCharacterRepo
+            val nameA = resolveCharacterName(pair.characterIdA, daughterRepo)
+            val nameB = resolveCharacterName(pair.characterIdB, daughterRepo)
+            val text = "$nameA 和 $nameB 的私聊已结束（共 $turnCount 轮），点击查看聊天记录"
+
+            sendNotification(pairId, "私聊已完成", text)
+        } catch (ne: Throwable) {
+            ZLog.w(TAG, "notifySuccess itself failed", ne)
+        }
+    }
+
+    /**
+     * 修复：私聊被跳过时通知用户真实原因，避免用户以为私聊已完成。
+     */
+    private suspend fun notifySkipped(pairId: String, reason: String) {
+        try {
+            val container = AppContainer.instance
+            val pair = container.privateChatPairRepo.get(pairId) ?: return
+            val daughterRepo = container.daughterCharacterRepo
+            val nameA = resolveCharacterName(pair.characterIdA, daughterRepo)
+            val nameB = resolveCharacterName(pair.characterIdB, daughterRepo)
+            val userFacingReason = when {
+                reason.contains("全局开关") || reason.contains("kill") -> "私聊功能当前已关闭"
+                reason.contains("冷却") -> "距离上次私聊太近，需要等一会儿"
+                reason.contains("上限") -> "今天的私聊次数已用完"
+                reason.contains("下线") -> "对方暂时不想聊天"
+                reason.contains("未开启") -> "这对角色的私聊尚未开启"
+                // 修复 #4：与 PrivateChatSendTool 的 friendlyReason 映射同步补上这一条，
+                // 避免两处对同一个 reason 字符串出现不同的用户提示（项目既有原则）。
+                reason.contains("会话进行中") -> "这对角色已经在聊了，等这次聊完再试"
+                else -> reason
+            }
+            val text = "$nameA 和 $nameB 的私聊未能开始：$userFacingReason"
+
+            sendNotification(pairId, "私聊未开始", text)
+        } catch (ne: Throwable) {
+            ZLog.w(TAG, "notifySkipped itself failed", ne)
+        }
+    }
+
+    /**
+     * 统一通知发送入口：构建通知并安全发送。
+     * deep link 指向 private_chat_detail/{pairId}，让用户可直接查看聊天记录。
+     */
+    private suspend fun sendNotification(pairId: String, title: String, text: String) {
+        val openIntent = Intent(applicationContext, MainActivity::class.java).apply {
+            action = Intent.ACTION_VIEW
+            data = Uri.parse("zaijian://private_chat_detail/$pairId")
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            applicationContext,
+            pairId.hashCode(),
+            openIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+
+        val notif = NotificationCompat.Builder(applicationContext, CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setAutoCancel(true)
+            .setContentIntent(pendingIntent)
+            .build()
+
+        com.zaijian.zhoumuyun.util.NotificationPermissionUtils.safeNotify(
+            applicationContext, pairId.hashCode(), notif, TAG,
+        )
     }
 
     /**

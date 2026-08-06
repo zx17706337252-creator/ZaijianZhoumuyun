@@ -129,7 +129,7 @@ internal val MIGRATION_17_18 = object : Migration(17, 18) {
 
         db.execSQL("""
             CREATE TABLE IF NOT EXISTS `birth_records` (
-                `id` INTEGER PRIMARY KEY AUTOINCREMENT,
+                `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
                 `characterId` INTEGER NOT NULL,
                 `bornAt` INTEGER NOT NULL,
                 `isDaughter` INTEGER NOT NULL

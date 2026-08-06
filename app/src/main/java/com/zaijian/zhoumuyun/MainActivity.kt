@@ -175,7 +175,12 @@ class MainActivity : ComponentActivity() {
             val uri = intent.data ?: return null
             if (uri.scheme != DEEP_LINK_SCHEME) return null
             return when (uri.host) {
-                HOST_CHAT  -> uri.pathSegments.firstOrNull()?.let { chatRouteTemplate.replace("{characterId}", it) }
+                // P2-8-1 修复：与 HOST_SCHEDULE 口径对齐，chat id 先 toIntOrNull() 校验——
+                // 畸形 id（chat/abc）此前直接拼进路由，NavController.navigate 抛
+                // IllegalArgumentException 被静默忽略，用户停留当前页无提示。
+                HOST_CHAT  -> uri.pathSegments.firstOrNull()
+                    ?.toIntOrNull()
+                    ?.let { chatRouteTemplate.replace("{characterId}", it.toString()) }
                 HOST_TASKS -> {
                     pendingJobId = uri.getQueryParameter("jobId")
                     tasksRoute

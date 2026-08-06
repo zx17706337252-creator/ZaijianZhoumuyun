@@ -101,6 +101,7 @@ import androidx.compose.runtime.mutableIntStateOf
 
 import com.zaijian.zhoumuyun.ZaijianApp
 import com.zaijian.zhoumuyun.util.TimeFormatUtils
+import com.zaijian.zhoumuyun.util.safeAnimateScrollToItem
 
 
 // ─────────────────────────────────────────────────────────────
@@ -222,7 +223,7 @@ fun ChatScreen(
     DisposableEffect(characterId) {
         onDispose {
             // B1审查序号2修复：check-then-clear改用原子 compareAndSet，见 PresenceEngine 注释。
-            PresenceEngine.clearForegroundChatCharacterIdIfMatches(characterId)
+            com.zaijian.zhoumuyun.data.AppContainer.instance.exitChatScreen(characterId)
         }
     }
 
@@ -461,12 +462,16 @@ fun ChatScreen(
     val pendingAgentScore          = uiState.pendingAgentScore
 
     // 新消息时自动滚动到底部（低频，有动画）
+    // P1 崩溃修复：改用 safeAnimateScrollToItem——即便这里的 totalItems
+    // 与 LazyColumn 实际已 measure 的项数出现竞态（比如同一轮里连续
+    // 插入多条文件卡片消息、LaunchedEffect 被连续取消重启），也不会再
+    // 直接把可能越界的下标透传给 animateScrollToItem 导致未捕获崩溃。
     LaunchedEffect(messages.size, isTyping, pendingEvaluationSessionId) {
         val totalItems = messages.size +
             (if (isTyping) 1 else 0) +
             (if (pendingEvaluationSessionId != null) 1 else 0)
         if (totalItems > 0) {
-            listState.animateScrollToItem(totalItems - 1)
+            listState.safeAnimateScrollToItem(totalItems - 1, tag = "ChatScreen")
         }
     }
     // H1 修复：流式滚动改用 snapshotFlow，在协程里监听 streamingContent 长度变化并滚动，
@@ -822,8 +827,7 @@ fun ChatScreen(
                 if (streamingHint != null) {
                     item(key = "tool_hint") {
                         ToolHintRow(
-                            hint        = streamingHint,
-                            accentColor = character.accentColor,
+                            hint = streamingHint,
                         )
                     }
                 }
@@ -1018,11 +1022,24 @@ fun ChatScreen(
             onSend      = {
                 val text = inputText.trim()
                 if (text.isNotEmpty()) {
-                    chatViewModel.sendMessage(text)
-                    inputText = ""
-                    scope.launch {
-                        listState.animateScrollToItem(messages.size)
+                    // 专项审查报告问题12：sendMessage 返回是否真正进入发送流程。
+                    // 被门控拦截（无 provider / 工具执行中）时返回 false，此时
+                    // 不清空输入框，避免用户长文本在 error 后丢失且不可恢复。
+                    if (chatViewModel.sendMessage(text)) {
+                        inputText = ""
                     }
+                    // P1 崩溃修复：删除了这里原本的
+                    // `scope.launch { listState.animateScrollToItem(messages.size) }`。
+                    // sendMessage() 是异步的，此刻的 messages 仍是发送前的旧列表，
+                    // messages.size 相当于"新消息应该在的下标"，比 LazyColumn
+                    // 当前实际项数多 1——直接拿去 animateScrollToItem 必然越界，
+                    // 命中越界的那一刻若正好落在 subcompose 测量阶段，就会抛出
+                    // 未捕获异常导致整个 App 闪退（agent_log.txt CrashHandler
+                    // 记录的崩溃调用链与此完全吻合）。
+                    // 上方第 464 行的 LaunchedEffect(messages.size, isTyping, ...)
+                    // 已经在响应式地做"新消息自动滚到底部"，一旦 sendMessage()
+                    // 真正把新消息写入并触发重组，会自然重新触发该 LaunchedEffect
+                    // 并安全滚动，这里的手动调用纯属多余且有竞态风险，直接去掉。
                 }
             },
             onImport    = { fileImportLauncher.launch(arrayOf("*/*")) },

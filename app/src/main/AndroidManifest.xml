@@ -41,9 +41,14 @@
          系统安装器会先检查此权限，缺失时安装 Intent 静默失败。 -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
+    <!-- 闪退排查：默认堆上限约256MB，聊天历史+大图解码等多处内存消耗叠加时容易触底。
+         largeHeap 只是提高上限缓解症状（系统仍可能拒绝低内存设备的申请），
+         不能替代 observeByCharacter 加 LIMIT / ImageEditTool 解码护栏这些根治措施，
+         三者需要一起生效。 -->
     <application
         android:name=".ZaijianApp"
         android:allowBackup="true"
+        android:largeHeap="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
         android:icon="@mipmap/ic_launcher"

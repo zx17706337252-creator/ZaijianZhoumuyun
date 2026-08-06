@@ -273,13 +273,17 @@ object ContentBlockParser {
 
     /**
      * 分割表格单元格：| a | b | c | → ["a", "b", "c"]
+     *
+     * 注意：必须保留空单元格以维持列对齐。例如 `| A | | C |` 的中间空列
+     * 若被过滤掉，解析结果变成 `["A", "C"]`，会导致整张表所有行的列位置错位。
+     * 仅当整行全为空（如空行混入表格区域）时返回空列表，避免污染数据行。
      */
     private fun splitTableCells(line: String): List<String> {
-        return line.trim()
+        val cells = line.trim()
             .removePrefix("|")
             .removeSuffix("|")
             .split("|")
             .map { it.trim() }
-            .filter { it.isNotEmpty() }
+        return if (cells.all { it.isEmpty() }) emptyList() else cells
     }
 }

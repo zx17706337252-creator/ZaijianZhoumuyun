@@ -42,6 +42,7 @@ import com.zaijian.zhoumuyun.domain.ContentBlockParser
 import com.zaijian.zhoumuyun.ui.design.AppIcons
 import com.zaijian.zhoumuyun.ui.design.MatBadge
 import com.zaijian.zhoumuyun.ui.design.StreamingCursor
+import com.zaijian.zhoumuyun.ui.design.TypingDots
 import com.zaijian.zhoumuyun.ui.design.ToolStatus
 import com.zaijian.zhoumuyun.ui.design.ToolStatusIcon
 import com.zaijian.zhoumuyun.ui.design.WorldCard
@@ -522,7 +523,7 @@ internal fun MessageBubble(
                             // 任意角色纯色气泡底上都有对比度；落库后 id 变化自动消失。
                             if (message.id == "streaming") {
                                 StreamingCursor(
-                                    color = bubbleTextColor,
+                                    color = Palette.Gold,
                                     modifier = Modifier.padding(top = 2.dp),
                                 )
                             }
@@ -769,7 +770,7 @@ internal fun ThoughtCard(
                     modifier          = Modifier
                         .size(18.dp)
                         .clip(CircleShape)
-                        .background(accentColor.copy(alpha = 0.12f)),
+                        .background(colors.accent.copy(alpha = 0.12f)),
                     contentAlignment  = Alignment.Center,
                 ) {
                     if (streaming) {
@@ -1273,23 +1274,57 @@ internal fun StreamingMessageItem(
     // then 分支类型仍是 String?，导致整个表达式推断为 String?，与 content: String 不匹配。
     // 用局部 val 显式判空后取值，保证类型确定为 String。
     val currentStreaming = streamingContent
-    val displayContent = if (!currentStreaming.isNullOrEmpty()) currentStreaming else "…"
-    MessageBubble(
-        message = com.zaijian.zhoumuyun.ui.viewmodel.ChatMessage(
-            id        = "streaming",
-            role      = "assistant",
-            content   = displayContent,
-            createdAt = System.currentTimeMillis(),
-            psychText = streamingPsych,
-            thinkingText = streamingThinking,
-        ),
-        accentColor   = accentColor,
-        avatarUrl     = avatarUrl,
-        characterName = characterName,
-        avatarCropOffsetX = avatarCropOffsetX,
-        avatarCropOffsetY = avatarCropOffsetY,
-        avatarCropScale   = avatarCropScale,
-    )
+    val hasContent = !currentStreaming.isNullOrEmpty()
+    val hasPsychOrThinking = !streamingPsych.isNullOrBlank() || !streamingThinking.isNullOrBlank()
+
+    if (!hasContent && !hasPsychOrThinking) {
+        // UI 升级 v2.0（§4.1 AI过程可视化）：AI 思考中、尚未输出任何文本时
+        // 显示 TypingDots（三点金动画），替代原先的 "…" 占位符。
+        // 布局与 MessageBubble 角色气泡一致（左对齐 + BreathingAvatar 头像）。
+        Row(
+            modifier          = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.Start,
+            verticalAlignment = Alignment.Bottom,
+        ) {
+            BreathingAvatar(
+                imageUrl     = avatarUrl,
+                breathColor  = accentColor,
+                statusType   = com.zaijian.zhoumuyun.data.model.StatusType.IDLE,
+                modifier     = Modifier
+                    .size(AvatarSize.chat)
+                    .border(1.dp, accentColor.copy(alpha = 0.3f), CircleShape),
+                size         = AvatarSize.chat,
+                enableBreath = false,
+                cropOffsetX  = avatarCropOffsetX,
+                cropOffsetY  = avatarCropOffsetY,
+                cropScale    = avatarCropScale,
+                showStatusIndicator = false,
+            )
+            Spacer(Modifier.width(Spacing.sm))
+            TypingDots(
+                dotColor = accentColor,
+                modifier = Modifier.padding(bottom = 4.dp),
+            )
+        }
+    } else {
+        val displayContent = if (hasContent) currentStreaming!! else "…"
+        MessageBubble(
+            message = com.zaijian.zhoumuyun.ui.viewmodel.ChatMessage(
+                id        = "streaming",
+                role      = "assistant",
+                content   = displayContent,
+                createdAt = System.currentTimeMillis(),
+                psychText = streamingPsych,
+                thinkingText = streamingThinking,
+            ),
+            accentColor   = accentColor,
+            avatarUrl     = avatarUrl,
+            characterName = characterName,
+            avatarCropOffsetX = avatarCropOffsetX,
+            avatarCropOffsetY = avatarCropOffsetY,
+            avatarCropScale   = avatarCropScale,
+        )
+    }
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1306,7 +1341,8 @@ internal fun StreamingMessageItem(
 @Composable
 internal fun ToolHintRow(
     hint: String,
-    accentColor: Color,
+    accentColor: Color = Color.Unspecified, // UI v2.0：已弃用，内部统一用 ZaijianTheme 金色
+    status: ToolStatus = ToolStatus.RUNNING,
 ) {
     // P3-42 修复：统一主题引用方式，使用 ZaijianTheme 而非直接访问 LocalAppColors/LocalAppTypography
     val colors = ZaijianTheme.colors
@@ -1315,7 +1351,7 @@ internal fun ToolHintRow(
     // UI 升级 v2.0（融合方案 §4.1 工具调用行）：纯文字行升级为「发丝边小行卡」——
     // 静态 ⚙ 换成 1s 旋转金圈（运行中语义），文字用深金 accentDeep（纸底对比度
     // ≥4.5:1，比原 0.55 alpha 的角色色更清晰），底 12% 金 + 0.5px 金发丝边。
-    // 签名不变（hint 原文直显），全部既有调用点零改动获得新视觉。
+    // 签名向后兼容（新增 status 可选参，默认 RUNNING；hint 原文直显），既有调用点零改动获得新视觉。
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -1337,12 +1373,39 @@ internal fun ToolHintRow(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(7.dp),
         ) {
-            ToolStatusIcon(status = ToolStatus.RUNNING, size = 11.dp)
+            ToolStatusIcon(status = status, size = 11.dp)
             Text(
                 text  = hint,
                 style = type.label,
                 color = colors.accentDeep,
             )
+            if (status != ToolStatus.RUNNING) {
+                Text(
+                    text  = when (status) {
+                        ToolStatus.SUCCESS -> "· 成功"
+                        ToolStatus.FAILED  -> "· 失败"
+                        ToolStatus.TIMEOUT -> "· 超时"
+                        else -> ""
+                    },
+                    style = type.label,
+                    color = com.zaijian.zhoumuyun.ui.design.toolStatusColor(status),
+                )
+            }
         }
     }
 }
+
+// ─────────────────────────────────────────────────────────────
+//  ToolCallRowCard 使用说明（UI 升级 v2.0）：
+//  ToolCallRowCard 比 ToolHintRow 提供更丰富的工具调用展示
+//  （图标块 + 名称 + 命令 + 四态 + 耗时）。当前 ToolHintRow 已
+//  升级支持四态，ToolCallRowCard 预留给需要展示命令参数和耗时
+//  的场景，调用方式：
+//
+//  ToolCallRowCard(
+//      name         = "schedule_list",
+//      command      = "character_id=1",
+//      status       = ToolStatus.SUCCESS,
+//      durationText = "1.2s",
+//  )
+// ─────────────────────────────────────────────────────────────

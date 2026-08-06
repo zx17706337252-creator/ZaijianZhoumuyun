@@ -118,6 +118,25 @@ object ChatTagParser {
         return stripPsychText(withoutTail)
     }
 
+    /**
+     * 判定专用（Fix-ThinkingLeak，方向2）：只把 `[thinking:...]` 剥掉，用于"这段文字是不是
+     * 在对用户撒谎"这类判定场景（如 [com.zaijian.zhoumuyun.data.agent.ToolCallInterceptor]
+     * 的空头承诺 gate）——角色的内心独白不该参与"是否对用户撒谎"的判断。
+     *
+     * 与 [stripTagsForDisplay] 的关注点不同：那个函数是"给用户看的净化文本"，还要处理
+     * mood 标签；这里是"给判定逻辑喂的净化文本"，只关心 thinking，也不需要拿到剥离出的
+     * 思考内容本身。两者目前实现凑巧相似（先剥完整闭合标签，再剥末尾可能残留的半截
+     * 未闭合前缀——流式过程中标签还没吐完整时会出现），但分开定义，避免以后其中一个
+     * 要变化时被迫牵动另一个不相关的调用方。
+     *
+     * @return 剥离所有 `[thinking:...]`（含末尾半截未闭合前缀）后的文本，两端空白已 trim。
+     */
+    fun stripThinkingForAnalysis(text: String): String {
+        val afterThinking = THINKING_TAG_REGEX.replace(text, "")
+        val tailMatch = PARTIAL_THINKING_TAG_REGEX.find(afterThinking) ?: return afterThinking.trim()
+        return afterThinking.substring(0, tailMatch.range.first).trim()
+    }
+
     /** 未指定强度时的默认值——与 [EmotionType.toMoodType] 自身的 intensity 默认参数保持一致。 */
     private const val DEFAULT_MOOD_INTENSITY = 50
 

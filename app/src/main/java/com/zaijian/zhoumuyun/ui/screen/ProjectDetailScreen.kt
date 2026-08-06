@@ -21,6 +21,9 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import com.zaijian.zhoumuyun.ui.design.AppIcons
+import com.zaijian.zhoumuyun.ui.design.GhostGoldButton
+import com.zaijian.zhoumuyun.ui.design.GoldPrimaryButton
+import com.zaijian.zhoumuyun.ui.design.SecondaryGoldButton
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -34,7 +37,6 @@ import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -44,6 +46,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -341,18 +344,22 @@ fun ProjectDetailScreen(
                         color = colors.primary,
                     )
                 } else {
-                    TextButton(
-                        onClick = {
-                            filePicker.launch(
-                                arrayOf(
-                                    "text/plain",
-                                    "text/markdown",
-                                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                                    "application/pdf",
+                    // 迁移说明：原 Material3 TextButton 含文件夹图标，AppButtons 仅支持文本，
+                    // 按迁移规则改用 Row+clickable 保留图标与紧凑金色文字样式。
+                    Row(
+                        modifier = Modifier
+                            .clickable {
+                                filePicker.launch(
+                                    arrayOf(
+                                        "text/plain",
+                                        "text/markdown",
+                                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                                        "application/pdf",
+                                    )
                                 )
-                            )
-                        },
-                        contentPadding = PaddingValues(horizontal = Spacing.sm, vertical = 0.dp),
+                            }
+                            .padding(horizontal = Spacing.sm, vertical = 0.dp),
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Icon(
                             AppIcons.FolderOpenFilled,
@@ -364,12 +371,10 @@ fun ProjectDetailScreen(
                         Text("导入", color = colors.primary, style = type.label)
                     }
                 }
-                TextButton(
+                SecondaryGoldButton(
+                    text    = "+ 添加",
                     onClick = { showAddKnowledgeDialog = true },
-                    contentPadding = PaddingValues(horizontal = Spacing.sm, vertical = 0.dp),
-                ) {
-                    Text("+ 添加", color = colors.primary, style = type.label)
-                }
+                )
             }
             // 导入错误提示
             if (detail.importError != null) {
@@ -606,9 +611,10 @@ fun ProjectDetailScreen(
             },
             confirmButton = {},
             dismissButton = {
-                TextButton(onClick = { showAddMemberPicker = false }) {
-                    Text("取消", color = colors.onBackground.copy(alpha = 0.5f))
-                }
+                GhostGoldButton(
+                    text    = "取消",
+                    onClick = { showAddMemberPicker = false },
+                )
             },
             containerColor = colors.bgCard, // P3-17 修复：统一使用 bgCard 替代 surface
         )
@@ -791,12 +797,17 @@ private fun EditProjectDialog(
             }
         },
         confirmButton = {
-            TextButton(
+            GoldPrimaryButton(
+                text    = "保存",
                 onClick = { if (title.isNotBlank()) onConfirm(title.trim(), description.trim()) },
-            ) { Text("保存", color = colors.primary) }
+                modifier = Modifier.alpha(if (title.isNotBlank()) 1f else 0.4f),
+            )
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("取消", color = colors.onBackground.copy(alpha = 0.5f)) }
+            GhostGoldButton(
+                text    = "取消",
+                onClick = onDismiss,
+            )
         },
         containerColor = colors.bgCard,
     )
@@ -860,39 +871,53 @@ private fun StatItem(label: String, value: Int) {
     }
 }
 
+// ─────────────────────────────────────────────────────────────
+//  MilestoneRow — 里程碑 Chip（v2.0 方案第14/24帧）
+//
+//  原实现为纯 Row（checkbox + 文字），是传统列表行范式。
+//  v2.0 方案明确要求里程碑以 chip 形式呈现。现改为圆角 pill
+//  样式：带描边的紧凑容器 + 勾选图标 + 标题文字，已完成
+//  状态降低透明度以示区分，视觉上更接近标签/徽章而非列表行。
+// ─────────────────────────────────────────────────────────────
+
 @Composable
 private fun MilestoneRow(
     milestone: ProjectMilestoneEntity,
     onComplete: () -> Unit,
 ) {
     val colors = ZaijianTheme.colors
-    // P3-32 修复：添加 type 引用，使用主题排印系统
     val type   = ZaijianTheme.typography
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = Spacing.screenHorizontal, vertical = 6.dp),
+            .padding(horizontal = Spacing.screenHorizontal, vertical = 4.dp)
+            .clip(RoundedCornerShape(Radius.xs))
+            .background(colors.bgCard)
+            .border(
+                width = 0.5.dp,
+                color = if (milestone.isCompleted) colors.border.copy(alpha = 0.3f)
+                        else colors.borderStrong,
+                shape = RoundedCornerShape(Radius.xs),
+            )
+            .clickable(enabled = !milestone.isCompleted) { onComplete() }
+            .padding(horizontal = Spacing.sm, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        IconButton(
-            onClick = { if (!milestone.isCompleted) onComplete() },
-            modifier = Modifier
-                .size(32.dp)
-                .minimumInteractiveComponentSize(),
-        ) {
-            Icon(
-                imageVector = if (milestone.isCompleted) AppIcons.CheckCircleFilled else AppIcons.Circle,
-                contentDescription = null,
-                tint = if (milestone.isCompleted) Palette.SemanticSuccess else colors.onBackground.copy(alpha = 0.3f),
-                modifier = Modifier.size(20.dp),
-            )
-        }
-        Spacer(Modifier.width(Spacing.sm))
+        Icon(
+            imageVector = if (milestone.isCompleted) AppIcons.CheckCircleFilled else AppIcons.Circle,
+            contentDescription = null,
+            tint = if (milestone.isCompleted) Palette.SemanticSuccess
+                   else colors.borderStrong,
+            modifier = Modifier.size(16.dp),
+        )
+        Spacer(Modifier.width(Spacing.xs))
         Text(
             text = milestone.title,
             color = if (milestone.isCompleted) colors.onBackground.copy(alpha = 0.35f)
                     else colors.onBackground,
-            style = type.body,
+            style = type.caption,
+            fontWeight = if (milestone.isCompleted) FontWeight.Normal else FontWeight.Medium,
         )
     }
 }
@@ -1060,20 +1085,34 @@ private fun KnowledgeEditDialog(
             }
         },
         confirmButton = {
-            TextButton(
+            GoldPrimaryButton(
+                text = "保存",
                 onClick = {
-                    if (isConfirming || content.isBlank()) return@TextButton
+                    if (isConfirming || content.isBlank()) return@GoldPrimaryButton
                     isConfirming = true
                     onConfirm(title.trim(), content.trim(), importance)
                 },
-            ) { Text("保存", color = colors.primary) }
+                modifier = Modifier.alpha(if (!isConfirming && content.isNotBlank()) 1f else 0.4f),
+            )
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("取消", color = colors.onBackground.copy(alpha = 0.5f)) }
+            GhostGoldButton(
+                text    = "取消",
+                onClick = onDismiss,
+            )
         },
         containerColor = colors.bgCard,
     )
 }
+
+// ─────────────────────────────────────────────────────────────
+//  KnowledgeRow — 项目知识库条目行
+//
+//  v2.0 重写：原实现为纯 Row + clip + background(bgCard) 的自制
+//  列表行，未接入 WorldCard 容器体系，视觉上与其他卡片不一致。
+//  现改为 WorldCard 包裹，内部保持圆点重要度 + 标题/正文/来源徽章
+//  + 删除操作的结构，但卡片容器统一为 L0-L3 层次体系。
+// ─────────────────────────────────────────────────────────────
 
 @Composable
 private fun KnowledgeRow(
@@ -1082,80 +1121,80 @@ private fun KnowledgeRow(
     onDelete: () -> Unit,
 ) {
     val colors = ZaijianTheme.colors
-    // P3-32 修复：添加 type 引用，使用主题排印系统
     val type   = ZaijianTheme.typography
-    Row(
+
+    WorldCard(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = Spacing.screenHorizontal, vertical = Spacing.xs)
-            .clip(RoundedCornerShape(8.dp))
-            .background(colors.bgCard.copy(alpha = GlassOpacity.low)) // P3-17 修复：统一使用 bgCard 替代 surface
-            // 整行可点开预览/编辑（原来只有删除入口，内容截断成4行后既看不全
-            // 也改不了）。删除按钮自己也是可点击区域，Compose 里子元素的
-            // clickable 会拦截住点击、不会被这里的行级 clickable 抢先消费。
-            .clickable { onClick() }
-            .padding(Spacing.sm),
-        verticalAlignment = Alignment.Top,
+            .padding(horizontal = Spacing.screenHorizontal, vertical = Spacing.xs),
     ) {
-        // 重要度指示
-        Box(
+        Row(
             modifier = Modifier
-                .padding(top = 3.dp)
-                .size(6.dp)
-                .clip(CircleShape)
-                .background(
-                    when (entry.importance) {
-                        5    -> Palette.SemanticDanger   // 最高优先级 · 红橙
-                        4    -> Palette.SemanticWarning  // 高优先级 · 橙
-                        3    -> Palette.SemanticInfo     // 中优先级 · 蓝
-                        else -> colors.onBackground.copy(alpha = 0.2f)
-                    }
-                ),
-        )
-        Spacer(Modifier.width(Spacing.sm))
-        Column(modifier = Modifier.weight(1f)) {
-            if (entry.title.isNotEmpty()) {
-                Text(entry.title, color = colors.onBackground, style = type.caption, fontWeight = FontWeight.Medium)
-                Spacer(Modifier.height(2.dp))
-            }
-            Text(
-                text = entry.content,
-                color = colors.onBackground.copy(alpha = 0.65f),
-                style = type.caption,
-                maxLines = 4,
-                overflow = TextOverflow.Ellipsis
+                .fillMaxWidth()
+                .clickable { onClick() }
+                .padding(Spacing.sm),
+            verticalAlignment = Alignment.Top,
+        ) {
+            // 重要度指示
+            Box(
+                modifier = Modifier
+                    .padding(top = 3.dp)
+                    .size(6.dp)
+                    .clip(CircleShape)
+                    .background(
+                        when (entry.importance) {
+                            5    -> Palette.SemanticDanger   // 最高优先级 · 红橙
+                            4    -> Palette.SemanticWarning  // 高优先级 · 橙
+                            3    -> Palette.SemanticInfo     // 中优先级 · 蓝
+                            else -> colors.onBackground.copy(alpha = 0.2f)
+                        }
+                    ),
             )
-            // Phase 31：来源徽章 + 字数
-            Spacer(Modifier.height(Spacing.xs))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                val sourceLabel = when (entry.source) {
-                    "FILE_IMPORT"  -> "📄 文件"
-                    "AUTO_EXTRACT" -> "🤖 自动"
-                    "URL_IMPORT"   -> "🔗 链接"
-                    else           -> "✍️ 手动"
+            Spacer(Modifier.width(Spacing.sm))
+            Column(modifier = Modifier.weight(1f)) {
+                if (entry.title.isNotEmpty()) {
+                    Text(entry.title, color = colors.onBackground, style = type.caption, fontWeight = FontWeight.Medium)
+                    Spacer(Modifier.height(2.dp))
                 }
                 Text(
-                    text = sourceLabel,
-                    color = colors.onBackground.copy(alpha = 0.35f),
-                    style = type.label,
+                    text = entry.content,
+                    color = colors.onBackground.copy(alpha = 0.65f),
+                    style = type.caption,
+                    maxLines = 4,
+                    overflow = TextOverflow.Ellipsis
                 )
-                val charCount = if (entry.charCount > 0) entry.charCount else entry.content.length
-                if (charCount > 0) {
+                // Phase 31：来源徽章 + 字数
+                Spacer(Modifier.height(Spacing.xs))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    val sourceLabel = when (entry.source) {
+                        "FILE_IMPORT"  -> "📄 文件"
+                        "AUTO_EXTRACT" -> "🤖 自动"
+                        "URL_IMPORT"   -> "🔗 链接"
+                        else           -> "✍️ 手动"
+                    }
                     Text(
-                        text = "  ·  ${charCount} 字",
-                        color = colors.onBackground.copy(alpha = 0.3f),
+                        text = sourceLabel,
+                        color = colors.onBackground.copy(alpha = 0.35f),
                         style = type.label,
                     )
+                    val charCount = if (entry.charCount > 0) entry.charCount else entry.content.length
+                    if (charCount > 0) {
+                        Text(
+                            text = "  ·  ${charCount} 字",
+                            color = colors.onBackground.copy(alpha = 0.3f),
+                            style = type.label,
+                        )
+                    }
                 }
             }
-        }
-        IconButton(onClick = onDelete, modifier = Modifier.size(32.dp).minimumInteractiveComponentSize()) {
-            Icon(
-                AppIcons.CloseFilled,
-                contentDescription = "删除",
-                tint = colors.onBackground.copy(alpha = 0.3f),
-                modifier = Modifier.size(16.dp),
-            )
+            IconButton(onClick = onDelete, modifier = Modifier.size(32.dp).minimumInteractiveComponentSize()) {
+                Icon(
+                    AppIcons.CloseFilled,
+                    contentDescription = "删除",
+                    tint = colors.onBackground.copy(alpha = 0.3f),
+                    modifier = Modifier.size(16.dp),
+                )
+            }
         }
     }
 }

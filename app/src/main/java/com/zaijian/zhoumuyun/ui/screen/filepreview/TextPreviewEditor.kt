@@ -11,6 +11,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import com.zaijian.zhoumuyun.domain.ContentBlockParser
 import com.zaijian.zhoumuyun.ui.component.ContentBlockRenderer
+import com.zaijian.zhoumuyun.ui.design.GoldPrimaryButton
 import com.zaijian.zhoumuyun.ui.design.WorldCard
 import com.zaijian.zhoumuyun.ui.theme.Spacing
 import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
@@ -86,14 +87,11 @@ internal fun TextPreviewEditor(
                 ),
             )
             // 保存按钮
-            Button(
+            GoldPrimaryButton(
+                text = "保存",
                 onClick = { onSave(editText) },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(Spacing.md),
-            ) {
-                Text("保存")
-            }
+                modifier = Modifier.fillMaxWidth(),
+            )
         } else {
             // 预览模式
             if (isMarkdown) {

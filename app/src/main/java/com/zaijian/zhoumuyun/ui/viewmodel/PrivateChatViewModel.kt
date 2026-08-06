@@ -11,7 +11,7 @@ import com.zaijian.zhoumuyun.data.db.entity.PrivateChatPairEntity
 import com.zaijian.zhoumuyun.data.db.entity.PrivateChatSessionEntity
 import com.zaijian.zhoumuyun.data.model.DefaultCharacters
 import com.zaijian.zhoumuyun.data.privatechat.PrivateChatEngine
-import com.zaijian.zhoumuyun.data.privatechat.PrivateChatSessionStatus
+import com.zaijian.zhoumuyun.data.privatechat.SessionTriggerOutcome
 import com.zaijian.zhoumuyun.data.privatechat.enqueuePrivateChatSession
 import com.zaijian.zhoumuyun.data.repository.DaughterCharacterRepository
 import com.zaijian.zhoumuyun.data.repository.PrivateChatPairRepository
@@ -128,7 +128,7 @@ class PrivateChatViewModel(application: Application) : AndroidViewModel(applicat
 
     fun triggerSession(pairId: String, initiatorId: Int, directive: String? = null) {
         viewModelScope.launch {
-            var pair = pairRepo.get(pairId)
+            val pair = pairRepo.get(pairId)
             if (pair == null) {
                 _toast.value = "配对不存在"
                 return@launch
@@ -137,40 +137,28 @@ class PrivateChatViewModel(application: Application) : AndroidViewModel(applicat
             // 但 PrivateChatSendTool（角色在对话里主动发起私聊）遇到同样情况是
             // 自动打开——同一件事两个入口行为不一致。按用户确认的方向统一为
             // "自动开启"：不再拦截，直接打开开关后继续往下走，跟工具入口对齐。
+            // 自动开启属于本入口的 UI 行为（管理面板点按钮＝明确开启意图），
+            // 不属于 checkCanStart 的通用校验规则，因此仍在委托给引擎前单独处理。
             if (!pair.enabled) {
                 pairRepo.updateEnabled(pairId, true)
-                pair = pairRepo.get(pairId) ?: run {
-                    _toast.value = "配对不存在"
-                    return@launch
+            }
+            // 实时化重构：日上限/冷却/角色下线/全局开关/配对存在/发起者合法性，
+            // 这五项判断不再在这里手动复刻一遍——直接委托给
+            // PrivateChatEngine.triggerSession()，与 PrivateChatSendTool
+            // （ChatScreen 工具调用入口）共用同一份 checkCanStart 实现，
+            // 不再各写一份规则、事后靠人工核对两处是否同步。
+            when (val outcome = AppContainer.instance.privateChatEngine.triggerSession(
+                pairId = pairId,
+                initiatorCharacterId = initiatorId,
+            )) {
+                is SessionTriggerOutcome.Started -> {
+                    enqueuePrivateChatSession(getApplication(), pairId, initiatorId, directive)
+                    _toast.value = "已发起私聊，请稍候"
+                }
+                is SessionTriggerOutcome.Skipped -> {
+                    _toast.value = outcome.reason
                 }
             }
-            if (PrivateChatEngine.isKillSwitchOn(getApplication())) {
-                _toast.value = "全局私聊开关已关闭"
-                return@launch
-            }
-            // A10-3②/A10-4 修复：enqueue 前补三项预检，与 PrivateChatEngine.runSession
-            // 的 Skipped 判断条件对齐，避免用户先看到"已发起私聊"提示、Worker 随后静默返回 Skipped。
-            val now = System.currentTimeMillis()
-            // ① 日上限预检（跨天则跳过——Worker 会先 resetDailyCounter 再判断）
-            if (!PrivateChatPairRepository.isStaleDay(pair.usedTodayResetAt, now)
-                && pair.sessionsUsedToday >= pair.maxSessionsPerDay) {
-                _toast.value = "今日私聊次数已达上限（${pair.sessionsUsedToday}/${pair.maxSessionsPerDay}）"
-                return@launch
-            }
-            // ② 冷却时间预检
-            if (now - pair.lastSessionAt < pair.cooldownMinutes * 60_000L) {
-                val remainingMin = ((pair.cooldownMinutes * 60_000L - (now - pair.lastSessionAt)) / 60_000L).toInt() + 1
-                _toast.value = "距上次私聊不足冷却时间，还需约 $remainingMin 分钟"
-                return@launch
-            }
-            // ③ 角色自主下线预检
-            if (PrivateChatSessionStatus.fromStored(pair.characterDisconnectState)
-                == PrivateChatSessionStatus.DISCONNECTED_BY_CHARACTER) {
-                _toast.value = "该角色已自主下线，暂不会再回复"
-                return@launch
-            }
-            enqueuePrivateChatSession(getApplication(), pairId, initiatorId, directive)
-            _toast.value = "已发起私聊，请稍候"
         }
     }
 

@@ -194,8 +194,8 @@ class CsvAnalyzeTool(private val context: Context) : AgentTool {
                             else {
                                 val mean = numVals.sum() / numVals.size
                                 appendLine("均值（$column）= ${"%.4f".format(mean)}")
-                                appendLine("最小值 = ${"%.4f".format(numVals.min())}")
-                                appendLine("最大值 = ${"%.4f".format(numVals.max())}")
+                                appendLine("最小值 = ${"%.4f".format(numVals.minOrNull() ?: 0.0)}")
+                                appendLine("最大值 = ${"%.4f".format(numVals.maxOrNull() ?: 0.0)}")
                             }
                         }
                         "group" -> {
@@ -924,7 +924,13 @@ class TableExportTool(
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
+            } catch (e: IllegalArgumentException) {
+                // P2-6-1 修复：业务性参数/权限错误（如缺 file_path、路径越界、无权限）
+                // 此前被下方 catch(Throwable) 一律碾成"表格导出失败"，具体原因对用户/LLM
+                // 不可见、无法据此修正下一轮。这里单独捕获，把 e.message 回填给调用方。
+                toolFailure(name, e.message ?: "表格导出失败，请稍后重试。", "table_export_failed", e)
             } catch (e: Throwable) {
+                // 仅 I/O / 未知异常走泛化兜底
                 toolFailure(name, "表格导出失败，请稍后重试。", "table_export_failed", e)
             }
         }
@@ -2131,7 +2137,10 @@ class MindmapGenTool(
 
         val exportResult = fileExportTool.execute(
             mapOf(
-                "name"    to "$topic.xmind",
+                // P2-6-3 修复：原实现把纯 XML 内容写成 `$topic.xmind`（.xmind 是真 zip 容器，
+                // XMind/WPS 打开会失败或乱码），且 mime 被判成 text/plain。这里明确用
+                // `.xml` 后缀诚实标注内容类型，避免用户拿到一个打不开的 .xmind。
+                "name"    to "$topic.xmind.xml",
                 "content" to xml,
                 "format"  to "txt",
             )
@@ -2143,7 +2152,7 @@ class MindmapGenTool(
             ToolResult(
                 toolName = name,
                 success  = true,
-                content  = "[思维导图已导出：$topic.xmind]\n${exportResult.content}",
+                content  = "[思维导图已导出：$topic.xmind.xml（XML 格式，可用 XMind/文本编辑器打开）]\n${exportResult.content}",
                 userHint = "正在生成思维导图…",
             )
         }
@@ -2304,10 +2313,21 @@ class SelfReflectTool(
             }
 
             // 防刷检测
+            // P2-6-4 修复：lastTriggerMs 是内存 mutableMap，check（读 last）+ set 原先非原子，
+            // 圆桌与私聊并发时两条 self_reflect 可同时通过冷却检测、重复写工作域记忆。
+            // 改为在 synchronized 内原子"抢占"冷却槽：抢占成功即记录 now；下方 catch 里
+            // 失败会回滚抢占，避免一次失败把角色锁死一整段 MIN_INTERVAL_MS。
             val now  = System.currentTimeMillis()
-            val last = lastTriggerMs[charId] ?: 0L
-            if (now - last < MIN_INTERVAL_MS) {
-                val waitMin = ((MIN_INTERVAL_MS - (now - last)) / 60_000).toInt() + 1
+            val waitMin = synchronized(lastTriggerMs) {
+                val last = lastTriggerMs[charId] ?: 0L
+                if (now - last < MIN_INTERVAL_MS) {
+                    ((MIN_INTERVAL_MS - (now - last)) / 60_000).toInt() + 1
+                } else {
+                    lastTriggerMs[charId] = now
+                    null
+                }
+            }
+            if (waitMin != null) {
                 return@withContext ToolResult(
                     name, false,
                     "自我反思冷却中，请 $waitMin 分钟后再触发。",
@@ -2372,9 +2392,6 @@ $evalContext
                 )
                 memoryRepo.save(memEntity)
 
-                // 更新触发时间
-                lastTriggerMs[charId] = now
-
                 ToolResult(
                     toolName = name,
                     success  = true,
@@ -2384,6 +2401,8 @@ $evalContext
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Throwable) {
+                // P2-6-4 修复：抢占的冷却槽在失败时回滚，避免一次失败把角色锁死 30 分钟。
+                synchronized(lastTriggerMs) { lastTriggerMs.remove(charId) }
                 toolFailure(name, "自我反思失败，请稍后重试。", "self_reflect_failed", e)
             }
         }
@@ -2500,6 +2519,14 @@ $ruleList
  * 注册 Phase 28 Part 2 工具（9个：表格3 + 演示1 + 可视化3 + 自我管理2）。
  * 在 ZaijianApp.onCreate() 中调用。
  * characterIdProvider 以 -1 静态注册，由 ChatViewModel.init() 动态覆盖。
+ *
+ * P1-9 修复：原实现把全部工具构造表达式塞进同一个 `registerAll(...)` vararg 调用，
+ * Kotlin 会在调用 registerAll 之前依次求值所有参数——任意一个工具的构造函数/类加载
+ * 抛异常，整条 vararg 表达式求值中断，registerAll 本身根本不会被调用，9 个工具
+ * 集体不注册。外层 ZaijianApp.kt 的 runCatching 只能整体捕获、只加了诊断日志，
+ * 无法把"某一个工具坏了"与"其余 8 个健康"区分开。
+ * 改为逐工具单独 runCatching + register：一个工具构造失败只丢它自己，
+ * 其余工具不受影响地正常注册；失败的工具额外记一条日志，方便定位是哪一个。
  */
 fun AgentToolRegistry.registerDataVisTools(
     context: Context,
@@ -2509,32 +2536,50 @@ fun AgentToolRegistry.registerDataVisTools(
 ) {
     val fileExport = FileExportTool.getInstance(context)
     val providerFn: () -> LLMProvider? = AgentTool.defaultProviderFn()
-    registerAll(
-        CsvAnalyzeTool(context = context),
-        TableGenTool(providerFn = providerFn),
-        ExcelGenTool(providerFn = providerFn, context = context),
-        // W2 表格直传方案：真实数据源表格直传，紧挨 ExcelGenTool（设计文档 5.1 节）。
-        // 静态注册时 characterIdProvider={-1} 占位（与 SelfReflectTool/RuleReviewTool
-        // 同款模式），ChatToolRegistrar 在聊天场景覆盖为真实 { currentCharacterId }。
+
+    fun registerOne(toolName: String, build: () -> AgentTool) {
+        runCatching { build() }
+            .onSuccess { register(it) }
+            .onFailure { e ->
+                // registerDataVisTools 本身非 suspend（与 registerCreativeDocTools/
+                // registerAgentStoreTools 等同级函数保持一致的签名约定），这里只用
+                // 非 suspend 的 ZLog.e 记录；持久化到 agent_log.txt 的 AgentLog.error
+                // 已经由外层调用方 ZaijianApp.registerCreativeDocDataVisAgentMetaTools
+                // 的 runCatching.onFailure 兜底记录了一条汇总日志。
+                ZLog.e("registerDataVisTools", "工具 $toolName 构造/注册失败，其余工具不受影响", e)
+            }
+    }
+
+    registerOne("csv_analyze")   { CsvAnalyzeTool(context = context) }
+    registerOne("table_gen")     { TableGenTool(providerFn = providerFn) }
+    registerOne("excel_gen")     { ExcelGenTool(providerFn = providerFn, context = context) }
+    // W2 表格直传方案：真实数据源表格直传，紧挨 ExcelGenTool（设计文档 5.1 节）。
+    // 静态注册时 characterIdProvider={-1} 占位（与 SelfReflectTool/RuleReviewTool
+    // 同款模式），ChatToolRegistrar 在聊天场景覆盖为真实 { currentCharacterId }。
+    registerOne("table_export") {
         TableExportTool(
             context             = context,
             scheduleRepository  = scheduleRepository,
             characterIdProvider = { -1 },
-        ),
-        PptxGenTool(providerFn = providerFn, context = context),
-        ChartDataTool(providerFn = providerFn, fileExportTool = fileExport),
-        MindmapGenTool(providerFn = providerFn, fileExportTool = fileExport),
-        FlowchartGenTool(providerFn = providerFn),
+        )
+    }
+    registerOne("pptx_gen")      { PptxGenTool(providerFn = providerFn, context = context) }
+    registerOne("chart_data")    { ChartDataTool(providerFn = providerFn, fileExportTool = fileExport) }
+    registerOne("mindmap_gen")   { MindmapGenTool(providerFn = providerFn, fileExportTool = fileExport) }
+    registerOne("flowchart_gen") { FlowchartGenTool(providerFn = providerFn) }
+    registerOne("self_reflect") {
         SelfReflectTool(
             providerFn          = providerFn,
             memoryDao           = memoryDao,
             memoryRepo          = memoryRepo,
             characterIdProvider = { -1 },
-        ),
+        )
+    }
+    registerOne("rule_review") {
         RuleReviewTool(
             providerFn          = providerFn,
             memoryDao           = memoryDao,
             characterIdProvider = { -1 },
-        ),
-    )
+        )
+    }
 }

@@ -574,7 +574,7 @@ val DefaultCharacters: List<CharacterConfig> = listOf(
         shelfRow    = 1,
         shelfCol    = 1,
         accentColor = Color(0xFF8C2A45),
-        breathColor = Color(0xFFD9A4AC),
+        breathColor = Color(0xFFA53A58),
         avatarUrl   = "https://ui-avatars.com/api/?name=蒂法&background=8C2A45&color=fff&size=128",
         statusPool  = mapOf(
             StatusType.ACTIVE   to listOf("正在想你", "翻看旧记忆"),
@@ -605,7 +605,7 @@ val DefaultCharacters: List<CharacterConfig> = listOf(
         shelfRow    = 1,
         shelfCol    = 2,
         accentColor = Color(0xFFACC0E8),
-        breathColor = Color(0xFFDCE8F8),
+        breathColor = Color(0xFFC4D4F0),
         avatarUrl   = "https://ui-avatars.com/api/?name=露娜&background=ACC0E8&color=fff&size=128",
         statusPool  = mapOf(
             StatusType.ACTIVE   to listOf("有些想法", "还有话没说"),
@@ -635,7 +635,7 @@ val DefaultCharacters: List<CharacterConfig> = listOf(
         shelfRow    = 1,
         shelfCol    = 3,
         accentColor = Color(0xFF34506E),
-        breathColor = Color(0xFF9C4A45),
+        breathColor = Color(0xFF46638A),
         avatarUrl   = "https://ui-avatars.com/api/?name=伊芙&background=34506E&color=fff&size=128",
         statusPool  = mapOf(
             StatusType.ACTIVE   to listOf("想分享一件事"),
@@ -665,7 +665,7 @@ val DefaultCharacters: List<CharacterConfig> = listOf(
         shelfRow    = 2,
         shelfCol    = 1,
         accentColor = Color(0xFFEC93AE),
-        breathColor = Color(0xFFED5C99),
+        breathColor = Color(0xFFF4ABC2),
         avatarUrl   = "https://ui-avatars.com/api/?name=宥熙&background=EC93AE&color=fff&size=128",
         statusPool  = mapOf(
             StatusType.ACTIVE   to listOf("构建新方案"),
@@ -695,7 +695,7 @@ val DefaultCharacters: List<CharacterConfig> = listOf(
         shelfRow    = 2,
         shelfCol    = 2,
         accentColor = Color(0xFFE8935A),
-        breathColor = Color(0xFFF4A965),
+        breathColor = Color(0xFFF2A976),
         avatarUrl   = "https://ui-avatars.com/api/?name=索菲娅&background=E8935A&color=fff&size=128",
         statusPool  = mapOf(
             StatusType.ACTIVE   to listOf("在发呆"),
@@ -725,7 +725,7 @@ val DefaultCharacters: List<CharacterConfig> = listOf(
         shelfRow    = 2,
         shelfCol    = 3,
         accentColor = Color(0xFF95A29E),
-        breathColor = Color(0xFF7C8B86),
+        breathColor = Color(0xFFA9B4B0),
         avatarUrl   = "https://ui-avatars.com/api/?name=顾澜&background=95A29E&color=fff&size=128",
         statusPool  = mapOf(
             StatusType.ACTIVE   to listOf("有点话多", "想聊聊"),
@@ -756,7 +756,7 @@ val DefaultCharacters: List<CharacterConfig> = listOf(
         shelfRow    = 3,
         shelfCol    = 1,
         accentColor = Color(0xFFC23A54),
-        breathColor = Color(0xFFE2495A),
+        breathColor = Color(0xFFD4526C),
         avatarUrl   = "https://ui-avatars.com/api/?name=明媚&background=C23A54&color=fff&size=128",
         statusPool  = mapOf(
             StatusType.ACTIVE   to listOf("有些情绪"),
@@ -786,7 +786,7 @@ val DefaultCharacters: List<CharacterConfig> = listOf(
         shelfRow    = 3,
         shelfCol    = 2,
         accentColor = Color(0xFFAEA0BC),
-        breathColor = Color(0xFF9A8EAA),
+        breathColor = Color(0xFFC0B4CC),
         avatarUrl   = "https://ui-avatars.com/api/?name=莫婉凝&background=AEA0BC&color=fff&size=128",
         statusPool  = mapOf(
             StatusType.ACTIVE   to listOf("等你很久了"),
@@ -815,9 +815,9 @@ val DefaultCharacters: List<CharacterConfig> = listOf(
         floor       = FloorEnum.BASEMENT,
         shelfRow    = 3,
         shelfCol    = 3,
-        accentColor = Color(0xFF7FA086),
-        breathColor = Color(0xFFA3B98C),
-        avatarUrl   = "https://ui-avatars.com/api/?name=江凡&background=7FA086&color=fff&size=128",
+        accentColor = Color(0xFF5C7A8A),
+        breathColor = Color(0xFF6E8C9C),
+        avatarUrl   = "https://ui-avatars.com/api/?name=江凡&background=5C7A8A&color=fff&size=128",
         isUnlocked  = true,
         statusPool  = mapOf(
             StatusType.OFFLINE to listOf("—"),

@@ -413,3 +413,46 @@ fun Modifier.shimmerEffect(): Modifier = composed {
         )
     }
 }
+
+// ═════════════════════════════════════════════════════════════
+//  florPulse — ✦ 脉冲 Modifier（融合方案 §4.2 圆桌特化）
+//
+//  圆桌发言中成员名旁的 ✦ 符号脉冲：1.4s 呼吸（alpha 1.0→0.4→1.0），
+//  金色 ✦ 字形。其余成员 62% 不透明度退后由调用方自行设置。
+// ═════════════════════════════════════════════════════════════
+
+/**
+ * ✦ 脉冲：圆桌发言者名旁的金色 ✦ 符号，1.4s 呼吸动画。
+ * 返回当前 alpha 值，调用方用于 Text/Icon 的 color alpha。
+ */
+@Composable
+fun rememberFlorPulseAlpha(): Float {
+    val infinite = rememberInfiniteTransition(label = "florPulse")
+    val alpha by infinite.animateFloat(
+        initialValue = 1.0f,
+        targetValue = 0.4f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1400, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "florAlpha",
+    )
+    return alpha
+}
+
+/**
+ * ✦ 脉冲文字：金色 ✦ + 1.4s alpha 呼吸，用于圆桌发言者名旁。
+ */
+@Composable
+fun FlorPulseMark(
+    modifier: Modifier = Modifier,
+    color: Color = Palette.Gold,
+) {
+    val alpha = rememberFlorPulseAlpha()
+    Text(
+        text = "✦",
+        fontSize = 12.sp,
+        color = color.copy(alpha = alpha),
+        modifier = modifier,
+    )
+}

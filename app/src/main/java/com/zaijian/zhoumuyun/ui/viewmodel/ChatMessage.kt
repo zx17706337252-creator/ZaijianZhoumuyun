@@ -17,8 +17,9 @@ import com.zaijian.zhoumuyun.data.agent.TablePayload
  * 后发出 StreamEvent.FileReadConfirmed，由 ChatMessageOrchestrator 持久化一条
  * 带这个前缀的标记消息（role="system"）。这条消息需要满足两个相反的要求：
  *   1) 要能进入下一轮的 LLM 上下文（ChatMessageOrchestrator 组装 messages 时，
- *      role="system" 且不以 [AGENT_MSG:/[ROUNDTABLE_TRIGGER] 开头的消息本就会
- *      映射成 LLMMessage(role="user")，不需要改这部分逻辑），让 ToolCallInterceptor
+ *      role="system" 且不以 [AGENT_MSG:/[ROUNDTABLE_TRIGGER]（历史遗留控制信号，
+ *      工具已删除）开头的消息本就会映射成 LLMMessage(role="user")，不需要改这部分
+ *      逻辑），让 ToolCallInterceptor
  *      的 alreadyRead 检测（找 role=="user" 且含"[工具执行结果]"+文件名的消息）
  *      能查到证据；
  *   2) 但不能作为聊天气泡出现在界面上——当前 UI 层（ChatSessionDelegate）对
@@ -29,6 +30,23 @@ import com.zaijian.zhoumuyun.data.agent.TablePayload
  * 这个前缀过滤掉，两头都不耽误。
  */
 const val FILE_READ_MARK_PREFIX = "[FILE_READ_MARK]"
+
+/**
+ * 工具轮次记录（跨消息保留工具原始产出）：
+ *
+ * streamAndInterceptReply 收集 StreamEvent.ToolDone 时已经拿到每次工具调用的
+ * ToolResult（工具名、成功与否、内容摘要），但此前只有 assistant 的最终转述文本
+ * 落库——工具原始输出只活在本次请求的内存变量里，下一轮用户追问"刚才那个文件
+ * 第二行写的什么"时，角色答不出来，因为它当时"看到"的工具原始输出从未被持久化。
+ *
+ * 复用 FILE_READ_MARK_PREFIX 的"内容前缀标记 + role=system"模式：工作模式（WORK）
+ * 下，本轮全部工具调用的紧凑摘要随 assistant 消息一起落库为一条带此前缀的标记
+ * 消息，下一轮组装 LLM 上下文时（persistUserMessageAndLoadCharacter）识别并剥离
+ * 前缀，把摘要正文交给模型；UI 展示侧（ChatSessionDelegate）按前缀过滤，不出现
+ * 奇怪的系统气泡。陪伴模式（COMPANION）不落这条记录，维持"只知道用过工具、
+ * 不知道细节"的现状。
+ */
+const val TOOL_TRACE_MARK_PREFIX = "[TOOL_TRACE_MARK]"
 
 data class ExportedFile(
     val fileName: String,

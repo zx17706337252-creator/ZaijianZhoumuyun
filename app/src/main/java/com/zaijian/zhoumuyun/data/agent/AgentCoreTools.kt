@@ -86,10 +86,8 @@ class PlanSaveTool(
         val now = System.currentTimeMillis()
 
         try {
-            // 归档旧方案
-            agentPlanDao.archiveActive(charId, now)
-
-            // 写入新方案
+            // P2-6-5 修复：归档旧方案 + 写入新方案合并为单个 @Transaction（archiveAndInsert），
+            // 避免 insert 失败时旧方案已归档且不回滚、进化方案丢失。
             val plan = AgentPlanEntity(
                 id          = UUID.randomUUID().toString(),
                 characterId = charId,
@@ -99,7 +97,7 @@ class PlanSaveTool(
                 createdAt   = now,
                 updatedAt   = now,
             )
-            agentPlanDao.insert(plan)
+            agentPlanDao.archiveAndInsert(charId, plan)
 
             ToolResult(
                 toolName = name,

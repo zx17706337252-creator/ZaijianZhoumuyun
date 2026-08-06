@@ -39,7 +39,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -57,6 +56,7 @@ import com.zaijian.zhoumuyun.ui.viewmodel.RepeatLabel
 import com.zaijian.zhoumuyun.ui.theme.Palette
 import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
 import com.zaijian.zhoumuyun.ui.design.AppIcons
+import com.zaijian.zhoumuyun.ui.design.SecondaryGoldButton
 
 /**
  * 统一重复标签 Chip，取代 GlobalScheduleScreen 的 [RepeatChip] 与
@@ -158,12 +158,8 @@ fun ScheduleDeleteButton(onDelete: () -> Unit) {
  */
 @Composable
 fun ScheduleToggleButton(isDisabled: Boolean, accentColor: Color, onToggle: () -> Unit) {
-    val colors = ZaijianTheme.colors
-    TextButton(onClick = onToggle) {
-        Text(
-            text  = if (isDisabled) "启用" else "暂停",
-            style = ZaijianTheme.typography.label,
-            color = if (isDisabled) accentColor else colors.textSecondary,
-        )
-    }
+    SecondaryGoldButton(
+        text    = if (isDisabled) "启用" else "暂停",
+        onClick = onToggle,
+    )
 }

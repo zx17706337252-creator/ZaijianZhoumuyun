@@ -1,5 +1,6 @@
 package com.zaijian.zhoumuyun.data.repository
 
+import android.os.SystemClock
 import androidx.room.withTransaction
 import com.zaijian.zhoumuyun.data.agent.AgentToolRegistry
 import com.zaijian.zhoumuyun.data.agent.CalendarSyncHelper
@@ -293,7 +294,10 @@ class ScheduleRepository(
 
         for (job in dueJobs) {
             // H1 修复：原子认领锁——仅当 lockedUntil 为 null 或已过期时才抢到
-            val claimNow = System.currentTimeMillis()
+            // P1-18 修复：锁 TTL 用单调钟 SystemClock.elapsedRealtime()（与
+            // ScheduledJobWorker 的 claimJob 保持同一时钟源），避免墙钟跳变导致锁提前过期、
+            // 同一非幂等任务被并发重复执行。
+            val claimNow = SystemClock.elapsedRealtime()
             val lockExpiry = claimNow + LOCK_TTL_MS
             val claimed = scheduledJobDao.claimJob(job.id, claimNow, lockExpiry)
             if (claimed == 0) continue  // Worker 已认领，跳过
@@ -741,6 +745,36 @@ class ScheduleRepository(
                 } catch (e: Throwable) {
                     ZLog.w("ScheduleRepository", "toggleJobWithFullSync(disable): 日历事件删除失败: ${e.message}", e)
                 }
+            }
+
+            // P2-2-2 修复：此前禁用分支只改本地 Room + 取消 WorkManager，从未把
+            // enabled=false 同步到云端 scheduled_jobs 表（updateScheduledJob 原不写
+            // enabled 列）→ 云端仍认为任务启用、可能继续执行。这里显式 PATCH enabled=false。
+            // 失败不阻塞（SupabaseClient 内部已留日志），下次禁用/启用会再次尝试补齐。
+            val toolParams: Map<String, String> = try {
+                val json = org.json.JSONObject(job.toolParamsJson)
+                json.keys().asSequence().associateWith { json.getString(it) }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                emptyMap()
+            }
+            try {
+                SupabaseClient.updateScheduledJob(
+                    id               = job.id,
+                    title            = job.title,
+                    toolName         = job.toolName,
+                    toolParams       = toolParams,
+                    repeatIntervalMs = job.repeatIntervalMs,
+                    nextRunAt        = job.nextRunAt,
+                    description      = job.description,
+                    projectId        = job.projectId,
+                    enabled          = false,
+                )
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                ZLog.w("ScheduleRepository", "toggleJobWithFullSync(disable): 云端禁用同步失败: ${e.message}", e)
             }
         } else {
             // ── 启用 ──────────────────────────────────────────

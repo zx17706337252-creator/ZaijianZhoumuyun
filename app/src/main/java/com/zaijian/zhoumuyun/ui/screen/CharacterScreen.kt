@@ -43,6 +43,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import com.zaijian.zhoumuyun.ui.component.BookCard
 import com.zaijian.zhoumuyun.ui.component.CalibrationProbeOverlay
 import com.zaijian.zhoumuyun.ui.component.CharacterPreviewSheet
+import com.zaijian.zhoumuyun.ui.design.GhostGoldButton
 import com.zaijian.zhoumuyun.ui.design.RolePrimaryButton
 import com.zaijian.zhoumuyun.ui.theme.AppTheme
 import com.zaijian.zhoumuyun.ui.theme.Palette
@@ -59,7 +60,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.width
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.draw.shadow
 import com.zaijian.zhoumuyun.domain.TaskCompletionMessage
@@ -604,13 +604,10 @@ private fun TaskCompletionToast(
                 horizontalArrangement = Arrangement.End,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                TextButton(onClick = onDismiss) {
-                    Text(
-                        text  = "稍后查看",
-                        style = type.label,
-                        color = colors.textSecondary,
-                    )
-                }
+                GhostGoldButton(
+                    text    = "稍后查看",
+                    onClick = onDismiss,
+                )
                 Spacer(Modifier.width(Spacing.sm))
                 RolePrimaryButton(
                     text = "立即查看 →",

@@ -16,6 +16,7 @@ import com.zaijian.zhoumuyun.data.repository.ProjectRepository
 import com.zaijian.zhoumuyun.data.model.CharacterConfig
 import com.zaijian.zhoumuyun.util.TimeFormatUtils
 import com.zaijian.zhoumuyun.util.ZLog
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -23,6 +24,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.stateIn
@@ -56,6 +58,23 @@ data class ProjectListUiState(
     val projects: List<ProjectEntity> = emptyList(),
     val isLoading: Boolean = false,
     val error: String? = null,
+)
+
+/**
+ * 项目列表卡摘要（UI 升级 v2.0 帧14）。
+ *
+ * 列表态只有 [ProjectEntity]，列表卡要展示「金条进度 / 里程碑·知识·角色
+ * 三列统计 / 头像叠放 / 里程碑 chip」需要里程碑、成员、知识数据，故由
+ * [ProjectViewModel.getProjectCardSummary] 一次性挂起查询提供快照。
+ *
+ * @param milestones         里程碑列表（金条进度 + chip）
+ * @param knowledgeCount     知识条目数
+ * @param memberCharacterIds 参与角色的 characterId 列表（头像叠放 + 角色数）
+ */
+data class ProjectCardSummary(
+    val milestones: List<ProjectMilestoneEntity> = emptyList(),
+    val knowledgeCount: Int = 0,
+    val memberCharacterIds: List<Int> = emptyList(),
 )
 
 data class ProjectDetailUiState(
@@ -460,14 +479,39 @@ class ProjectViewModel(application: Application) : AndroidViewModel(application)
 
     fun addMember(projectId: String, characterId: Int, role: String = "CONTRIBUTOR") {
         viewModelScope.launch {
-            runCatching {  // P3-18: 静默吞异常已加日志
+            // P1-22 修复：原 runCatching 吞掉 addMember 异常后仍继续 getMembers / getById /
+            // scheduleDailyPlannerJob，导致「成员未加入却仍为它注册成长规划任务」（孤儿任务），
+            // 且后续裸 DB 读抛异常会传播出 viewModelScope.launch 引发未捕获崩溃。
+            // 改为：addMember 失败即中止（不排程）；后续 DB 读各自 try-catch，失败优雅中止。
+            try {
                 repo.addMember(projectId, characterId, role)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                ZLog.e("ProjectViewModel", "添加成员失败（projectId=$projectId, characterId=$characterId）", e)
+                _detailState.update { it.copy(error = e.message ?: "添加成员失败") }
+                return@launch
             }
-                .onFailure { e -> _detailState.update { it.copy(error = e.message) } }
-            val members = repo.getMembers(projectId)
+            val members = try {
+                repo.getMembers(projectId)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                ZLog.e("ProjectViewModel", "读取成员失败（projectId=$projectId）", e)
+                _detailState.update { it.copy(error = e.message ?: "读取成员失败") }
+                return@launch
+            }
             _detailState.update { it.copy(members = members) }
             // 角色加入项目后自动注册成长规划日程
-            val project = repo.getById(projectId) ?: return@launch
+            val project = try {
+                repo.getById(projectId) ?: return@launch
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                ZLog.e("ProjectViewModel", "读取项目失败（projectId=$projectId）", e)
+                _detailState.update { it.copy(error = e.message ?: "读取项目失败") }
+                return@launch
+            }
             scheduleDailyPlannerJob(project.title, projectId, characterId)
         }
     }
@@ -694,6 +738,49 @@ class ProjectViewModel(application: Application) : AndroidViewModel(application)
     // 保留不变）。
     fun clearImportError() {
         _detailState.update { it.copy(importError = null) }
+    }
+
+    // ── UI 升级 v2.0 帧14：项目列表卡摘要 ─────────────────────
+    // 列表态只有 ProjectEntity，列表卡的新设计元素（金条进度 / 三列统计 /
+    // 头像叠放 / 里程碑 chip）需要里程碑、成员、知识数据。这里提供一个
+    // 一次性挂起快照查询，供 ProjectCard 通过 produceState 拉取——不为
+    // 整张列表建 N 个 Flow 订阅（项目列表通常很短，一次性查询足够；且列表
+    // 本身已是 Room Flow 派生，项目增删会触发整表刷新重建卡片，摘要自然
+    // 跟着重算）。各查询独立 try/catch 兜底，单条失败不阻断其余字段，且
+    // CancellationException 向上抛出以正确支持协程取消。
+    suspend fun getProjectCardSummary(projectId: String): ProjectCardSummary {
+        // 各查询独立兜底：单条失败不阻断其余字段。CancellationException 必须
+        // 向上抛出以正确支持协程取消（produceState 切换/离场时取消），不能像
+        // 普通 Throwable 一样被吞掉——这与本类 init 块的处理方式一致。
+        val milestones = try {
+            repo.getMilestones(projectId)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            ZLog.w("ProjectVM", "getProjectCardSummary/milestones 失败", e)
+            emptyList()
+        }
+        val members = try {
+            repo.getMembers(projectId)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            ZLog.w("ProjectVM", "getProjectCardSummary/members 失败", e)
+            emptyList()
+        }
+        val knowledgeCount = try {
+            repo.observeKnowledge(projectId).first().size
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            ZLog.w("ProjectVM", "getProjectCardSummary/knowledge 失败", e)
+            0
+        }
+        return ProjectCardSummary(
+            milestones         = milestones,
+            knowledgeCount     = knowledgeCount,
+            memberCharacterIds = members.map { it.characterId },
+        )
     }
 
     // ── 内部工具 ─────────────────────────────────────────────

@@ -118,15 +118,22 @@ class FileVaultViewModel(
 
     fun load() {
         viewModelScope.launch {
-            _uiState.update { it.copy(isLoading = true) }
-            val roots = withContext(Dispatchers.IO) { scanVaultTree() }
-            // 根文件夹默认展开，方便用户直接看到文件。
-            val defaultExpanded = roots.filterIsInstance<VaultNode.Folder>().map { it.absolutePath }.toSet()
-            _uiState.update {
-                it.copy(roots = roots, isLoading = false, expandedPaths = defaultExpanded)
+            try {
+                _uiState.update { it.copy(isLoading = true) }
+                val roots = withContext(Dispatchers.IO) { scanVaultTree() }
+                // 根文件夹默认展开，方便用户直接看到文件。
+                val defaultExpanded = roots.filterIsInstance<VaultNode.Folder>().map { it.absolutePath }.toSet()
+                _uiState.update {
+                    it.copy(roots = roots, isLoading = false, expandedPaths = defaultExpanded)
+                }
+                // P2-24：启动目录监听（每次 load 重建 observer，确保新增的圆桌目录也被覆盖）
+                startWatching()
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                ZLog.e("FileVault", "加载文件库失败", e)
+                _uiState.update { it.copy(isLoading = false, snackbarMessage = "加载文件库失败，请重试") }
             }
-            // P2-24：启动目录监听（每次 load 重建 observer，确保新增的圆桌目录也被覆盖）
-            startWatching()
         }
     }
 
@@ -198,12 +205,18 @@ class FileVaultViewModel(
 
         when (event and FileObserver.ALL_EVENTS) {
             FileObserver.CREATE, FileObserver.CLOSE_WRITE -> {
-                enqueueFileIndex(context, relativePath)
+                try {
+                    enqueueFileIndex(context, relativePath)
+                } catch (e: Throwable) {
+                    ZLog.e("FileVault", "索引入队失败：$relativePath", e)
+                }
             }
             FileObserver.DELETE, FileObserver.MOVED_FROM -> {
                 viewModelScope.launch(Dispatchers.IO) {
                     try {
                         AppDatabase.getInstance(context).fileIndexDao().deleteByPath(relativePath)
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
                     } catch (e: Throwable) {
                         ZLog.e("FileVault", "索引删除失败：$relativePath", e)
                     }
@@ -259,32 +272,41 @@ class FileVaultViewModel(
     fun reindexAll() {
         if (_uiState.value.isReindexing) return
         viewModelScope.launch {
-            _uiState.update { it.copy(isReindexing = true) }
-            val queuedCount = withContext(Dispatchers.IO) {
-                val context = getApplication<Application>()
-                val visibleRoots = mutableListOf<File>()
+            try {
+                _uiState.update { it.copy(isReindexing = true) }
+                val queuedCount = withContext(Dispatchers.IO) {
+                    val context = getApplication<Application>()
+                    val visibleRoots = mutableListOf<File>()
 
-                val personal = personalVaultDir(context, characterId)
-                if (personal.exists()) visibleRoots.add(personal)
+                    val personal = personalVaultDir(context, characterId)
+                    if (personal.exists()) visibleRoots.add(personal)
 
-                val roundtableRoot = File(File(vaultRoot(context), "shared"), "roundtable")
-                if (roundtableRoot.exists()) {
-                    roundtableRoot.listFiles { f -> f.isDirectory }?.forEach { rtDir ->
-                        val participants = rtDir.name.split("_")
-                        if (characterId.toString() in participants) visibleRoots.add(rtDir)
+                    val roundtableRoot = File(File(vaultRoot(context), "shared"), "roundtable")
+                    if (roundtableRoot.exists()) {
+                        roundtableRoot.listFiles { f -> f.isDirectory }?.forEach { rtDir ->
+                            val participants = rtDir.name.split("_")
+                            if (characterId.toString() in participants) visibleRoots.add(rtDir)
+                        }
                     }
+
+                    val project = projectVaultDir(context)
+                    if (project.exists()) visibleRoots.add(project)
+
+                    reindexUnindexedFilesUnder(context, visibleRoots)
                 }
-
-                val project = projectVaultDir(context)
-                if (project.exists()) visibleRoots.add(project)
-
-                reindexUnindexedFilesUnder(context, visibleRoots)
-            }
-            _uiState.update {
-                it.copy(
-                    isReindexing = false,
-                    snackbarMessage = if (queuedCount > 0) "已补建 $queuedCount 个文件的索引" else "没有需要补建索引的文件",
-                )
+                _uiState.update {
+                    it.copy(
+                        isReindexing = false,
+                        snackbarMessage = if (queuedCount > 0) "已补建 $queuedCount 个文件的索引" else "没有需要补建索引的文件",
+                    )
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                ZLog.e("FileVault", "补建索引失败", e)
+                _uiState.update {
+                    it.copy(isReindexing = false, snackbarMessage = "补建索引失败，请重试")
+                }
             }
         }
     }
@@ -326,11 +348,18 @@ class FileVaultViewModel(
     private fun scheduleReload() {
         reloadJob?.cancel()
         reloadJob = viewModelScope.launch {
-            delay(500)
-            val roots = withContext(Dispatchers.IO) { scanVaultTree() }
-            // 只更新 roots，保留用户当前的 expandedPaths（不重置展开状态）
-            _uiState.update { state ->
-                state.copy(roots = roots, isLoading = false)
+            try {
+                delay(500)
+                val roots = withContext(Dispatchers.IO) { scanVaultTree() }
+                // 只更新 roots，保留用户当前的 expandedPaths（不重置展开状态）
+                _uiState.update { state ->
+                    state.copy(roots = roots, isLoading = false)
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                ZLog.e("FileVault", "文件库重扫失败", e)
+                _uiState.update { it.copy(isLoading = false) }
             }
         }
     }
@@ -360,43 +389,52 @@ class FileVaultViewModel(
     fun confirmDelete() {
         val target = _uiState.value.deleteTarget ?: return
         viewModelScope.launch {
-            // P2-47 修复：收口到 resolveVaultPath 权限校验，
-            // 不再直接 File(path).delete() 绕过权限链路。
-            val ok = withContext(Dispatchers.IO) {
-                val resolution = withVaultContext(
-                    VaultCallContext(characterId, VaultScope.PERSONAL)
-                ) {
-                    resolveVaultPath(
-                        getApplication(),
-                        target.absolutePath,
-                        characterIdProvider = { characterId },
-                        isDelete = true,
-                    )
-                }
-                when (resolution) {
-                    is VaultPathResolution.Denied -> {
-                        _uiState.update {
-                            it.copy(
-                                deleteTarget = null,
-                                snackbarMessage = "无权删除：${resolution.reason}",
-                            )
+            try {
+                // P2-47 修复：收口到 resolveVaultPath 权限校验，
+                // 不再直接 File(path).delete() 绕过权限链路。
+                val ok = withContext(Dispatchers.IO) {
+                    val resolution = withVaultContext(
+                        VaultCallContext(characterId, VaultScope.PERSONAL)
+                    ) {
+                        resolveVaultPath(
+                            getApplication(),
+                            target.absolutePath,
+                            characterIdProvider = { characterId },
+                            isDelete = true,
+                        )
+                    }
+                    when (resolution) {
+                        is VaultPathResolution.Denied -> {
+                            _uiState.update {
+                                it.copy(
+                                    deleteTarget = null,
+                                    snackbarMessage = "无权删除：${resolution.reason}",
+                                )
+                            }
+                            return@withContext false
                         }
-                        return@withContext false
-                    }
-                    is VaultPathResolution.Allowed -> {
-                        val f = resolution.file
-                        if (f.isDirectory) f.deleteRecursively() else f.delete()
+                        is VaultPathResolution.Allowed -> {
+                            val f = resolution.file
+                            if (f.isDirectory) f.deleteRecursively() else f.delete()
+                        }
                     }
                 }
-            }
-            if (ok) {
+                if (ok) {
+                    _uiState.update {
+                        it.copy(
+                            deleteTarget = null,
+                            snackbarMessage = "已删除「${target.name}」",
+                        )
+                    }
+                    load()
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                ZLog.e("FileVault", "删除失败：${target.name}", e)
                 _uiState.update {
-                    it.copy(
-                        deleteTarget = null,
-                        snackbarMessage = "已删除「${target.name}」",
-                    )
+                    it.copy(deleteTarget = null, snackbarMessage = "删除失败，请重试")
                 }
-                load()
             }
         }
     }
@@ -443,6 +481,34 @@ class FileVaultViewModel(
                     }
                     if (!srcFile.exists()) return@withContext null
 
+                    // #9 复核修复：报告原描述"copyTo 一次性读入内存触发 OOM"核实后
+                    // 不成立——Kotlin InputStream.copyTo()/File.copyTo() 底层都是
+                    // DEFAULT_BUFFER_SIZE（8KB）分块流式拷贝（stdlib 源码可查：
+                    // var buffer = ByteArray(bufferSize); while (read(buffer) >= 0) {
+                    // write; read }），不会把整个文件读进内存，不存在报告描述的
+                    // OOM 机制。真实风险是磁盘空间：导出前不做任何可用空间检查，
+                    // 大文件在存储空间不足的设备上拷贝到一半失败，产生一个不完整
+                    // 的半截文件遗留在 Downloads 目录。补一个导出前的可用空间校验，
+                    // 提前给出清晰提示，避免半截文件和"导出失败，请检查存储权限"
+                    // 这种文不对题的错误信息（真实原因是磁盘满，不是权限）。
+                    val downloadsDirForSpaceCheck = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                        context.filesDir  // MediaStore 路径无法直接拿到 Downloads 所在卷，
+                        // 用 app 私有目录所在卷做近似估算（同一内部存储卷，常见场景下可用空间一致）。
+                    } else {
+                        android.os.Environment.getExternalStoragePublicDirectory(
+                            android.os.Environment.DIRECTORY_DOWNLOADS,
+                        )
+                    }
+                    val freeSpace = downloadsDirForSpaceCheck.usableSpace
+                    if (freeSpace in 1 until srcFile.length()) {
+                        // usableSpace 为 0 时可能是查询失败而非真的没空间，不拦截；
+                        // 只在明确"可用空间 < 文件大小"时提前拒绝，避免误杀。
+                        _uiState.update {
+                            it.copy(snackbarMessage = "存储空间不足，无法导出（文件 ${srcFile.length() / 1024 / 1024}MB，可用 ${freeSpace / 1024 / 1024}MB）")
+                        }
+                        return@withContext null
+                    }
+
                     val displayName = uniqueDisplayName(file.name)
                     val mimeType = guessMimeType(file.extension)
 
@@ -476,6 +542,8 @@ class FileVaultViewModel(
                         srcFile.copyTo(dest, overwrite = true)
                         dest.name
                     }
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
                 } catch (e: Throwable) {
                     // 改成 Throwable：原来只 catch Exception，Error 类型（如 OutOfMemoryError）
                     // 会绕过 catch 导致协程未捕获异常 → 闪退。现在全部兜住。
@@ -517,7 +585,8 @@ class FileVaultViewModel(
         // 查询 MediaStore 是否已有同名文件（Android 10+）
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
             val collection = android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI
-            while (true) {
+            // 限制最多尝试 999 次，防止极端情况下无限循环
+            while (i <= 999) {
                 val selection = "${android.provider.MediaStore.MediaColumns.DISPLAY_NAME} = ?"
                 val args = arrayOf(candidate)
                 context.contentResolver.query(collection, arrayOf(android.provider.MediaStore.MediaColumns._ID), selection, args, null)?.use {
@@ -538,7 +607,8 @@ class FileVaultViewModel(
         val ext = name.substringAfterLast(".", "")
         val suffix = if (ext.isNotEmpty()) ".$ext" else ""
         var i = 1
-        while (File(dir, "${noExt}_($i)$suffix").exists()) i++
+        // 限制最多尝试 999 次，防止极端情况下无限循环
+        while (i <= 999 && File(dir, "${noExt}_($i)$suffix").exists()) i++
         return File(dir, "${noExt}_($i)$suffix")
     }
 

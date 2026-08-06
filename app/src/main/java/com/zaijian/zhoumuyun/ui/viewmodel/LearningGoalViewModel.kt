@@ -10,6 +10,7 @@ import com.zaijian.zhoumuyun.data.db.entity.MemoryEntity
 import com.zaijian.zhoumuyun.data.db.entity.ProjectEntity
 import com.zaijian.zhoumuyun.data.db.entity.TaskEntity
 import com.zaijian.zhoumuyun.data.db.entity.TaskStatus
+import com.zaijian.zhoumuyun.util.ZLog
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -133,6 +134,10 @@ class LearningGoalViewModel(application: Application) : AndroidViewModel(applica
 
     /** 当前正在编辑的草稿（null = 创建弹窗未打开） */
     private val _draft = MutableStateFlow<LearningGoalDraft?>(null)
+    // P1-21 修复：保存进行中守卫。目标保存到 DB 前 _draft 仍非空，快速连点保存按钮会
+    // 重复创建多条相同目标。用该标志在保存期间忽略重复点击（失败时保留草稿供重试）。
+    @Volatile
+    private var isSaving = false
     val draft: StateFlow<LearningGoalDraft?> = _draft.asStateFlow()
 
     /** 当前角色 ID 的响应式容器，flatMapLatest 依赖此值切换订阅 */
@@ -298,6 +303,8 @@ class LearningGoalViewModel(application: Application) : AndroidViewModel(applica
 
     fun saveDraft() {
         val d   = _draft.value ?: return
+        // P1-21 修复：保存进行中，忽略重复点击（避免重复创建多条相同目标）。
+        if (isSaving) return
         val cid = currentCharacterId.takeIf { it >= 0 } ?: return
         val title = d.title.trim()
         if (title.isEmpty()) {
@@ -306,7 +313,10 @@ class LearningGoalViewModel(application: Application) : AndroidViewModel(applica
         }
 
         val now = System.currentTimeMillis()
+        // P1-21 修复：校验通过后置位保存标志，才开始异步保存。
+        isSaving = true
         viewModelScope.launch {
+            try {
             if (d.id == null) {
                 // 新建
                 learningGoalRepo.insert(
@@ -336,6 +346,15 @@ class LearningGoalViewModel(application: Application) : AndroidViewModel(applica
                 _uiState.update { it.copy(snackbarMessage = "已更新目标「$title」") }
             }
             _draft.value = null
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                ZLog.w("LearningGoalVM", "saveDraft 失败", e)
+                _uiState.update { it.copy(snackbarMessage = "保存失败：${e.message}") }
+            } finally {
+                // P1-21 修复：无论成功/失败/取消都复位保存标志。
+                isSaving = false
+            }
         }
     }
 

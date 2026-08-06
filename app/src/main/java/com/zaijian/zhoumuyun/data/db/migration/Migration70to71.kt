@@ -47,7 +47,7 @@ internal val MIGRATION_70_71 = object : Migration(70, 71) {
         db.execSQL(
             """
             CREATE TABLE IF NOT EXISTS `private_chat_messages` (
-                `id` INTEGER PRIMARY KEY AUTOINCREMENT,
+                `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
                 `pairId` TEXT NOT NULL,
                 `senderCharacterId` INTEGER NOT NULL,
                 `content` TEXT NOT NULL,

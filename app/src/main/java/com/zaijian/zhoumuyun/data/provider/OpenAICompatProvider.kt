@@ -103,6 +103,11 @@ class OpenAICompatProvider(
                 //   stop=正常结束, length=maxTokens截断, content_filter=被过滤
                 // 原先完全未读取，截断和正常结束无法区分。
                 var capturedFinishReason: String? = null
+                // 缓存可观测性：累积顶层 usage 的缓存命中/未命中 token 数。
+                // DeepSeek 只在显式开启 stream_options.include_usage 时才在流末尾
+                // 附带 usage（见 buildRequestBody），这里每个 chunk 都检查，命中即记录。
+                var capturedCacheHitTokens: Int? = null
+                var capturedCacheMissTokens: Int? = null
                 BufferedReader(InputStreamReader(conn.inputStream, "UTF-8")).use { reader ->
                     while (true) {
                         // L-2 修复：原先用 var line: String? + line!! 强制断言，
@@ -123,12 +128,25 @@ class OpenAICompatProvider(
                             // P0-5 修复：先取 choice 对象，再分别读 finish_reason 和 delta。
                             // 原先直接 getJSONObject("delta")，最后一个 chunk 只有 finish_reason
                             // 没有 delta 时会抛异常被 catch 吞掉——finish_reason 就这样丢了。
-                            val choice = JSONObject(data)
+                            val root = JSONObject(data)
+                            val choice = root
                                 .getJSONArray("choices")
                                 .optJSONObject(0)
                             // 读取 finish_reason（最后一个 chunk 携带）
                             if (choice != null && choice.has("finish_reason") && !choice.isNull("finish_reason")) {
                                 capturedFinishReason = choice.optString("finish_reason", "")
+                            }
+                            // 缓存可观测性：顶层 usage（与 choices 同级，不在 delta 里）。
+                            // DeepSeek 通常只在最后一个 chunk（finish_reason 非空）附带该字段，
+                            // 但保险起见每个 chunk 都检查，命中即记录（不依赖具体哪个 chunk 携带）。
+                            if (!root.isNull("usage")) {
+                                val usage = root.optJSONObject("usage")
+                                if (usage != null) {
+                                    capturedCacheHitTokens =
+                                        usage.optInt("prompt_cache_hit_tokens", -1).takeIf { it >= 0 }
+                                    capturedCacheMissTokens =
+                                        usage.optInt("prompt_cache_miss_tokens", -1).takeIf { it >= 0 }
+                                }
                             }
                             val deltaObj = choice?.optJSONObject("delta")
                             if (deltaObj != null) {
@@ -194,6 +212,19 @@ class OpenAICompatProvider(
                 if (capturedFinishReason == "length") {
                     ZLog.w("OpenAICompatProvider", "检测到 finish_reason=length（maxTokens 截断）")
                 }
+                // 缓存可观测性：流结束时记录整轮缓存命中情况。
+                // 用 AgentLog（落盘可导出、重启不丢）而非 ZLog（只输出 logcat，
+                // 重启即丢）——命中率需要长期观察趋势，放 ZLog 等于没记。
+                if (capturedCacheHitTokens != null && capturedCacheMissTokens != null) {
+                    val hit = capturedCacheHitTokens!!
+                    val miss = capturedCacheMissTokens!!
+                    val total = hit + miss
+                    val hitRate = if (total > 0) (hit * 100 / total) else 0
+                    com.zaijian.zhoumuyun.util.AgentLog.info(
+                        "PromptCache",
+                        "缓存命中：$hit / 未命中：$miss / 命中率：$hitRate%（model=${config.model.ifEmpty { defaultModel }}）",
+                    )
+                }
                 trySend(ChatStreamItem.FinishReason(capturedFinishReason))
                 close()   // 正常结束：关闭 channel，collect 端会收到完成信号
                 } // end withTimeout
@@ -252,7 +283,22 @@ class OpenAICompatProvider(
                 // 技术性报错。改为捕获后包装成带响应体摘要的错误，与上面第 161-166 行
                 // 非 200 路径的截断策略保持一致。
                 try {
-                    JSONObject(responseText)
+                    val root = JSONObject(responseText)
+                    // 缓存可观测性：非流式响应始终带顶层 usage（无需 stream_options），
+                    // 顺手记录命中率，不额外请求。
+                    root.optJSONObject("usage")?.let { usage ->
+                        val hit = usage.optInt("prompt_cache_hit_tokens", -1)
+                        val miss = usage.optInt("prompt_cache_miss_tokens", -1)
+                        if (hit >= 0 && miss >= 0) {
+                            val total = hit + miss
+                            val hitRate = if (total > 0) (hit * 100 / total) else 0
+                            com.zaijian.zhoumuyun.util.AgentLog.info(
+                                "PromptCache",
+                                "缓存命中：$hit / 未命中：$miss / 命中率：$hitRate%（model=${config.model.ifEmpty { defaultModel }}，同步调用）",
+                            )
+                        }
+                    }
+                    root
                         .getJSONArray("choices")
                         .getJSONObject(0)
                         .getJSONObject("message")
@@ -352,6 +398,13 @@ class OpenAICompatProvider(
             put("max_tokens", config.maxTokens)
             put("temperature", config.temperature.toDouble())
             put("stream", config.stream)
+            // 缓存可观测性：仅流式请求显式开启，才能在流末尾拿到 usage
+            // （含 prompt_cache_hit_tokens/prompt_cache_miss_tokens）。非流式响应
+            // 本身就带顶层 usage，不需要这个字段，也不加（避免个别不认识该字段
+            // 的自定义/第三方端点报错）。
+            if (config.stream) {
+                put("stream_options", JSONObject().apply { put("include_usage", true) })
+            }
         }.toString()
     }
 

@@ -88,6 +88,7 @@ import com.zaijian.zhoumuyun.data.model.StatusType
 import com.zaijian.zhoumuyun.data.model.accentLight
 import com.zaijian.zhoumuyun.ui.component.BreathingAvatar
 import com.zaijian.zhoumuyun.ui.design.WorldCard
+import com.zaijian.zhoumuyun.ui.design.SecondaryGoldButton
 import com.zaijian.zhoumuyun.ui.theme.AppTheme
 import com.zaijian.zhoumuyun.ui.theme.AppColors
 import com.zaijian.zhoumuyun.ui.theme.AppTypography
@@ -133,6 +134,10 @@ internal fun RelationshipPanel(
     // 失败标记只用于渲染层额外提示"加载失败"，不侵入原有的空列表判断逻辑。
     var relEventsLoadFailed by remember { mutableStateOf(false) }
     var milestonesLoadFailed by remember { mutableStateOf(false) }
+    // P2-7-1 修复：新增"关系事件是否加载完成"标记，区分"仍在加载"与"已加载但无数据"。
+    // 此前下方 dims 用 recentRelEvents.isEmpty() 判断 loading，把"空数据"当"还没加载完"，
+    // 无关系记录+无关系事件的角色雷达图永久转圈。
+    var relDataLoaded by remember { mutableStateOf(false) }
     LaunchedEffect(characterIdStr) {
         when (val result = relationshipViewModel.getRecentRelationshipEvents(
             actorId = "user", targetId = characterIdStr, queryLimit = 8,
@@ -145,6 +150,8 @@ internal fun RelationshipPanel(
                 relEventsLoadFailed = true
             }
         }
+        // 无论成功还是失败，查询已经结束，标记为"已加载"（空数据也走默认六维渲染）。
+        relDataLoaded = true
         when (val result = relationshipViewModel.getRecentMilestones(
             fromId = "user", toId = characterIdStr, limit = 10,
         )) {
@@ -169,7 +176,9 @@ internal fun RelationshipPanel(
         )
     } ?: run {
         // W5-013 修复：数据未加载时显示 loading 而非默认值
-        if (recentRelEvents.value.isEmpty()) return@run emptyList()
+        // P2-7-1 修复：改用 relDataLoaded 判断"是否还在加载"，加载完成后（即使查询结果
+        // 为空）也走默认六维渲染，避免无关系记录+无关系事件的角色雷达图永久转圈。
+        if (!relDataLoaded) return@run emptyList()
         listOf(
             "信任" to 50f, "尊重" to 50f, "亲密" to 50f,
             "好奇" to 50f, "依赖" to 30f, "冲突" to 10f,
@@ -316,16 +325,11 @@ internal fun RelationshipPanel(
 
         // ── B-1 Fix：故事时间线入口按钮 ─────────────────────
         Spacer(Modifier.height(Spacing.md))
-        androidx.compose.material3.TextButton(
-            onClick = { onNavigateToTimeline(character.id) },
+        SecondaryGoldButton(
+            text     = "查看完整故事时间线 →",
+            onClick  = { onNavigateToTimeline(character.id) },
             modifier = Modifier.fillMaxWidth(),
-        ) {
-            androidx.compose.material3.Text(
-                text = "查看完整故事时间线 →",
-                color = accentColor,
-                style = type.body,
-            )
-        }
+        )
 
         Spacer(Modifier.height(Spacing.lg))
     }
@@ -377,6 +381,7 @@ private fun RelationshipHistoryRow(
     WorldCard(
         modifier = Modifier.fillMaxWidth(),
         ownerAccent = accentColor,
+        accentWash = true,
     ) {
         Row(
             modifier = Modifier.padding(horizontal = Spacing.md, vertical = Spacing.sm),
@@ -440,6 +445,7 @@ private fun MilestoneRow(
     WorldCard(
         modifier = Modifier.fillMaxWidth(),
         ownerAccent = accentColor,
+        accentWash = true,
     ) {
         Row(
             modifier = Modifier.padding(horizontal = Spacing.md, vertical = Spacing.sm),
@@ -534,8 +540,8 @@ private fun RelationshipRadarChart(
             if (i == 0) dataPath.moveTo(x, y) else dataPath.lineTo(x, y)
         }
         dataPath.close()
-        drawPath(dataPath, color = accentColor.copy(alpha = 0.25f))
-        drawPath(dataPath, color = accentColor.copy(alpha = 0.80f), style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.5.dp.toPx()))
+        drawPath(dataPath, color = accentColor.copy(alpha = 0.16f))
+        drawPath(dataPath, color = Palette.Gold.copy(alpha = 0.50f), style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.dp.toPx()))
 
         dimensions.forEachIndexed { i, (_, value) ->
             val r = maxR * (value / 100f)

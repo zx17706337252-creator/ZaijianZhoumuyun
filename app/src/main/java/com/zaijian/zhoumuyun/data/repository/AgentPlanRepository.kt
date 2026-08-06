@@ -20,6 +20,10 @@ class AgentPlanRepository(private val dao: AgentPlanDao) {
     suspend fun archiveActive(characterId: Int, updatedAt: Long = System.currentTimeMillis()) =
         dao.archiveActive(characterId, updatedAt)
 
+    // P2-6-5 修复：归档 + 写入合并为单个 @Transaction，避免 insert 失败时旧方案已归档且不回滚。
+    suspend fun archiveAndInsert(characterId: Int, plan: AgentPlanEntity) =
+        dao.archiveAndInsert(characterId, plan)
+
     suspend fun getActive(characterId: Int): AgentPlanEntity? = dao.getActive(characterId)
 
     fun observeActive(characterId: Int): Flow<AgentPlanEntity?> = dao.observeActive(characterId)

@@ -41,6 +41,7 @@ import com.zaijian.zhoumuyun.ui.theme.Spacing
 import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
 import kotlinx.coroutines.flow.map
 import com.zaijian.zhoumuyun.ui.design.AppIcons
+import com.zaijian.zhoumuyun.ui.design.WaxSealBadge
 
 internal fun floorGradientColors(floor: FloorEnum, isDark: Boolean): Pair<Color, Color> {
     // W12问题5修复：原本在此处硬编码 12 个 Color(0x...) 字面量，现改用 Palette 中的
@@ -254,11 +255,27 @@ internal fun CharacterHeroCard(
         }
         if (relationshipStage != null) {
             Spacer(Modifier.height(Spacing.sm))
-            com.zaijian.zhoumuyun.ui.design.BondRibbon(
-                stage = relationshipStage,
-                accentColor = accentColor,
-                showLabels = false, // Hero 卡片用迷你版，仅刻度，不显示阶段文字标签（精修方案 v1.3 第5.4节）
-            )
+            // UI 升级 v2.0（§3.3 火漆角标）：关系升阶至 IMPORTANT/CORE 时
+            // 显示「缔」火漆印，标识契约性关系阶段。全 App 火漆预算 ≤8 处。
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Spacing.xs),
+            ) {
+                com.zaijian.zhoumuyun.ui.design.BondRibbon(
+                    stage = relationshipStage,
+                    accentColor = accentColor,
+                    showLabels = false, // Hero 卡片用迷你版，仅刻度，不显示阶段文字标签（精修方案 v1.3 第5.4节）
+                )
+                if (relationshipStage == com.zaijian.zhoumuyun.ui.design.BondStage.IMPORTANT ||
+                    relationshipStage == com.zaijian.zhoumuyun.ui.design.BondStage.CORE
+                ) {
+                    WaxSealBadge(
+                        char      = "缔",
+                        size      = 22.dp,
+                        rotateDeg = 8f,
+                    )
+                }
+            }
         }
 
         // 「关联项目」WrapChipGroup：展示当前角色参与的活跃项目（精修方案 v1.3 第5.1/6节）。

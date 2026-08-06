@@ -241,9 +241,23 @@ suspend fun resolveVaultTargetDir(context: Context): File {
 
 /**
  * 文件名安全化 + 截断（与原 FileExportTool/saveViaStream 行为一致）。
+ *
+ * 修复（专项审查报告问题10）：截断时保留扩展名。原先对整段文件名（含后缀）
+ * 直接 .take(60)，长标题（基础名 ≥56 字符）时 .docx/.xlsx/.pdf 等末尾扩展名
+ * 会被截掉，产出无扩展名文件 → 外部 App 无法关联打开。
+ * 现在先拆出扩展名，只对基础名截断，保证「基础名 + 扩展名」总长 ≤ 60。
  */
-internal fun safeFileName(rawName: String): String =
-    UNSAFE_CHARS.replace(rawName, "_").take(60)
+internal fun safeFileName(rawName: String): String {
+    val sanitized = UNSAFE_CHARS.replace(rawName, "_").trim()
+    val dot = sanitized.lastIndexOf('.')
+    if (dot > 0 && dot < sanitized.length - 1) {
+        val ext = sanitized.substring(dot)
+        val stem = sanitized.substring(0, dot)
+        val maxStemLen = (60 - ext.length).coerceAtLeast(1)
+        return stem.take(maxStemLen) + ext
+    }
+    return sanitized.take(60)
+}
 
 /**
  * 核心文本落盘：[finalSafeName] 必须已是调用方清洗过的安全人读文件名（不含时间戳前缀）。
@@ -267,6 +281,7 @@ internal suspend fun writeVaultFile(
     val uniqueSuffix = UUID.randomUUID().toString().take(8)
     val file = File(dir, "${timestamp}_${uniqueSuffix}_${finalSafeName}")
     file.writeText(content, Charsets.UTF_8)
+    verifyVaultFileWritten(file, finalSafeName)
     return buildMetaJson(file, finalSafeName, mimeType, currentVaultContext())
 }
 
@@ -311,8 +326,50 @@ suspend fun writeVaultStream(
     val uniqueSuffix = UUID.randomUUID().toString().take(8)
     val file = File(dir, "${timestamp}_${uniqueSuffix}_${safeName}")
     file.outputStream().use { write(it) }
+    verifyVaultFileWritten(file, safeName)
     return buildMetaJson(file, safeName, mimeType, currentVaultContext())
 }
+
+/**
+ * 落盘校验下沉（原只在 FileExportTool 单点做，ExcelGenTool/PptxGenTool/
+ * ArchiveExportTool 等其余 writeVaultStream 调用方没有同等保护）。
+ *
+ * 背景：`writeText()` / `OutputStream.write()` 在磁盘满、权限异常、部分文件系统
+ * 边界情况下不一定抛异常，但产物可能不完整甚至根本没落地——调用方据此拿到
+ * "看起来正常"的 metaJson（sizeBytes 直接读自这个可能有问题的 file），
+ * 继续往上报 `success = true`，就是"角色说已生成，实际用户看不到文件"这个
+ * bug 的根因。此前只在 FileExportTool.execute() 单独补了这一校验，本次下沉到
+ * writeVaultFile/writeVaultStream 共享入口，让所有调用方（含未来新增的导出
+ * 工具）自动获得同等保护，不再依赖各工具自己记得补一遍。
+ *
+ * 校验失败直接抛出 [VaultWriteVerificationException]，交给各调用方已有的
+ * `catch (e: Throwable) -> toolFailure(...)` 转成友好的 ToolResult 失败——
+ * 不在本函数内部生成/返回 ToolResult，因为 VaultIo 是纯 I/O 层，不感知
+ * 各工具各自的 toolName / 失败文案约定。
+ *
+ * 0 字节即判定失败：本文件所有落盘工具的产物语义上都不允许是空文件
+ * （文本类工具在落盘前已校验 content 非空；二进制类哪怕是"空数据"的
+ * xlsx/zip 也会有文件结构本身的字节，不可能真正 0 字节）。
+ */
+private fun verifyVaultFileWritten(file: File, displayName: String) {
+    if (!file.exists() || file.length() == 0L) {
+        ZLog.e(
+            "VaultIo",
+            "文件写入后验证失败: fileName=$displayName, path=${file.absolutePath}, " +
+                "exists=${file.exists()}, size=${if (file.exists()) file.length() else -1}",
+        )
+        throw VaultWriteVerificationException(
+            "文件写入后验证失败（文件不存在或大小为0）：$displayName",
+        )
+    }
+}
+
+/**
+ * 落盘校验失败的专用异常类型。继承 IOException 而非普通 Exception，
+ * 因为语义上就是一次 I/O 失败，能被现有代码里任何"catch IOException"
+ * 的兜底逻辑自然捕获，无需调用方额外识别这个新类型。
+ */
+internal class VaultWriteVerificationException(message: String) : java.io.IOException(message)
 
 private fun buildMetaJson(file: File, safeName: String, mimeType: String, ctx: VaultCallContext): String {
     return org.json.JSONObject().apply {

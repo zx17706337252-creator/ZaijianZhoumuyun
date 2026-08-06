@@ -123,7 +123,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         ProviderManager.instance.removeOnProviderConfigChangedListener(evaluationDelegate.providerConfigListener)
         // window13结论7：离开聊天页时清除前台角色标记（仅当全局值仍是本 ViewModel 设置的）。
         // B1审查序号2修复：check-then-clear改用原子 compareAndSet，见 PresenceEngine 注释。
-        PresenceEngine.clearForegroundChatCharacterIdIfMatches(currentCharacterId)
+        com.zaijian.zhoumuyun.data.AppContainer.instance.exitChatScreen(currentCharacterId)
     }
 
     // ── 工具注册 ────────────────────────────────────────────────
@@ -211,7 +211,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val daughterGenerator = daughterRegistrationHelper.createGenerator()
 
     // ── 可变状态 ────────────────────────────────────────────────
+    // P1-10 修复：currentCharacterId 由主线程写、IO 线程读（ChatMessageOrchestrator 的
+    // replyJob 及 ChatSessionDelegate 的 proactiveMessage flow 大量读取）。非 volatile 的
+    // 普通 var 在跨线程语义下无可见性保证，切角色瞬间旧 replyJob 可能在非挂起点读到
+    // 新值，导致回复消息 characterId 写错角色（串号）。补 @Volatile 保证可见性。
+    @Volatile
     private var currentCharacterId = -1
+    @Volatile
     private var replyJob: Job? = null
 
     // 受孕机制 AI 门3判定冷却 + 关键词兜底跨轮标记（供 messageOrchestrator 消费）。

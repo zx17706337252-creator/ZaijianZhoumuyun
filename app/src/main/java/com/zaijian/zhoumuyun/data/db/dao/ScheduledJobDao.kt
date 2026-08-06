@@ -19,8 +19,12 @@ interface ScheduledJobDao {
     @Query("SELECT * FROM scheduled_jobs WHERE characterId = :characterId ORDER BY createdAt DESC")
     fun observeByCharacter(characterId: Int): Flow<List<ScheduledJobEntity>>
 
-    @Query("SELECT * FROM scheduled_jobs ORDER BY createdAt DESC")
-    fun observeAll(): Flow<List<ScheduledJobEntity>>
+    /**
+     * P2-3-2 修复：原查询无 LIMIT，跨角色聚合会把全表任务读进内存。
+     * 加 LIMIT 上限，任务堆积时只取最近创建的一批（按 createdAt 倒序）。
+     */
+    @Query("SELECT * FROM scheduled_jobs ORDER BY createdAt DESC LIMIT :limit")
+    fun observeAll(limit: Int = 200): Flow<List<ScheduledJobEntity>>
 
     @Query("UPDATE scheduled_jobs SET enabled = 0 WHERE id = :id")
     suspend fun disable(id: String)

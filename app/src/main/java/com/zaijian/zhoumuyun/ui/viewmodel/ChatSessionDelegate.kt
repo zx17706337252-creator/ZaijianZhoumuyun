@@ -101,12 +101,25 @@ class ChatSessionDelegate(
             _streamingContent.value = null
             _streamingPsych.value = null
         }
+        // P1-8 修复：真正切换角色（非同角色重入）时清空评分卡状态。评分卡
+        // （pendingEvaluationSessionId/Report/AgentScore）是 _uiState 跨角色共享字段，
+        // 若切角色不清空，角色 A 弹出但未提交的评审卡会在角色 B 的聊天页继续显示。
+        // 同角色重入（返回同一角色）不清空，保留用户正在看的评审卡。
+        if (characterId != getCurrentCharacterId()) {
+            _uiState.update {
+                it.copy(
+                    pendingEvaluationSessionId = null,
+                    pendingEvaluationReport    = null,
+                    pendingAgentScore          = null,
+                )
+            }
+        }
         observeJobs.forEach { it.cancel() }
         loadMessagesJob?.cancel()
         settlementCheckJob?.cancel()
         loadCharacterJob?.cancel()
         setCurrentCharacterId(characterId)
-        PresenceEngine.foregroundChatCharacterId = characterId
+        com.zaijian.zhoumuyun.data.AppContainer.instance.enterChatScreen(characterId)
         loadMessagesJob = null
 
         try {
@@ -262,6 +275,9 @@ class ChatSessionDelegate(
                                     // 凭证的内部标记消息——这条只是喂给下一轮 LLM 上下文看的，
                                     // 不该在聊天界面里冒出一条奇怪的系统气泡（见 FILE_READ_MARK_PREFIX 处说明）。
                                     .filterNot { it.content.startsWith(FILE_READ_MARK_PREFIX) }
+                                    // 工具结果跨消息保留：同款内部标记，同样不该在聊天界面里
+                                    // 冒出系统气泡（见 TOOL_TRACE_MARK_PREFIX 处说明）。
+                                    .filterNot { it.content.startsWith(TOOL_TRACE_MARK_PREFIX) }
                                     .map { ChatTagParser.toChatMessage(it) }.toImmutableList())
                             }
                         } catch (e: kotlinx.coroutines.CancellationException) {
@@ -310,6 +326,7 @@ class ChatSessionDelegate(
             _uiState.update {
                 it.copy(messages = msgs
                     .filterNot { it.content.startsWith(FILE_READ_MARK_PREFIX) }
+                    .filterNot { it.content.startsWith(TOOL_TRACE_MARK_PREFIX) }
                     .map { ChatTagParser.toChatMessage(it) }.toImmutableList())
             }
         } catch (e: kotlinx.coroutines.CancellationException) {

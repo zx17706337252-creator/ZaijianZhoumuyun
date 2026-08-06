@@ -268,7 +268,19 @@ import com.zaijian.zhoumuyun.data.db.entity.ImpersonationPresetEntity   // 角�
         CharacterTitleRelationEntity::class,     // 角色间关系头衔——方向性头衔关系
         ImpersonationPresetEntity::class,        // 角色间关系头衔——假扮身份识别预设名单
     ],
-    version = 79,  // B5 问题2修复: 78 → 79——job_results 新增 cloudMarkReadSynced 列，
+    version = 81,  // 修复 #6: 80 → 81——file_index 新增 keywords 列，
+    // file_index_fts 删除重建（新增 keywords 列 + 显式 tokenize=unicode61），
+    // 解决中文全文检索"整句被索引成单一 token、前缀匹配几乎永远搜不到中间
+    // 关键词"的误判问题，与 memories_fts/ChineseTokenizer 同一套已验证方案。
+    // 迁移同时清空 file_index 存量数据，交由已有的冷启动全量补建索引机制
+    // 用新逻辑重新索引（ICU 分词回填无法用纯 SQL 完成）。详见 Migration80to81.kt。
+    // 私聊实时同步修复: 79 → 80——private_chat_sessions 新增
+    // notifiedCharacterIds 列，把私聊动态播报从"近2小时时间窗口摘要"改为
+    // "按未告知查询+带完整逐字记录注入"，双方角色（尤其是被动一方）不再因为
+    // 超出时间窗口而错过被告知的机会，且不需要用户追问、不需要角色自己再调
+    // 工具查，就能完整准确地知道这段私聊说了什么。纯新增非空默认列，详见
+    // Migration79to80.kt。
+    // B5 问题2修复: 78 → 79——job_results 新增 cloudMarkReadSynced 列，
     // 标记 markResultRead 是否成功同步到云端，失败时供 ScheduleRepository.
     // retryPendingCloudMarkRead() 在下次启动时补重试。纯新增非空默认列，详见
     // Migration78to79.kt。
@@ -471,7 +483,26 @@ abstract class AppDatabase : RoomDatabase() {
                         com.zaijian.zhoumuyun.data.db.migration.MIGRATION_76_77,
                         com.zaijian.zhoumuyun.data.db.migration.MIGRATION_77_78,
                         com.zaijian.zhoumuyun.data.db.migration.MIGRATION_78_79,
+                        com.zaijian.zhoumuyun.data.db.migration.MIGRATION_79_80,
+                        com.zaijian.zhoumuyun.data.db.migration.MIGRATION_80_81,
                     )
+                    // P3 修复：补 onDestructiveMigration 回调——RoomDatabase.Callback 提供
+                    // 该回调，destructive migration 真实发生时被调用（此前误判为"无回调钩子"）。
+                    // 触发时数据库已被清空重建，回调内不能依赖任何原有表结构，只做 ZLog +
+                    // SharedPreferences 写入（两者都不依赖数据库本身）。
+                    .addCallback(object : RoomDatabase.Callback() {
+                        override fun onDestructiveMigration(db: SupportSQLiteDatabase) {
+                            super.onDestructiveMigration(db)
+                            com.zaijian.zhoumuyun.util.ZLog.e(
+                                "AppDatabase",
+                                "检测到 destructive migration 已真实发生，数据库已被清空重建",
+                            )
+                            context.getSharedPreferences("app_diagnostics", Context.MODE_PRIVATE)
+                                .edit()
+                                .putLong("last_destructive_migration_at", System.currentTimeMillis())
+                                .apply()
+                        }
+                    })
                     .fallbackToDestructiveMigrationOnDowngrade()
                     // P1-11 修复：原先仅有 fallbackToDestructiveMigrationOnDowngrade()
                     // （只兜底"版本号变小"这一种场景）。若本地库版本号落在上面
@@ -486,7 +517,8 @@ abstract class AppDatabase : RoomDatabase() {
                     // A12-6 修复：debug 构建移除 fallbackToDestructiveMigration()，
                     // 让迁移 bug 直接崩溃暴露（IllegalStateException），不被静默吞掉。
                     // 正式版保留兜底（避免用户因迁移 bug 无法启动 App），但记录警示日志。
-                    // 注意：Room 内部执行 destructive migration 时无回调钩子，
+                    // 注意：destructive migration 真实发生时由上方 addCallback 的
+                    // onDestructiveMigration 回调记录（ZLog + SharedPreferences 时间戳）；
                     // 此日志在配置阶段写入，标记"此构建存在静默清库风险"。
                     .also { builder ->
                         if (com.zaijian.zhoumuyun.BuildConfig.DEBUG) {
@@ -494,7 +526,7 @@ abstract class AppDatabase : RoomDatabase() {
                         } else {
                             com.zaijian.zhoumuyun.util.ZLog.e(
                                 "AppDatabase",
-                                "正式版启用 fallbackToDestructiveMigration()：若迁移路径缺失/异常，将静默清空数据库重建。当前迁移链 v1→v78 共 77 条，正常升级不触发。",
+                                "正式版启用 fallbackToDestructiveMigration()：若迁移路径缺失/异常，将静默清空数据库重建。当前迁移链 v1→v80 共 79 条，正常升级不触发。",
                             )
                             builder.fallbackToDestructiveMigration()
                         }

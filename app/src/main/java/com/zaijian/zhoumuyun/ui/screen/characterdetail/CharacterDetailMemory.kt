@@ -40,6 +40,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -66,6 +67,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.shadow
@@ -87,6 +89,9 @@ import com.zaijian.zhoumuyun.ui.component.EmptyStateView
 import com.zaijian.zhoumuyun.domain.ContentBlockParser
 import com.zaijian.zhoumuyun.ui.component.ContentBlockRenderer
 import com.zaijian.zhoumuyun.ui.design.WorldCard
+import com.zaijian.zhoumuyun.ui.design.VaultCard
+import com.zaijian.zhoumuyun.ui.design.WaxSealBadge
+import com.zaijian.zhoumuyun.ui.theme.AppBrushes
 import com.zaijian.zhoumuyun.ui.theme.AppTheme
 import com.zaijian.zhoumuyun.ui.theme.AppColors
 import com.zaijian.zhoumuyun.ui.theme.AppTypography
@@ -104,6 +109,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import com.zaijian.zhoumuyun.ui.design.AppIcons
+import com.zaijian.zhoumuyun.ui.design.GoldPrimaryButton
+import com.zaijian.zhoumuyun.ui.design.GhostGoldButton
 
 private data class MemoryEntry(
     val id: String,
@@ -150,6 +157,16 @@ internal fun MemoryTabContent(
 ) {
     // ★ collectAsState 在此处执行，仅当 mainTab == 0 时该 Composable 存在
     val memoryState by memoryViewModel.uiState.collectAsStateWithLifecycle()
+
+    // P2-7-2 修复：消费 memoryState.snackbar（删除/编辑/保存等操作反馈）。此前该字段
+    // 只在 ViewModel 里写入、UI 从不消费，用户操作成功/失败无任何提示。本 Composable
+    // 无 Scaffold/SnackbarHost，用轻量 Toast 展示后清空，避免改动外层布局结构。
+    val context = LocalContext.current
+    LaunchedEffect(memoryState.snackbar) {
+        val msg = memoryState.snackbar ?: return@LaunchedEffect
+        android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
+        memoryViewModel.clearSnackbar()
+    }
 
     Column {
         // ── v1.1：四段式"记忆档案"视图（自上而下）──────────────
@@ -593,20 +610,18 @@ internal fun AddMemoryDialog(
             }
         },
         confirmButton = {
-            androidx.compose.material3.TextButton(
-                onClick = { if (text.isNotBlank()) onConfirm(text) },
-                enabled = text.isNotBlank(),
-            ) {
-                Text(
-                    text  = "保存",
-                    color = if (text.isNotBlank()) accentColor else colors.textDisabled,
-                )
-            }
+            val canSave = text.isNotBlank()
+            GoldPrimaryButton(
+                text     = "保存",
+                onClick  = { if (canSave) onConfirm(text) },
+                modifier = Modifier.alpha(if (canSave) 1f else 0.4f),
+            )
         },
         dismissButton = {
-            androidx.compose.material3.TextButton(onClick = onDismiss) {
-                Text(text = "取消", color = colors.textSecondary)
-            }
+            GhostGoldButton(
+                text    = "取消",
+                onClick = onDismiss,
+            )
         },
     )
 }
@@ -648,20 +663,18 @@ internal fun EditMemoryDialog(
             )
         },
         confirmButton = {
-            androidx.compose.material3.TextButton(
-                onClick = { if (text.isNotBlank()) onConfirm(text) },
-                enabled = text.isNotBlank(),
-            ) {
-                Text(
-                    text  = "保存",
-                    color = if (text.isNotBlank()) accentColor else colors.textDisabled,
-                )
-            }
+            val canSave = text.isNotBlank()
+            GoldPrimaryButton(
+                text     = "保存",
+                onClick  = { if (canSave) onConfirm(text) },
+                modifier = Modifier.alpha(if (canSave) 1f else 0.4f),
+            )
         },
         dismissButton = {
-            androidx.compose.material3.TextButton(onClick = onDismiss) {
-                Text(text = "取消", color = colors.textSecondary)
-            }
+            GhostGoldButton(
+                text    = "取消",
+                onClick = onDismiss,
+            )
         },
     )
 }
@@ -814,7 +827,12 @@ private fun MemoryRow(
     // 谁"已经是页面级的已知信息；这里真正需要逐条区分的是"记忆维度"
     // （Phase 30 既有的左侧 stripColor 色条），保留它不动，避免和 L3
     // 身份脊在左侧出现两条并排竖线、互相抢视觉。
-    WorldCard(modifier = modifier, cornerRadius = Radius.sm) {
+    // UI 升级 v2.0（帧09 置顶记忆）：置顶记忆（isImportant=true）用馆藏
+    // 收藏卡 VaultCard 替换 WorldCard——拱形卡头放日期标题（角色色渐变
+    // 底由 ownerAccent 触发），卡身放记忆内容 + 标签 + 操作按钮，火漆
+    // 角标「珍」由 VaultCard 的 waxChar 参数统一渲染。非置顶记忆保持
+    // WorldCard 不变。cardBody 提取共享卡身内容，两分支复用，避免重复。
+    val cardBody: @Composable () -> Unit = {
         Row(verticalAlignment = Alignment.Top) {
             // 左侧维度色条
             Box(
@@ -826,109 +844,167 @@ private fun MemoryRow(
                         shape = RoundedCornerShape(topStart = Radius.sm, bottomStart = Radius.sm),
                     ),
             )
-            // 右侧内容区（加回 padding）
-            Row(
-                modifier          = Modifier.weight(1f).padding(Spacing.md),
-                verticalAlignment = Alignment.Top,
-            ) {
-            // 内容（占满剩余宽度）
-            Column(modifier = Modifier.weight(1f)) {
+            // 右侧内容区
+            // 排版修复：编辑/删除/星标三个 48dp 触控热区此前和正文 Text 挤在
+            // 同一个 Row 里，正文 Column 只能拿到"总宽度 - 3×48dp - 间距"剩下
+            // 的窄条（实测常常不到 100dp），长记忆被压成一列很窄、行数很多的
+            // 文字，看起来像是"整段都挤在左边"、图标又悬在段落中间。现在把
+            // 三个操作图标挪到下方，和日期/标签同一行（那一行本身矮，容得下），
+            // 正文 Text 单独占满整行宽度。
+            Column(modifier = Modifier.weight(1f).padding(Spacing.md)) {
+                // 内容（占满整行宽度）
                 Text(
-                    text  = entry.content,
-                    style = type.body,
-                    color = colors.textPrimary,
+                    text     = entry.content,
+                    style    = type.body,
+                    color    = colors.textPrimary,
+                    modifier = Modifier.fillMaxWidth(),
                 )
                 Spacer(Modifier.height(Spacing.xs))
                 Row(
-                    horizontalArrangement = Arrangement.spacedBy(Spacing.xs),
-                    verticalAlignment = Alignment.CenterVertically,
+                    modifier              = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment     = Alignment.CenterVertically,
                 ) {
-                    Text(
-                        text  = entry.dateLabel,
-                        style = type.label,
-                        color = colors.textDisabled,
-                    )
-                    // Phase 17：衰减状态标签
-                    entry.decayLabel?.let { label ->
-                        val (bgAlpha, textColor) = when (label) {
-                            "7天到期"  -> 0.15f to Palette.SemanticDanger
-                            "即将到期"  -> 0.12f to Palette.SemanticWarning
-                            "即将清理" -> 0.12f to Palette.SemanticWarning
-                            else       -> 0.10f to colors.textSecondary
+                    // 日期 + 标签
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(Spacing.xs),
+                        verticalAlignment     = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text  = entry.dateLabel,
+                            style = type.label,
+                            color = colors.textDisabled,
+                        )
+                        // Phase 17：衰减状态标签
+                        entry.decayLabel?.let { label ->
+                            val (bgAlpha, textColor) = when (label) {
+                                "7天到期"  -> 0.15f to Palette.SemanticDanger
+                                "即将到期"  -> 0.12f to Palette.SemanticWarning
+                                "即将清理" -> 0.12f to Palette.SemanticWarning
+                                else       -> 0.10f to colors.textSecondary
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(4.dp))
+                                    .background(textColor.copy(alpha = bgAlpha))
+                                    .padding(horizontal = 5.dp, vertical = 1.dp),
+                            ) {
+                                Text(label, style = type.label, color = textColor)
+                            }
                         }
-                        Box(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(4.dp))
-                                .background(textColor.copy(alpha = bgAlpha))
-                                .padding(horizontal = 5.dp, vertical = 1.dp),
-                        ) {
-                            Text(label, style = type.label, color = textColor)
+                        // C8#44 UI 闭环：叙事记忆标签——假扮身份识别期间产生的记忆，
+                        // 用中性灰区别于 decayLabel 的警示色，避免被误读成"即将过期"
+                        // 一类的状态提示；这条只是"来源说明"，不是需要用户处理的事。
+                        if (entry.isNarrativeOnly) {
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(4.dp))
+                                    .background(Palette.SemanticNeutral.copy(alpha = 0.12f))
+                                    .padding(horizontal = 5.dp, vertical = 1.dp),
+                            ) {
+                                Text("叙事记忆", style = type.label, color = colors.textSecondary)
+                            }
                         }
                     }
-                    // C8#44 UI 闭环：叙事记忆标签——假扮身份识别期间产生的记忆，
-                    // 用中性灰区别于 decayLabel 的警示色，避免被误读成"即将过期"
-                    // 一类的状态提示；这条只是"来源说明"，不是需要用户处理的事。
-                    if (entry.isNarrativeOnly) {
+
+                    // UI M12 修复：图标触摸热区扩大到 48dp×48dp（Android 最小触控建议），
+                    // 视觉尺寸（20dp）保持不变，外层 Box 吸收额外点击区域。放在日期/
+                    // 标签这一行的末尾，不再和正文共享一行，避免挤占正文宽度。
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        // 编辑
                         Box(
                             modifier = Modifier
-                                .clip(RoundedCornerShape(4.dp))
-                                .background(Palette.SemanticNeutral.copy(alpha = 0.12f))
-                                .padding(horizontal = 5.dp, vertical = 1.dp),
+                                .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+                                .clickable { onEdit() }
+                                .wrapContentSize(Alignment.Center),
                         ) {
-                            Text("叙事记忆", style = type.label, color = colors.textSecondary)
+                            Icon(
+                                imageVector        = AppIcons.Edit,
+                                contentDescription = "编辑记忆",
+                                tint               = colors.textDisabled,
+                                modifier           = Modifier.size(20.dp),
+                            )
+                        }
+                        // 删除
+                        Box(
+                            modifier = Modifier
+                                .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+                                .clickable { onDelete() }
+                                .wrapContentSize(Alignment.Center),
+                        ) {
+                            Icon(
+                                imageVector        = AppIcons.Delete,
+                                contentDescription = "删除记忆",
+                                tint               = colors.textDisabled,
+                                modifier           = Modifier.size(20.dp),
+                            )
+                        }
+                        // 星标
+                        Box(
+                            modifier = Modifier
+                                .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+                                .clickable { onToggleStar() }
+                                .wrapContentSize(Alignment.Center),
+                        ) {
+                            Icon(
+                                imageVector        = if (entry.isImportant) AppIcons.Star else AppIcons.StarBorder,
+                                contentDescription = if (entry.isImportant) "取消重要" else "标记重要",
+                                tint               = if (entry.isImportant) accentColor else colors.textDisabled,
+                                modifier           = Modifier.size(20.dp),
+                            )
                         }
                     }
                 }
-            }
-
-            Spacer(Modifier.width(Spacing.sm))
-
-            // UI M12 修复：图标触摸热区扩大到 48dp×48dp（Android 最小触控建议），
-            // 视觉尺寸（20dp）保持不变，外层 Box 吸收额外点击区域。
-            // 编辑
-            Box(
-                modifier = Modifier
-                    .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
-                    .clickable { onEdit() }
-                    .wrapContentSize(Alignment.Center),
-            ) {
-                Icon(
-                    imageVector        = AppIcons.Edit,
-                    contentDescription = "编辑记忆",
-                    tint               = colors.textDisabled,
-                    modifier           = Modifier.size(20.dp),
-                )
-            }
-            // 删除
-            Box(
-                modifier = Modifier
-                    .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
-                    .clickable { onDelete() }
-                    .wrapContentSize(Alignment.Center),
-            ) {
-                Icon(
-                    imageVector        = AppIcons.Delete,
-                    contentDescription = "删除记忆",
-                    tint               = colors.textDisabled,
-                    modifier           = Modifier.size(20.dp),
-                )
-            }
-            // 星标
-            Box(
-                modifier = Modifier
-                    .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
-                    .clickable { onToggleStar() }
-                    .wrapContentSize(Alignment.Center),
-            ) {
-                Icon(
-                    imageVector        = if (entry.isImportant) AppIcons.Star else AppIcons.StarBorder,
-                    contentDescription = if (entry.isImportant) "取消重要" else "标记重要",
-                    tint               = if (entry.isImportant) accentColor else colors.textDisabled,
-                    modifier           = Modifier.size(20.dp),
-                )
-            }
-            } // end inner Row (content+star)
+            } // end content Column
         } // end outer Row (strip+content)
+    }
+
+    Box(modifier = modifier) {
+        if (entry.isImportant) {
+            // UI 升级 v2.0（帧09 大拱壁龛）：置顶记忆外层包一层拱形壁龛容器——
+            // 大圆角拱顶（28dp）+ 金色渐变描边 + 微抬底色，营造「馆藏展龛」仪式感。
+            // VaultCard 本身已有拱形卡头，壁龛是更外层的展示框架。
+            val nicheShape = RoundedCornerShape(
+                topStart = 28.dp, topEnd = 28.dp,
+                bottomStart = Radius.sm, bottomEnd = Radius.sm,
+            )
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(nicheShape)
+                    .border(1.dp, AppBrushes.goldGradient(), nicheShape)
+                    .background(colors.bgElevated)
+                    .padding(1.dp),
+            ) {
+                VaultCard(
+                    headerContent = {
+                        Text(
+                            text  = entry.dateLabel,
+                            style = type.label,
+                            color = Color.White,
+                        )
+                    },
+                    bodyContent   = cardBody,
+                    ownerAccent   = accentColor,
+                    waxChar       = "珍",
+                )
+                // UI 升级 v2.0（帧09 书签穗）：壁龛右上角悬挂金色书签穗——
+                // 3dp 宽金渐变窄条 + 末端三角切口，模拟书签丝带垂坠。
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(end = 16.dp)
+                        .width(3.dp)
+                        .height(20.dp)
+                        .clip(RoundedCornerShape(topStart = 1.5.dp, topEnd = 1.5.dp))
+                        .background(AppBrushes.goldGradient()),
+                )
+            }
+        } else {
+            WorldCard(cornerRadius = Radius.sm) {
+                cardBody()
+            }
+        }
     }
 }
 

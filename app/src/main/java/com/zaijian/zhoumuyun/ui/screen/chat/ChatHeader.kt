@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -36,6 +37,7 @@ import androidx.compose.ui.unit.sp
 import com.zaijian.zhoumuyun.data.model.ChatMode
 import com.zaijian.zhoumuyun.domain.MoodType
 import com.zaijian.zhoumuyun.ui.design.AppIcons
+import com.zaijian.zhoumuyun.ui.theme.AppBrushes
 import com.zaijian.zhoumuyun.ui.theme.Palette
 import com.zaijian.zhoumuyun.ui.theme.Spacing
 import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
@@ -74,6 +76,9 @@ internal fun ChatHeader(
     name: String,
     accentColor: Color,
     headerBg: Color,
+    // 注意：此默认值不生效——唯一调用点 ChatScreen.kt 的 ChatHeader(...) 显式传了
+    // uiState.chatMode，因此真正的默认聊天模式由 ChatUiState.chatMode 的默认值决定
+    // （见该文件，已改为 WORK）。这里保持 WORK 只是为了不产生误导性的不一致。
     chatMode: ChatMode = ChatMode.WORK,
     onBack: () -> Unit,
     onProfileClick: () -> Unit,
@@ -242,6 +247,14 @@ internal fun ChatHeader(
                 )
             }
         }
+        // v2.0 金色视觉：底部 1dp 金色渐变线（叠加在原有 borderSubtle 衬底之上）
+        Box(
+            Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .height(1.dp)
+                .background(AppBrushes.cardBorderGradient(colors.isDark)),
+        )
     }
 }
 

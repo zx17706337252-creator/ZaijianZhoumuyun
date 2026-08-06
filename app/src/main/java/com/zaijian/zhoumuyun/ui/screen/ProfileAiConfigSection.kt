@@ -175,7 +175,7 @@ internal fun AiConfigSection() {
     }
 
     Column(modifier = Modifier.padding(horizontal = Spacing.screenHorizontal)) {
-        // 分组标题
+        // 分组标题——与其他分区（外观/通知/集成等）统一：纯文字 label，无图标方块
         Text(
             text     = "AI 配置",
             style    = type.label.copy(fontWeight = FontWeight.Medium),

@@ -14,6 +14,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.zaijian.zhoumuyun.ui.design.GoldPrimaryButton
+import com.zaijian.zhoumuyun.ui.design.SecondaryGoldButton
 import com.zaijian.zhoumuyun.ui.theme.Palette
 import com.zaijian.zhoumuyun.ui.theme.Spacing
 import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
@@ -121,16 +123,18 @@ internal fun TablePreviewEditor(
             )
             if (editable) {
                 Row(horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
-                    TextButton(onClick = {
-                        editRows = editRows.toMutableList().apply { add(MutableList(columns.size) { "" }) }
-                    }) {
-                        Text("+ 行")
-                    }
-                    TextButton(onClick = {
-                        if (editRows.isNotEmpty()) editRows = editRows.dropLast(1)
-                    }) {
-                        Text("- 行")
-                    }
+                    SecondaryGoldButton(
+                        text = "+ 行",
+                        onClick = {
+                            editRows = editRows.toMutableList().apply { add(MutableList(columns.size) { "" }) }
+                        },
+                    )
+                    SecondaryGoldButton(
+                        text = "- 行",
+                        onClick = {
+                            if (editRows.isNotEmpty()) editRows = editRows.dropLast(1)
+                        },
+                    )
                 }
             }
             if (!editable) {
@@ -240,14 +244,11 @@ internal fun TablePreviewEditor(
 
         // 保存按钮（仅可编辑模式）
         if (editable) {
-            Button(
+            GoldPrimaryButton(
+                text = "保存",
                 onClick = { onSave(editColumns, editRows.map { it.toList() }) },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(Spacing.md),
-            ) {
-                Text("保存")
-            }
+                modifier = Modifier.fillMaxWidth(),
+            )
         }
     }
 }

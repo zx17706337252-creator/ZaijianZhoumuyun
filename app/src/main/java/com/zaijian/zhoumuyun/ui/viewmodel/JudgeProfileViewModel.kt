@@ -7,6 +7,8 @@ import androidx.lifecycle.viewModelScope
 import com.zaijian.zhoumuyun.data.AppContainer
 import com.zaijian.zhoumuyun.data.db.entity.CompetitionRoundEntity
 import com.zaijian.zhoumuyun.data.db.entity.JudgeProfileEntity
+import com.zaijian.zhoumuyun.data.model.CharacterConfig
+import com.zaijian.zhoumuyun.data.model.DefaultCharacters
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -15,6 +17,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -47,6 +50,12 @@ class JudgeProfileViewModel(
     // 与 GoalViewModel 同一模式。
     private val judgeProfileRepo = AppContainer.instance.judgeProfileRepo
 
+    // P2-7-9 修复：合并角色列表（DefaultCharacters + 女儿），供裁判页查名/查主题色——
+    // 原先只查 DefaultCharacters，女儿裁判（ID≥1000）无名无主题色。
+    val characters: StateFlow<List<CharacterConfig>> =
+        AppContainer.instance.daughterCharacterRepo.observeAllCharacterConfigs()
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), DefaultCharacters)
+
     // ── characterId（从路由参数取，响应式以支持导航参数变更后自动刷新）──
 
     private val _characterId = savedStateHandle.getStateFlow(KEY_CHARACTER_ID, -1)
@@ -54,12 +63,20 @@ class JudgeProfileViewModel(
 
     // ── 该角色所有裁判档案 ─────────────────────────────────────────────
 
+    // P2-7-6 修复（Judge 列表同类缺口）：新增列表级加载三态。下方 action 用的 _isLoading
+    // 只反映确认/拒绝操作，不反映列表查询；列表首次发射前 profiles 恒为 emptyList()，
+    // UI 若直接判空会闪"空态"再跳数据。listLoading 由 init→首次发射 置 false。
+    private val _listLoading = MutableStateFlow(true)
+    val listLoading: StateFlow<Boolean> = _listLoading.asStateFlow()
+
     val profiles: StateFlow<List<JudgeProfileEntity>> =
         _characterId
             .flatMapLatest { cid ->
+                _listLoading.value = true
                 if (cid < 0) flowOf(emptyList())
                 else judgeProfileRepo.observeAllForCharacter(cid)
             }
+            .onEach { _listLoading.value = false }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     // ── 选中档案 ID ────────────────────────────────────────────────────

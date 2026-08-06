@@ -184,14 +184,32 @@ class MemoryRepository(
                 !candidate.isLocked
             ) {
                 // 找到相似记忆：执行 Merge
+                //
+                // P1-4 修复：原实现的 copy() 是白名单式，只显式传了 7 个字段，
+                // 其余（包括 isNarrativeOnly、sourceEventId）全部隐式沿用
+                // candidate（数据库里的旧记忆）原值，导致新记忆（memory）的这两个
+                // 隔离/溯源标记在合并时被静默丢弃。
+                // isNarrativeOnly 的设计初衷（见字段定义处注释）是标记"非 owner
+                // 互动产生的记忆"，防止被"读 MemoryEntity 做长期归纳"的模块当成
+                // 真实 owner 关系温水煮青蛙。这里采用 || 合并而非直接取
+                // memory.isNarrativeOnly："新内容胜出"在反向合并（新的是普通记忆、
+                // 旧的是私聊摘要）时会把已有的 isNarrativeOnly=true 冲刷回 false，
+                // 等于把一条已被正确标记为"非 owner"的记忆错误地摘掉隔离标记——
+                // 这比"该显示的记忆被误隐藏"更危险。|| 合并保证只要合并双方任一方
+                // 曾被标记为非 owner 生成，合并结果就继续保持警示，符合隔离机制
+                // "宁可保守隐藏、不可错误泄露"的语义。
+                // sourceEventId 单纯是"最近一次更新的触发来源"追溯字段，没有类似
+                // 的安全考量，直接取新内容（memory）的值，如实记录本次合并原因。
                 val merged = candidate.copy(
-                    content        = mergeContent(candidate.content, memory.content),
-                    importance     = maxOf(candidate.importance, memory.importance),
-                    keywords       = mergeKeywords(candidate.keywords, memory.keywords),
-                    isCore         = candidate.isCore || memory.isCore,
-                    updatedAt      = System.currentTimeMillis(),
-                    accessCount    = candidate.accessCount,
-                    lastAccessedAt = candidate.lastAccessedAt,
+                    content         = mergeContent(candidate.content, memory.content),
+                    importance      = maxOf(candidate.importance, memory.importance),
+                    keywords        = mergeKeywords(candidate.keywords, memory.keywords),
+                    isCore          = candidate.isCore || memory.isCore,
+                    updatedAt       = System.currentTimeMillis(),
+                    accessCount     = candidate.accessCount,
+                    lastAccessedAt  = candidate.lastAccessedAt,
+                    isNarrativeOnly = candidate.isNarrativeOnly || memory.isNarrativeOnly,
+                    sourceEventId   = memory.sourceEventId,
                 )
                 update(merged)
                 return@withLock candidate.id
@@ -385,8 +403,16 @@ class MemoryRepository(
     // ── 删除 ──────────────────────────────────────────────────
 
     suspend fun deleteById(memoryId: String, ftsRowId: Int = 0) {
-        if (ftsRowId != 0) {
-            memoryDao.deleteWithFts(memoryId, ftsRowId)
+        // P2-3-3 修复：多数 UI 入口（MemoryViewModel.delete 默认 ftsRowId=0、
+        // CharacterDetailMemory 的 onDelete 只传 memoryId）此前走 else 分支裸删主表，
+        // memories_fts 索引行泄漏成孤儿。这里在调用方未提供 ftsRowId 时先按 memoryId
+        // 查一次补齐，保证删除路径始终对称清理 FTS——只有查不到有效 rowid 才退化为裸删。
+        var effectiveFtsRowId = ftsRowId
+        if (effectiveFtsRowId == 0) {
+            effectiveFtsRowId = memoryDao.getRowIdByMemoryId(memoryId) ?: 0
+        }
+        if (effectiveFtsRowId != 0) {
+            memoryDao.deleteWithFts(memoryId, effectiveFtsRowId)
         } else {
             memoryDao.deleteById(memoryId)
         }
@@ -696,6 +722,14 @@ class MemoryRepository(
     suspend fun applyDecayAll(): Int {
         val sevenDaysMs = 7L * 24 * 60 * 60 * 1000
         val cutoff = System.currentTimeMillis() - sevenDaysMs
+        // P2-3-1 修复：删除顺序定为 FTS → tags → 主表。
+        // 此前只跑 deleteStaleUnused（删 memories 主表），memories_fts 虚拟表与
+        // memory_tags 的对应行不会级联删除，随衰减持续累积孤儿行，污染
+        // countForCharacter 统计。这里先取回待删行，对称清掉 FTS 与 tags，
+        // 最后再删主表——若中途崩溃，也不会出现"主表已删而 FTS/tags 残留"的孤儿态。
+        val stale = memoryDao.getStaleUnusedRows(cutoff)
+        memoryDao.deleteFtsByIds(stale.map { it.ftsRowId }.filter { it != 0 })
+        stale.forEach { memoryTagDao.deleteByMemoryId(it.memoryId) }
         // 返回本次实际删除的记忆数量（DELETE 语句返回受影响行数），
         // 而非剩余非永恒记忆数，避免监控指标语义错误。
         return memoryDao.deleteStaleUnused(cutoff)

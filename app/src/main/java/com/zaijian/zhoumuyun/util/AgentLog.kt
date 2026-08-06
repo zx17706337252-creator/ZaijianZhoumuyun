@@ -200,6 +200,18 @@ object AgentLog {
     }
 }
 
-/** Throwable 的堆栈转字符串（避免 android.util.Log.getStackTraceString 依赖）。 */
+/**
+ * Throwable 的堆栈转字符串（避免 android.util.Log.getStackTraceString 依赖）。
+ *
+ * 根因修复（诊断日志缺失异常类型/消息）：此前只拼了 `this.stackTrace`
+ * （纯堆栈帧数组），既不含异常类名也不含 message，更不含 Caused by 链——
+ * 导出的 agent_log.txt 里完全看不出一次崩溃/告警到底是什么异常，只能
+ * 靠堆栈调用链倒推硬猜类型（P1 崩溃排查实测：CrashHandler 记录的两次
+ * 未捕获异常，日志里从头到尾没有一行提到异常类名或 message）。
+ * 改用 Kotlin 标准库的 `stackTraceToString()`，效果等价于
+ * `printStackTrace()` 的完整输出（异常类名 + message + 堆栈帧 +
+ * 递归展开的 Caused by 链），且仍然是纯 Kotlin stdlib，不引入
+ * android.util.Log 依赖，符合本文件原有约束。
+ */
 private val Throwable.stackTraceString: String
-    get() = this.stackTrace.joinToString("\n  ") { it.toString() }
+    get() = this.stackTraceToString()

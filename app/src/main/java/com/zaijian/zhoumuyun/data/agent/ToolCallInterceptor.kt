@@ -8,7 +8,9 @@ import com.zaijian.zhoumuyun.data.provider.LLMProvider
 import com.zaijian.zhoumuyun.data.provider.chatSyncWithRetry
 import com.zaijian.zhoumuyun.data.provider.chatStreamWithRetry
 import com.zaijian.zhoumuyun.data.repository.AgentActivityRepository
+import com.zaijian.zhoumuyun.domain.ChatTagParser
 import com.zaijian.zhoumuyun.util.ZLog
+import java.io.File
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -184,6 +186,20 @@ object ToolCallInterceptor {
         "docx_gen",      // callLlm 生成文档内容
         "writing_critique", "outline_gen", "email_draft",
         "meeting_minutes", "inspiration_fetch", "image_gen_prompt",
+        // P1-7 修复：以下 5 个工具内部同样会调用 p3CallLlm/chatSyncWithRetry
+        // 做二次 LLM 分析或提炼，此前漏列在这个集合里，只拿标准 30s 超时。
+        // 30s 内 LLM 未返回时 withTimeoutOrNull 置空，主流程继续、调用方看不到
+        // 成功回执，可能重试导致规则/任务重复写库（DB 副作用已在 LLM 返回后提交）。
+        "rule_conflict_check", // AgentMetaTools：p3CallLlm 冲突分析
+        "session_compare",     // AgentMetaTools：p3CallLlm 横向对比
+        "progress_report",     // AgentMetaTools：p3CallLlm 生成报告正文
+        "task_delegate",       // AgentMetaTools：p3CallLlm 任务拆分
+        "rule_distill",        // AgentCoreTools：chatSyncWithRetry 规则提炼
+        // P1-10 修复：excel_gen 的 description→CSV 路径（generateCsvFromDescription）
+        // 未直接传 headers/rows 时会 callLlm 最多 2 次（首次为空自动重试一次），
+        // 之前只拿标准 30s，30s 内两次调用可能凑不齐时间；直传 headers/rows 的路径
+        // 不受影响（不进 generateCsvFromDescription，加长超时对它无害）。
+        "excel_gen",
     )
 
     // ─────────────────────────────────────────────────────────
@@ -251,6 +267,8 @@ object ToolCallInterceptor {
         private val anyToolSucceeded: Boolean,
         /** 本轮待执行工具列表引用（live，随 feed 不断增长；isEmpty 判断用最新值） */
         private val pendingCalls: List<ToolCall>,
+        /** 第 3 层防线：用户本轮实际请求文本，并入文件类型判定 */
+        private val userRequestText: String,
     ) {
         /** 上一句还没确认放行、暂存等待和下一句拼窗判断 */
         private var pendingSentence: String? = null
@@ -261,10 +279,16 @@ object ToolCallInterceptor {
          * 判断待测文本是否命中空头承诺正则。
          * 条件对齐 claimsFileCompletionWithoutToolCall（2.6 节订正）：
          * !anyToolSucceeded && pendingCalls.isEmpty() && 正则命中。
+         *
+         * 方向2统一入口：改走 [looksLikeFalseFileCompletionClaim]，不再自己直接跑
+         * FALSE_COMPLETION_CLAIM_REGEX——理由见该函数的 KDoc（先剥 [thinking:...] 再判定，
+         * 避免角色内心独白里的措辞被当成"对用户撒谎"）。round 级别的检测
+         * （claimsFileCompletionWithoutToolCall / previousFailedTools 分支）用的是同一个入口，
+         * 两处不再各自维护一份判断逻辑。
          */
         private fun isFalseClaim(text: String): Boolean {
             val shouldCheck = !anyToolSucceeded && pendingCalls.isEmpty()
-            return shouldCheck && FALSE_COMPLETION_CLAIM_REGEX.containsMatchIn(text)
+            return shouldCheck && looksLikeFalseFileCompletionClaim(text, userRequestText)
         }
 
         /**
@@ -378,6 +402,17 @@ object ToolCallInterceptor {
      *   降级过程只走 AgentLog——向后兼容不传此参数的现有调用方。
      * @return                  [StreamEvent] 的 Flow
      */
+    // 前置强制：文件交付规则。对齐线上 Agent 的"文件交付强制规则"。
+    // P0 治本：模型在生成阶段就被要求"先调工具再宣称完成"，不依赖输出后拦截。
+    private val FILE_DELIVERY_RULE = """
+        【文件交付强制规则】
+        - 用户要求生成/创建/导出/整理任何文件（txt、md、html、docx、pdf、ppt、xlsx、zip 等格式，
+          或出现"文件、文档、表格、幻灯片、网页、压缩包"等词）时，必须先调用对应的文件生成工具，
+          工具成功执行后再在回复中确认完成。
+        - 任何文件类工具尚未成功执行前，禁止宣称"已生成、已写好、已发送、已完成、请查收"等完成状态。
+        - 工具执行失败时，明确告诉用户还没做成，并说明原因；不得说"已经完成"。
+    """.trimIndent()
+
     fun streamWithTools(
         provider: LLMProvider,
         messages: List<LLMMessage>,
@@ -387,6 +422,18 @@ object ToolCallInterceptor {
         disabledToolNames: Set<String> = emptySet(),
         activityContext: ActivityContext? = null,
     ): Flow<StreamEvent> = channelFlow {
+
+        // 第 3 层防线（防谎报）：提取用户本轮实际请求，并入文件类型检测——
+        // 用户说"做个PPT"、agent 输出不带格式词时，仍能点名工具、识破假完成。
+        // 取最后一条 user 消息（零 API 破坏，不需要改任何调用点）。
+        val userRequestText: String = messages.asReversed()
+            .firstOrNull { it.role == "user" }?.content.orEmpty()
+
+        // 前置强制（P0 治本）：把文件交付强制规则拼进 systemPrompt 再发给 LLM。
+        // 幂等：systemPrompt 已含该规则（如外部已注入）则跳过，避免重复累加。
+        val effectiveSystemPrompt =
+            if (systemPrompt.contains("文件交付强制规则")) systemPrompt
+            else "$systemPrompt\n\n$FILE_DELIVERY_RULE"
 
         // 快速路径：注册表为空，直接透传
         // 注意：这里判断的是全局注册表 allNames()，不考虑 disabledToolNames。
@@ -398,7 +445,7 @@ object ToolCallInterceptor {
         if (AgentToolRegistry.allNames().isEmpty()) {
             // P0-5: 使用 chatStream() 保持一致，但快速路径不关心 finish_reason
             // B5-Fix5: 改用 chatStreamWithRetry，对流开始前的连接失败/429/5xx 自动重试
-            provider.chatStreamWithRetry(messages, systemPrompt, config).collect { item ->
+            provider.chatStreamWithRetry(messages, effectiveSystemPrompt, config).collect { item ->
                 if (item is ChatStreamItem.TextDelta) send(StreamEvent.TextDelta(item.text))
             }
             return@channelFlow
@@ -464,6 +511,18 @@ object ToolCallInterceptor {
         // 修复：任何一轮有工具真正成功过后，后续轮次的"完成确认"一律放行，
         // 空头承诺检测只在"整个请求没有任何工具成功过"时才生效。
         var anyToolSucceeded = false
+        // Fix-门控盲区：记录已成功执行的文件类工具名集合。
+        // 此前 anyToolSucceeded 是布尔值——一个工具成功后，所有完成声明门控全部打开，
+        // LLM 可以声称"另一个文件也发了"而不会被拦截。新增此集合用于：
+        // 1. Phase 3 收尾指令中明确告知 LLM 哪些文件类型已生成、禁止声称未生成的
+        // 2. 最终输出时检测"声称生成了未实际生成的文件类型"并追加更正
+        val succeededFileToolNames = mutableSetOf<String>()
+        // Fix-门控盲区：记录已成功生成的文件名，供最终输出校验使用。
+        val generatedFileNames = mutableListOf<String>()
+        // Fix-读回验证：记录本次请求中已真实落盘的生成文件绝对路径，供最终"存在性校验"用。
+        // 与 generatedFileNames 同源（都来自工具成功结果的 metaJson）：name 用于提示，
+        // path 用于对磁盘做 exists()/length() 校验，兜住"工具报成功但文件没真正生成好"。
+        val generatedFilePaths = mutableListOf<String>()
         // 同请求内已成功执行的文件类调用签名（工具名|文件名|参数哈希），
         // 完全一致的重复调用直接跳过，防止任何路径下的重复落盘。
         val executedFileSignatures = mutableSetOf<String>()
@@ -479,6 +538,15 @@ object ToolCallInterceptor {
         // 的修订重试），超过后一律拦截并提示模型"已生成过同类文件"。按 toolName 精确
         // 匹配，不误伤"同请求内调用不同文件工具"（Excel+PPT+PDF 各自独立计数）。
         val fileToolSuccessCount = mutableMapOf<String, Int>()
+
+        // Fix-ConsecutiveFailureBreaker：按 toolName 统计"连续"失败次数（同一工具
+        // 一旦成功一次即清零，不与其他工具的失败次数混算）。MAX_TOOL_ROUNDS=6 只是
+        // 全局轮数熔断，不针对性阻止"同一个工具反复失败"这种模式——模型每轮微调
+        // 参数/思路继续调用同一个注定失败的工具，Fix-DupFileGen 的完全一致参数去重
+        // 也拦不住（参数变了）。这里加一道更精确的熔断：同一工具连续失败达到阈值后，
+        // 直接拦截其下一次调用，强制要求模型换策略（换工具/换参数思路/如实告知
+        // 用户暂时做不到），不再允许在同一条大概率还会失败的路径上继续烧轮次预算。
+        val toolFailureStreak = mutableMapOf<String, Int>()
 
         while (round < maxRounds) {
             val parser = ToolParser()
@@ -498,7 +566,7 @@ object ToolCallInterceptor {
             val isForcedLockRound = pendingFilePaths.isNotEmpty() && round < 2
 
             // 方案 A：非锁死轮次启用句子级事前门控（锁死轮次不维护 gate 状态）
-            val gate = if (!isForcedLockRound) SentenceGate(anyToolSucceeded, pendingCalls) else null
+            val gate = if (!isForcedLockRound) SentenceGate(anyToolSucceeded, pendingCalls, userRequestText) else null
 
             // ── Phase 1：流式接收 LLM 输出 ─────────────────────
             // P0-5 修复：使用 chatStream() 替代 chat()，以获取 finish_reason 截断信号。
@@ -507,7 +575,7 @@ object ToolCallInterceptor {
             var truncatedThisRound = false
             try {
                 // B5-Fix5: 改用 chatStreamWithRetry，对流开始前的连接失败/429/5xx 自动重试
-                provider.chatStreamWithRetry(currentMessages, systemPrompt, config).collect { item ->
+                provider.chatStreamWithRetry(currentMessages, effectiveSystemPrompt, config).collect { item ->
                     when (item) {
                         is ChatStreamItem.TextDelta -> {
                             val result = parser.feed(item.text)
@@ -785,7 +853,7 @@ object ToolCallInterceptor {
                 // 如果 LLM 正在重试之前失败的工具（pendingCalls 包含 previousFailedTools 中的工具），
                 // 则放行——它在尝试修复，应该给机会（配合 Fix-5 的更长超时，重试更可能成功）。
                 if (previousFailedTools.isNotEmpty() && round < maxRounds - 1) {
-                    val claimsCompletion = FALSE_COMPLETION_CLAIM_REGEX.containsMatchIn(roundText.toString())
+                    val claimsCompletion = looksLikeFalseFileCompletionClaim(roundText.toString(), userRequestText)
                     val retryingFailedTool = pendingCalls.any { it.toolName in previousFailedTools }
                     if (claimsCompletion && !retryingFailedTool) {
                         com.zaijian.zhoumuyun.util.AgentLog.warn(
@@ -816,7 +884,7 @@ object ToolCallInterceptor {
                 // Fix-DupFileGen①：加 anyToolSucceeded 前置条件——本请求此前已有工具
                 // 真正成功过时，这句"已完成"是合法收尾确认，不是空头承诺，直接放行
                 // （原实现误伤此场景导致重复生成 + 重试风暴，见上方声明处注释）。
-                if (round < maxRounds - 1 && !anyToolSucceeded && claimsFileCompletionWithoutToolCall(roundText.toString(), pendingCalls)) {
+                if (round < maxRounds - 1 && !anyToolSucceeded && claimsFileCompletionWithoutToolCall(roundText.toString(), pendingCalls, userRequestText)) {
                     com.zaijian.zhoumuyun.util.AgentLog.warn(
                         "ToolCall",
                         "⚠ 检测到疑似空头承诺（声称已生成/已发送但本轮无工具调用），打回重发（第 ${round + 1} 轮）",
@@ -824,11 +892,32 @@ object ToolCallInterceptor {
                     if (roundText.isNotEmpty()) {
                         currentMessages.add(LLMMessage("assistant", roundText.toString()))
                     }
-                    currentMessages.add(LLMMessage("user",
+                    // Fix-纠正话术硬点名（方向3）：旧版无条件点名 excel_gen/pptx_gen/pdf_export，
+                    // 一旦上面的判定本身是误判（窄化后的正则仍有漏网之鱼，或者这句话跟文件毫无
+                    // 关系），模型会被这句提示硬推去调用一个跟当前语境完全无关的文件生成工具
+                    // ——这正是"没要求却收到文件"的根因之一。改为：先看本轮文字里到底有没有
+                    // 提到具体文件类型，提到了才点名对应工具；没提到就用中性提示，并明确告诉
+                    // 模型"如果跟文件无关就忽略这条提示、按原意正常回复"，把误判的代价从
+                    // "被迫生成一个不相关的文件"降到"多一句被忽略的系统提示"。
+                    val mentionedTools = detectMentionedFileToolNames(roundText.toString(), userRequestText)
+                    // Fix-日志补全：记录空头承诺纠正走"点名工具"还是"中性话术"分支，以及命中了哪些
+                    // 文件类型关键词——排查时能看出这条 correction 的措辞依据（点名 vs 中性）。
+                    com.zaijian.zhoumuyun.util.AgentLog.warn(
+                        "ToolCall",
+                        "  空头承诺纠正：命中文件工具 = ${mentionedTools.joinToString("/")}（" +
+                            (if (mentionedTools.isEmpty()) "无，走中性话术" else "点名工具") + "）",
+                    )
+                    val correctionPrompt = if (mentionedTools.isNotEmpty()) {
                         "你刚才的回复里说文件已经生成/发送了，但你这一轮并没有实际调用任何工具标签，" +
-                        "文件并没有真正生成。请立即调用对应的工具标签（如 excel_gen/pptx_gen/pdf_export 等）" +
+                        "文件并没有真正生成。请立即调用对应的工具标签（如 ${mentionedTools.joinToString("/")} 等）" +
                         "真正执行这个操作；如果暂时无法完成，请明确告诉我还没做成，不要再说「已经完成」。"
-                    ))
+                    } else {
+                        "你刚才的回复里有些措辞像是在说某个操作/文件已经完成了，但你这一轮并没有实际调用" +
+                        "任何工具标签。如果你确实是想生成/发送文件，请立即调用对应的工具标签真正执行这个" +
+                        "操作，并明确告诉我还没做成，不要再说「已经完成」；如果这句话跟生成/发送文件完全" +
+                        "无关，请忽略这条提示，按你原本的意思正常回复即可。"
+                    }
+                    currentMessages.add(LLMMessage("user", correctionPrompt))
                     roundText.clear()
                     round++
                     continue
@@ -856,7 +945,7 @@ object ToolCallInterceptor {
                 //   3. 把更正文本一并并入 roundText，保证持久化到数据库的消息
                 //      内容和用户在界面上实际看到的一致。
                 // Fix-DupFileGen①：同上，已有工具成功过时这是合法收尾，不再追加更正话术。
-                if (!anyToolSucceeded && claimsFileCompletionWithoutToolCall(roundText.toString(), pendingCalls)) {
+                if (!anyToolSucceeded && claimsFileCompletionWithoutToolCall(roundText.toString(), pendingCalls, userRequestText)) {
                     com.zaijian.zhoumuyun.util.AgentLog.error(
                         "ToolCall",
                         "⛔ 空头承诺重试耗尽（已达 ${maxRounds} 轮上限仍未调用任何工具），" +
@@ -871,7 +960,7 @@ object ToolCallInterceptor {
                 // 与上面的纯嘴替兜底互补：上面的只管 pendingCalls 为空的情况，
                 // 这里管 pendingCalls 非空但不含失败工具重试的情况。
                 if (previousFailedTools.isNotEmpty()) {
-                    val claimsCompletion = FALSE_COMPLETION_CLAIM_REGEX.containsMatchIn(roundText.toString())
+                    val claimsCompletion = looksLikeFalseFileCompletionClaim(roundText.toString(), userRequestText)
                     val retryingFailedTool = pendingCalls.any { it.toolName in previousFailedTools }
                     if (claimsCompletion && !retryingFailedTool) {
                         com.zaijian.zhoumuyun.util.AgentLog.error(
@@ -882,6 +971,50 @@ object ToolCallInterceptor {
                         val correction = "\n\n（这个之前尝试时出了点问题，还没真的做成，容我重新试一次，或者你再跟我说一声。）"
                         send(StreamEvent.TextDelta(correction))
                         roundText.append(correction)
+                    }
+                }
+
+                // Fix-门控盲区：anyToolSucceeded=true 时的最终输出软校验。
+                // 此前 anyToolSucceeded=true 后所有完成声明门控全部打开——LLM 调用了
+                // file_export 生成 report.md 后，可以声称"Excel 也发给你了"而不会被拦截，
+                // 因为门控条件是 !anyToolSucceeded。这里补充一层"文件类型校验"：
+                // 检测 LLM 文本中是否提及了未实际生成的文件类型（Excel/PDF/PPT/Word/zip），
+                // 命中则追加更正话术。不打回重发（避免重试风暴），只追加更正。
+                if (anyToolSucceeded && succeededFileToolNames.isNotEmpty()) {
+                    val ungeneratedClaims = detectUngeneratedFileTypeClaims(
+                        roundText.toString(), succeededFileToolNames, userRequestText,
+                    )
+                    if (ungeneratedClaims.isNotEmpty()) {
+                        com.zaijian.zhoumuyun.util.AgentLog.warn(
+                            "ToolCall",
+                            "⚠ 门控盲区检测：LLM 声称生成了未实际执行的文件类型" +
+                                "（已成功: $succeededFileToolNames，虚假声明: $ungeneratedClaims）",
+                        )
+                        val correction = "\n\n（${ungeneratedClaims.joinToString("和")}其实还没做好，容我重新试一下，或者你再跟我说一声。）"
+                        try {
+                            send(StreamEvent.TextDelta(correction))
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (_: Throwable) {}
+                        roundText.append(correction)
+                    }
+
+                    // Fix-读回验证：存在性校验——物理确认本次声称已生成的文件真的落盘且非空。
+                    // 工具"报成功"不等于文件可读：若文件缺失/为空（罕见写失败或孤儿路径），
+                    // agent 不应向用户声称已发送。这里跟类型校验一样只追加诚实更正、不打回重发。
+                    val missingFiles = verifyGeneratedFilesExist(generatedFilePaths)
+                    if (missingFiles.isNotEmpty()) {
+                        com.zaijian.zhoumuyun.util.AgentLog.warn(
+                            "ToolCall",
+                            "⚠ 存在性校验：以下文件声称已生成但缺失或为空，已追加更正: $missingFiles",
+                        )
+                        val exCorrection = "\n\n（${missingFiles.joinToString("和")}实际上还没能真正生成好，我确认一下再发给你。）"
+                        try {
+                            send(StreamEvent.TextDelta(exCorrection))
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (_: Throwable) {}
+                        roundText.append(exCorrection)
                     }
                 }
 
@@ -948,6 +1081,25 @@ object ToolCallInterceptor {
                     continue
                 }
 
+                // Fix-ConsecutiveFailureBreaker：同一工具连续失败达到上限，拦截本次调用。
+                // 放在 Fix-DupFileGen 系列检查之前，因为这道熔断对所有工具生效（不限于
+                // 文件类工具）——日程/记忆/邮件/Git 等任何工具反复失败都应该被拦下来，
+                // 不只是会产出文件的那几个。
+                val failureStreak = toolFailureStreak[call.toolName] ?: 0
+                if (failureStreak >= MAX_CONSECUTIVE_TOOL_FAILURES) {
+                    com.zaijian.zhoumuyun.util.AgentLog.warn(
+                        "ToolCall",
+                        "⊘ ${call.toolName} 已连续失败 $failureStreak 次，本次调用被拦截，要求换策略",
+                    )
+                    toolResultParts.add(
+                        "[${call.toolName}：已连续失败 $failureStreak 次，本次调用未执行——" +
+                            "请不要再用相同方式重试这个工具，换一个工具、换一种参数思路，" +
+                            "或如实告知用户这件事目前做不到，不要假装已完成]",
+                    )
+                    anyFailed = true
+                    continue
+                }
+
                 // Fix-DupFileGen②：同一请求内【完全一致】的文件生成调用（同工具+同文件名+
                 // 同参数）直接跳过——第一次已经成功落盘，再执行只会多产出一个内容雷同的
                 // 新文件。只挡"完全一致"的重复，同文件名但参数/内容不同的调用视为
@@ -984,33 +1136,107 @@ object ToolCallInterceptor {
                 }
 
                 // 通知 UI 工具开始
-                send(StreamEvent.ToolStarted(
-                    toolName = call.toolName,
-                    params   = call.params,
-                    hint     = null,
-                ))
+                try {
+                    send(StreamEvent.ToolStarted(
+                        toolName = call.toolName,
+                        params   = call.params,
+                        hint     = null,
+                    ))
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Throwable) {
+                    // channel 已关闭，无法通知 UI，但不影响工具执行
+                }
 
                 // 执行工具（带超时 + §2.1.2 降级策略状态机）
-                val toolResult = executeWithDegradation(
-                    call              = call,
-                    tool              = tool,
-                    provider          = provider,
-                    disabledToolNames = disabledToolNames,
-                    activityContext   = activityContext,
-                    goalContext       = messages.lastOrNull()?.content?.take(200) ?: "",
-                )
+                // Fix-闪退防护：executeWithDegradation 可能因 caller 被取消而抛出
+                // CancellationException（executeWithTimeout 在 callerJob?.isCancelled 时
+                // 会 throw CancellationException）。此处用 try-catch 包裹：
+                // - CancellationException：重抛（维持结构化并发）
+                // - 其他异常：转为失败 ToolResult，不中断整轮流程（防闪退）
+                val toolResult = try {
+                    executeWithDegradation(
+                        call              = call,
+                        tool              = tool,
+                        provider          = provider,
+                        disabledToolNames = disabledToolNames,
+                        activityContext   = activityContext,
+                        goalContext       = messages.lastOrNull()?.content?.take(200) ?: "",
+                    )
+                } catch (e: CancellationException) {
+                    // 协程取消：上层（ChatMessageOrchestrator）已 cancel 旧 job，
+                    // 正常传播取消信号即可。但在此之前，executeWithTimeout 内部已经
+                    // 通过 NonCancellable + recoverOrphanedToolResult 保证了文件落盘。
+                    throw e
+                } catch (e: Throwable) {
+                    // 非取消异常：兜底转为失败结果，不让单个工具的意外崩溃拖垮整轮流程
+                    com.zaijian.zhoumuyun.util.AgentLog.error(
+                        "ToolCall",
+                        "✗ ${call.toolName} executeWithDegradation 意外异常: ${e.message}", e,
+                    )
+                    ToolResult(
+                        toolName = call.toolName,
+                        success  = false,
+                        content  = "[${call.toolName} 执行异常]",
+                        error    = "exception",
+                    )
+                }
 
                 // 通知 UI 工具完成
-                send(StreamEvent.ToolDone(toolResult))
+                // Fix-闪退防护：send 可能在 channel 已关闭时抛出 ClosedSendChannelException
+                // （CancellationException 子类），用 try-catch 包裹避免未处理异常导致闪退
+                try {
+                    send(StreamEvent.ToolDone(toolResult))
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Throwable) {
+                    // channel 已关闭（collector 被取消），工具结果无法投递——
+                    // 文件已落盘，孤儿兜底机制会处理，不闪退
+                }
 
                 if (!toolResult.success) {
                     anyFailed = true
                     // Fix-3：记录失败的工具名，供下一轮虚假完成声明检测使用
                     previousFailedTools.add(call.toolName)
+                    // Fix-ConsecutiveFailureBreaker：累加该工具的连续失败计数
+                    toolFailureStreak[call.toolName] = (toolFailureStreak[call.toolName] ?: 0) + 1
                 } else {
                     // Fix-DupFileGen：登记成功——放行后续轮次的合法完成确认，
                     // 并登记文件调用签名防止完全重复执行。
                     anyToolSucceeded = true
+                    // Fix-ConsecutiveFailureBreaker：成功一次即清零该工具的连续失败计数
+                    // （不同工具的计数互不影响，只关心"同一个工具最近是不是一直不行"）
+                    toolFailureStreak.remove(call.toolName)
+                    // Fix-门控盲区：记录已成功的文件类工具名，供最终输出校验
+                    if (call.toolName in FILE_PRODUCING_TOOLS) {
+                        succeededFileToolNames.add(call.toolName)
+                        // 提取文件名供最终校验
+                        // P2-6-2 修复：table_export 的 xlsx 元数据在 tablePayloadJson.exportedFileMetaJson，
+                        // 不在 content 末尾——content 只带标题+Markdown。补一个 tablePayload 兜底，
+                        // 让 xlsx 也登记进 generatedFilePaths 参与落盘存在性校验（否则 xlsx 写失败仍报 success）。
+                        val metaJson = extractExportedFileJson(toolResult.content)
+                            ?: extractExportedFileJsonFromTablePayload(toolResult.tablePayloadJson)
+                        if (metaJson == null) {
+                            // Fix-日志补全：工具报成功但没有可识别的文件元数据（fileName+absolutePath），
+                            // 此前静默不登记——若这是"工具以为自己成功、用户却看不到文件卡片"的隐藏入口，
+                            // 日志里完全看不出断点。补一条可导出日志定位。
+                            com.zaijian.zhoumuyun.util.AgentLog.warn(
+                                "ToolCall",
+                                "⚠ ${call.toolName} 返回成功但结果中无文件元数据（fileName/absolutePath 缺失），" +
+                                    "未能登记生成文件，请核对工具输出",
+                            )
+                        } else {
+                            try {
+                                val obj = org.json.JSONObject(metaJson)
+                                val name = obj.optString("fileName", "")
+                                if (name.isNotEmpty()) generatedFileNames.add(name)
+                                // Fix-读回验证：记录落盘的真实绝对路径，供最终存在性校验
+                                // （文件缺失或为空说明工具虽然报成功但实际没生成好，不应声称已发送）。
+                                val path = obj.optString("absolutePath", "")
+                                if (path.isNotEmpty()) generatedFilePaths.add(path)
+                            } catch (_: Throwable) {}
+                        }
+                    }
                     fileSignature?.let {
                         executedFileSignatures.add(it)
                         // Fix-DupFileGen③：按工具名累计成功次数，超限后下一轮拦截换名重生成。
@@ -1076,7 +1302,21 @@ object ToolCallInterceptor {
                         "如果已经全部完成，请用你自己的语气回复我，不要提及工具或搜索的过程。" +
                         "禁止在不确定的情况下声称所有操作都已完成。")
                 } else {
-                    append("请根据以上工具返回的信息，用你自己的语气回复我。不要提及工具或搜索的过程。")
+                    // Fix-门控盲区：anyToolSucceeded=true 时，明确告知 LLM 哪些文件已实际生成，
+                    // 禁止声称生成了未在结果中出现的文件。此前此分支只给中性指令
+                    // "用你自己的语气回复我"，LLM 没有准确信息，容易把"一个文件成功了"
+                    // 扩展为"所有文件都成功了"。
+                    if (anyToolSucceeded && succeededFileToolNames.isNotEmpty()) {
+                        append("以上工具已执行完毕。请根据以上实际返回的结果回复我。" +
+                            "重要：只能提及以上结果中实际存在的文件，不要声称生成了未在以上结果中出现的文件。" +
+                            "如果用户要求了多个文件但部分未生成，请如实说明哪些已生成、哪些还没做好。" +
+                            "在回复我之前，请先用 file_read 依次读取本次生成的文件，确认它们的内容" +
+                            "真实存在且与本次请求相符（是用户要求的那份正确内容），再组织语言回复我。" +
+                            "未读回确认内容前，不要向用户声称文件已发送；" +
+                            "文件读不到或内容与请求不符时，如实说明实际情况，不要说「已经发送」。")
+                    } else {
+                        append("请根据以上工具返回的信息，用你自己的语气回复我。不要提及工具或搜索的过程。")
+                    }
                 }
             }
 
@@ -1096,12 +1336,12 @@ object ToolCallInterceptor {
         if (round == maxRounds) {
             // 此分支是独立于主循环的第二套 Phase 1 实现，此前直接 send 没有 gate。
             val tailPendingCalls = mutableListOf<ToolCall>()
-            val tailGate = SentenceGate(anyToolSucceeded, tailPendingCalls)
+            val tailGate = SentenceGate(anyToolSucceeded, tailPendingCalls, userRequestText)
             try {
                 val parser = ToolParser()
                 // P0-5: 使用 chatStream() 保持一致
                 // B5-Fix5: 改用 chatStreamWithRetry，对流开始前的连接失败/429/5xx 自动重试
-                provider.chatStreamWithRetry(currentMessages, systemPrompt, config).collect { item ->
+                provider.chatStreamWithRetry(currentMessages, effectiveSystemPrompt, config).collect { item ->
                     if (item is ChatStreamItem.TextDelta) {
                         val result = parser.feed(item.text)
                         tailPendingCalls.addAll(result.detectedCalls)
@@ -1206,11 +1446,17 @@ object ToolCallInterceptor {
         val callerJob = currentCoroutineContext()[Job]
 
         // Fix-5：LLM 调用型工具使用更长超时，避免内部 LLM 往返导致 30s 超时误杀。
-        val effectiveTimeout = if (call.toolName in LLM_DEPENDENT_TOOLS) LLM_TOOL_TIMEOUT_MS else TOOL_TIMEOUT_MS
+        val effectiveTimeout = when {
+            call.toolName in LLM_DEPENDENT_TOOLS -> LLM_TOOL_TIMEOUT_MS
+            else -> TOOL_TIMEOUT_MS
+        }
 
         val result = withContext(Dispatchers.IO + NonCancellable) {
             val startTime = System.currentTimeMillis()
-            val timeoutLabel = if (call.toolName in LLM_DEPENDENT_TOOLS) "LLM" else "标准"
+            val timeoutLabel = when {
+                call.toolName in LLM_DEPENDENT_TOOLS -> "LLM"
+                else -> "标准"
+            }
             com.zaijian.zhoumuyun.util.AgentLog.info("ToolCall", "▶ ${call.toolName} 开始（${timeoutLabel}超时 ${effectiveTimeout / 1000}s）\n  params: ${sanitizeParams(call.params)}")
             try {
                 // Fix-StuckTimeout（竞速超时，根因：agent_log "pptx_gen 超时（90s，实际 210497ms）"）：
@@ -1242,10 +1488,20 @@ object ToolCallInterceptor {
                                     "ToolCall",
                                     "⚠ ${call.toolName} 超时后最终执行成功，按孤儿文件处理",
                                 )
-                                recoverOrphanedToolResult(late, activityContext)
+                                withContext(NonCancellable) {
+                                    recoverOrphanedToolResult(late, activityContext)
+                                }
                             }
-                        } catch (_: Throwable) {
-                            // 后台 watcher 只做补救，任何异常都不再影响主流程
+                        } catch (e: CancellationException) {
+                            // watcher 在 NonCancellable 作用域内，正常不应收到取消信号；
+                            // 防御性重抛，不吞 CancellationException（避免结构化并发语义被破坏）
+                            throw e
+                        } catch (e: Throwable) {
+                            // 后台 watcher 只做补救，非取消异常不再影响主流程，但需记日志
+                            com.zaijian.zhoumuyun.util.AgentLog.error(
+                                "ToolCall",
+                                "⚠ ${call.toolName} 超时后后台 watcher 异常: ${e.message}", e,
+                            )
                         }
                     }
                     ToolResult(
@@ -1255,26 +1511,30 @@ object ToolCallInterceptor {
                         error    = "timeout",
                     )
                 } else {
-                    raced.also { r ->
-                        val elapsed = System.currentTimeMillis() - startTime
-                        if (r.success) {
-                            // P2 修复：file_read/url_fetch 等工具的成功结果是完整文件/网页内容，
-                            // 原先 take(300) 会把前 300 字符写进可导出日志，现改为只记长度。
-                            val resultPreview = if (call.toolName in setOf("file_read", "url_fetch")) {
-                                "[内容长度: ${r.content.length}字符]"
-                            } else {
-                                r.content.take(300)
-                            }
-                            com.zaijian.zhoumuyun.util.AgentLog.info(
-                                "ToolCall",
-                                "✔ ${call.toolName} 成功（用时 ${elapsed}ms）\n  result: $resultPreview${if (r.tablePayloadJson != null) "\n  [附带 tablePayloadJson]" else ""}",
-                            )
+                    val elapsed = System.currentTimeMillis() - startTime
+                    if (raced.success) {
+                        // P2 修复：file_read/url_fetch 等工具的成功结果是完整文件/网页内容，
+                        // 原先 take(300) 会把前 300 字符写进可导出日志，现改为只记长度。
+                        val resultPreview = if (call.toolName in setOf("file_read", "url_fetch")) {
+                            "[内容长度: ${raced.content.length}字符]"
                         } else {
-                            com.zaijian.zhoumuyun.util.AgentLog.warn(
-                                "ToolCall",
-                                "⚠ ${call.toolName} 业务失败（用时 ${elapsed}ms）\n  error: ${r.error}",
-                            )
+                            raced.content.take(300)
                         }
+                        com.zaijian.zhoumuyun.util.AgentLog.info(
+                            "ToolCall",
+                            "✔ ${call.toolName} 成功（用时 ${elapsed}ms）\n  result: $resultPreview${if (raced.tablePayloadJson != null) "\n  [附带 tablePayloadJson]" else ""}",
+                        )
+                        // Fix-落盘验证（拦截层兜底）：
+                        // FileExportTool 自身已有验证，这里对全部文件类工具做第二层兜底。
+                        // 如果工具返回 success=true 但文件实际不存在或大小为0，改为返回
+                        // 失败结果，防止 LLM 拿着"成功"的假信号向用户谎报"已发送"。
+                        verifyFileProducingResult(raced, call.toolName)
+                    } else {
+                        com.zaijian.zhoumuyun.util.AgentLog.warn(
+                            "ToolCall",
+                            "⚠ ${call.toolName} 业务失败（用时 ${elapsed}ms）\n  error: ${raced.error}",
+                        )
+                        raced
                     }
                 }
             } catch (e: CancellationException) {
@@ -1317,13 +1577,22 @@ object ToolCallInterceptor {
         // 跑完，result 里的 metaJson（如果是文件类工具）是可信的。如果调用方
         // 早已被取消，正常的 send(StreamEvent.ToolDone(result)) 链路必然会在
         // 下一个挂起点被打断，这条结果永远不会被上层消费——这里做最后的兜底。
+        //
+        // Fix-孤儿文件竞态（根因修复：角色说发了但文件不落盘）：
+        // recoverOrphanedToolResult 内部调用 messageRepo.insert()（suspend 函数），
+        // 此前它在 NonCancellable 保护区外执行——当 callerJob 已取消时，
+        // insert 的挂起点会立即抛出 CancellationException，导致文件虽然已写入磁盘，
+        // 但元数据从未落库，用户永远看不到文件卡片。用 withContext(NonCancellable)
+        // 包裹恢复逻辑，确保元数据落库完成后再传播取消信号。
         if (callerJob?.isCancelled == true) {
             com.zaijian.zhoumuyun.util.AgentLog.warn(
                 "ToolCall",
                 "⚠ ${call.toolName} 执行完毕，但调用方在执行期间已被取消" +
                     "（新消息打断/切换角色/退出圆桌等）——正常投递链路已中断，尝试孤儿兜底",
             )
-            recoverOrphanedToolResult(result, activityContext)
+            withContext(NonCancellable) {
+                recoverOrphanedToolResult(result, activityContext)
+            }
             // 兜底完成后把取消信号正常传播出去，维持结构化并发语义——
             // NonCancellable 只是保护了"落盘/记录结果"这一步，不代表这次
             // 工具调用在整条回复流程里仍然算数。
@@ -1473,14 +1742,23 @@ object ToolCallInterceptor {
      * 反复出现的核心原因之一。
      * 修复：允许"已/已经"与动词之间有最多15字间隔；动词后接裸"了"也算完成态；
      * 新增"请查收"和"已...打包/发送"模式。
+     *
+     * 根因修复（方向1·正则过宽）：模式2原先含裸"做|弄"——这两个字加上"好/完/完成/了"
+     * 是极常见的中文完成态表达，跟文件毫无关系（"我确实这么做了"这类日常收尾语会被
+     * 误判为"疑似谎称文件已生成"，进而触发纠正提示把模型带偏去调用一个不相关的文件
+     * 生成工具）。裸"做|弄"已移出本正则，改由 [hasGenericVerbFileCompletionClaim]
+     * 单独处理——命中"做/弄+完成后缀"时还要求前后一段窗口内出现文件类关键词才算数，
+     * 判定入口统一收敛到 [looksLikeFalseFileCompletionClaim]。
+     * "生成|导出|发送|打包|压缩"这几个动词本身已经是文件语境的专有动词，误报率低，
+     * 不需要同样收窄。
      */
     private val FALSE_COMPLETION_CLAIM_REGEX = Regex(
         // 模式1：已/已经 +（最多15字间隔）+ 完成动词
         // 覆盖"已经为您生成了""已将文件发送给你了"等间隔表述
-        "已经?.{0,15}?(生成|导出|发送|发给你|做好|弄好|打包好|压缩好)|" +
+        "已经?.{0,15}?(生成|导出|发送|发给你|做好|弄好|打包好|压缩好|写好|搞好)|" +
         // 模式2：动词 + 完成后缀（好/完/完成/了）
-        // 原正则遗漏了"生成了""发送了"等裸"了"完成态
-        "(生成|导出|发送|做|弄|打包|压缩)(好|完|完成|了)|" +
+        // 原正则遗漏了"生成了""发送了"等裸"了"完成态；"做|弄"已移出，见上方 KDoc
+        "(生成|导出|发送|打包|压缩)(好|完|完成|了)|" +
         // 模式3：文件已 + 动词
         "文件已(生成|发|准备好|导出|发送)|" +
         // 模式4：已 +（最多15字间隔）+ 发送/打包完成
@@ -1491,11 +1769,214 @@ object ToolCallInterceptor {
         "请查收",
     )
 
-    private fun claimsFileCompletionWithoutToolCall(roundText: String, pendingCalls: List<ToolCall>): Boolean {
+    /**
+     * 方向1：裸"做/弄 + 完成后缀"单独判定——与上面正则的模式2不同，命中后还要求
+     * 前后一段窗口内出现文件类关键词才算数（窗口宽度和关键词来源直接复用
+     * [FILE_TYPE_KEYWORD_MAP]/[detectUngeneratedFileTypeClaims] 已验证过的同一套
+     * "关键词窗口"判定逻辑，避免同一件事在文件里存在两份不同标准的实现）。
+     *
+     * "表格我做好了""这个文档弄完了"这类确实指代文件的表述依然会被拦；
+     * "我确实这么做了""这事儿弄完了"这类跟文件无关的日常收尾语不再误判。
+     */
+    private val GENERIC_VERB_COMPLETION_REGEX = Regex("(做|弄|写|搞定|搞|完成|整理)(好|完|完成|了)")
+
+    /** 文件语境关键词窗口的判定半径（字符数），与 [detectUngeneratedFileTypeClaims] 保持一致。 */
+    private const val FILE_CONTEXT_WINDOW = 30
+
+    private fun hasGenericVerbFileCompletionClaim(
+        text: String,
+        userRequestText: String = "",
+    ): Boolean {
+        if (text.isBlank()) return false
+        val fileKeywords = FILE_TYPE_KEYWORD_MAP.keys + setOf("文件", "文档")
+        // 第 3 层防线：用户输入里提到过任何文件类型（"做个PPT"→pptx_gen）也算文件语境，
+        // 即使 agent 输出本身没有格式词（只回"写好了"），也能命中网关、点名工具。
+        val userRequestedFileTool = detectMentionedFileToolNames(userRequestText).isNotEmpty()
+        return GENERIC_VERB_COMPLETION_REGEX.findAll(text).any { match ->
+            val windowStart = (match.range.first - FILE_CONTEXT_WINDOW).coerceAtLeast(0)
+            val windowEnd = (match.range.last + 1 + FILE_CONTEXT_WINDOW).coerceAtMost(text.length)
+            val window = text.substring(windowStart, windowEnd)
+            fileKeywords.any { window.contains(it) } || userRequestedFileTool
+        }
+    }
+
+    /**
+     * 方向2：空头承诺判定的统一入口——所有"这段文字是不是在对用户谎称文件已生成/
+     * 发送"的判断都应该走这里，而不是各处直接调 FALSE_COMPLETION_CLAIM_REGEX。
+     *
+     * 根因修复（thinking 泄漏连累判定）：此前 gate 检测用的文本只在 ToolParser 里
+     * 剥掉了 `<tool:...>` 标签，没有剥掉 `[thinking:...]`——角色的内心独白也会被
+     * 拿去跑这条正则。日志里出现过 gate 截获的窗口文本直接就是
+     * "[thinking:（他问我和顾澜聊得怎么样了…"这种情况，思考内容和正文混在一起被
+     * 误判。本函数在跑正则前先用 [ChatTagParser.stripThinkingForAnalysis] 剥离
+     * thinking 标签（含流式过程中末尾可能残留的半截未闭合前缀），只用角色真正会
+     * 展示给用户的可见正文去判定。
+     *
+     * SentenceGate 的实时窗口检测和 round 级别的检测（claimsFileCompletionWithoutToolCall /
+     * previousFailedTools 分支）全部改走这一个入口，不再各自维护一份判断逻辑。
+     */
+    private fun looksLikeFalseFileCompletionClaim(
+        rawText: String,
+        userRequestText: String = "",
+    ): Boolean {
+        if (rawText.isBlank()) return false
+        val visibleText = ChatTagParser.stripThinkingForAnalysis(rawText)
+        if (visibleText.isBlank()) return false
+        return FALSE_COMPLETION_CLAIM_REGEX.containsMatchIn(visibleText) ||
+            hasGenericVerbFileCompletionClaim(visibleText, userRequestText)
+    }
+
+    private fun claimsFileCompletionWithoutToolCall(
+        roundText: String,
+        pendingCalls: List<ToolCall>,
+        userRequestText: String = "",
+    ): Boolean {
         if (pendingCalls.isNotEmpty()) return false
         if (roundText.isBlank()) return false
-        return FALSE_COMPLETION_CLAIM_REGEX.containsMatchIn(roundText)
+        return looksLikeFalseFileCompletionClaim(roundText, userRequestText)
     }
+
+    /**
+     * 方向3：检测本轮文字里是否明确提到了具体文件类型，用来决定"空头承诺"纠正提示
+     * 要不要点名具体工具。
+     *
+     * 背景：旧版纠正提示无条件写死"如 excel_gen/pptx_gen/pdf_export 等"，一旦上面的
+     * 判定本身是误判（窄化后的正则仍有漏网之鱼，或者这句话跟文件毫无关系），模型收到
+     * 这条提示后会被硬推去调用一个跟当前语境完全无关的文件生成工具——这正是"没要求
+     * 却收到文件"的根因之一。改为：先看本轮文字里到底提没提具体文件类型，提到了才
+     * 点名对应工具，没提到就用中性提示。
+     *
+     * 复用 [FILE_TYPE_KEYWORD_MAP]，与 [detectUngeneratedFileTypeClaims] 用同一份关键词
+     * 表，避免维护两份不同来源的"文件类型关键词"。
+     *
+     * @return 本轮文字中提到的文件类型对应的工具名集合（如 {"excel_gen", "pdf_export"}），
+     *   未提及任何文件类型关键词则为空集合。
+     */
+    private fun detectMentionedFileToolNames(
+        text: String,
+        userRequestText: String = "",
+    ): Set<String> {
+        if (text.isBlank() && userRequestText.isBlank()) return emptySet()
+        val tools = mutableSetOf<String>()
+        // 第 3 层防线：用户输入里的文件类型也参与判定（"做个PPT"→pptx_gen），
+        // 这样 agent 输出不带格式词时，点名工具依然能命中。
+        val combined = "$text\n$userRequestText"
+        for ((keyword, toolName) in FILE_TYPE_KEYWORD_MAP) {
+            if (combined.contains(keyword)) tools.add(toolName)
+        }
+        return tools
+    }
+
+    /**
+     * Fix-门控盲区：文件类型关键词 → 对应工具名的映射。
+     *
+     * 当 LLM 文本中出现这些关键词且声称已完成时，检查对应的工具是否在
+     * succeededFileToolNames 中。不在则说明 LLM 在虚假声明该文件类型已生成。
+     *
+     * 关键词选择原则：必须是该文件类型的专有名词，不会与其他工具的产物混淆。
+     * "文档"等通用词不纳入（file_export 的 .md/.txt 也是"文档"）。
+     */
+    private val FILE_TYPE_KEYWORD_MAP = mapOf(
+        // excel_gen 专属关键词
+        "Excel" to "excel_gen", "excel" to "excel_gen",
+        "表格" to "excel_gen", "xlsx" to "excel_gen", "电子表格" to "excel_gen",
+        // pptx_gen 专属关键词
+        "PPT" to "pptx_gen", "ppt" to "pptx_gen",
+        "幻灯片" to "pptx_gen", "pptx" to "pptx_gen", "演示文稿" to "pptx_gen",
+        // pdf_export 专属关键词
+        "PDF" to "pdf_export", "pdf" to "pdf_export",
+        // docx_gen 专属关键词（"文档"太通用不纳入）
+        "Word" to "docx_gen", "word" to "docx_gen", "docx" to "docx_gen",
+        // zip_export 专属关键词
+        "zip" to "zip_export", "ZIP" to "zip_export", "压缩包" to "zip_export",
+        // Fix-门控盲区补漏①：file_export（md/txt）此前完全没有关键词，是
+        // "md 全部没有在对话框出现、也没有落盘"这个反馈的直接根因之一——
+        // detectMentionedFileToolNames 点不出 file_export，空头承诺纠正提示
+        // 只能走中性话术（模型更容易借"跟文件无关"直接忽略）；
+        // detectUngeneratedFileTypeClaims 在 anyToolSucceeded=true 后也完全
+        // 检测不到"md/txt 其实没生成"这种虚假声明，连一句诚实的"还没做好"
+        // 兜底提示都不会追加。故意不收录裸词 "md"（中文聊天场景里 "md" 常被
+        // 当成"妈的"的拼音缩写，会大量误判普通吐槽为文件声明），改用更明确、
+        // 不含义歧义的复合词。
+        "markdown" to "file_export", "Markdown" to "file_export",
+        "md文件" to "file_export", "MD文件" to "file_export", ".md" to "file_export",
+        "md格式" to "file_export", "MD格式" to "file_export",
+        "txt文件" to "file_export", ".txt" to "file_export", "txt" to "file_export",
+        // Fix-门控盲区补漏②：html_gen 同样此前完全没有关键词，覆盖同一类问题
+        // （网页/HTML 场景下的空头承诺既点不了名，也测不出虚假声明）。
+        "HTML" to "html_gen", "html" to "html_gen", "网页" to "html_gen",
+    )
+
+    /**
+     * Fix-门控盲区：检测 LLM 文本中声称生成了但实际未执行的文件类型。
+     *
+     * 遍历 FILE_TYPE_KEYWORD_MAP，对每个关键词：
+     * 1. 文本中包含该关键词
+     * 2. 该关键词对应的工具不在 succeededFileToolNames 中
+     * 3. 文本中该关键词附近有完成态表述（已/已经/好/完/了等）
+     *
+     * 满足以上三条则判定为虚假声明，返回该文件类型的人类可读名称列表。
+     *
+     * @param text LLM 本轮输出的完整文本
+     * @param succeededFileToolNames 本次请求中已成功执行的文件类工具名集合
+     * @return 虚假声明的文件类型名称列表（如 ["Excel表格", "PDF"]），空列表表示无误报
+     */
+    private fun detectUngeneratedFileTypeClaims(
+        text: String,
+        succeededFileToolNames: Set<String>,
+        userRequestText: String = "",
+    ): List<String> {
+        if (text.isBlank() && userRequestText.isBlank()) return emptyList()
+        val claims = mutableListOf<String>()
+        val claimedTools = mutableSetOf<String>()
+        // 第 3 层防线：文件类型关键词来源并入用户输入——用户要求了某类型、
+        // anyToolSucceeded=true 但该工具未成功、agent 却声称完成 → 拦截。
+        val combined = "$text\n$userRequestText"
+        // 完成态表述只看 agent 输出（声明来自 agent），用户输入只提供文件类型关键词来源
+        val hasCompletionTone = text.contains(Regex("已|已经|好|完|了|发送|发给你|生成|导出|请查收"))
+
+        // 按文件类型分组检测，避免同一工具的多个关键词重复触发
+        // 例：文本含"Excel"和"表格"，只报告一次"Excel表格"
+        for ((keyword, toolName) in FILE_TYPE_KEYWORD_MAP) {
+            if (toolName in succeededFileToolNames) continue  // 该工具已成功，跳过
+            if (toolName in claimedTools) continue            // 已检测到该类型，跳过
+            if (combined.indexOf(keyword) < 0) continue
+            if (hasCompletionTone) {
+                claimedTools.add(toolName)
+                // 转为人类可读名称
+                val displayName = when (toolName) {
+                    "excel_gen" -> "Excel表格"
+                    "pptx_gen" -> "PPT幻灯片"
+                    "pdf_export" -> "PDF"
+                    "docx_gen" -> "Word文档"
+                    "zip_export" -> "压缩包"
+                    "file_export" -> "MD/TXT文件"
+                    "html_gen" -> "HTML网页"
+                    else -> keyword
+                }
+                if (displayName !in claims) claims.add(displayName)
+            }
+        }
+        return claims
+    }
+
+    /**
+     * Fix-读回验证：存在性校验辅助——确认本次声称已生成的文件确实落盘且非空。
+     *
+     * 工具执行返回 success 后，文件应已由 writeVaultStream 同步写入（返回的 metaJson
+     * 里带 absolutePath）。此函数用真实 absolutePath 做 `exists() && isFile &&
+     * length()>0` 校验，兜住"工具虽然报告成功、但文件实际缺失或为空"的罕见写失败，
+     * 避免 agent 借此向用户声称文件已发送。纯只读、无副作用，不触发任何强制读取。
+     *
+     * @return 缺失或为空的文件路径列表（非空表示存在性问题，空表示全部正常）
+     */
+    private fun verifyGeneratedFilesExist(paths: List<String>): List<String> =
+        paths.filterNot { p ->
+            p.isNotBlank() && runCatching {
+                val f = java.io.File(p)
+                f.exists() && f.isFile && f.length() > 0L
+            }.getOrDefault(false)
+        }
 
     /**
      * 方案 B（3.2 节）：调用工具轮次的纯文本篇幅统计——独立于 A 的 gate 逻辑，
@@ -1514,6 +1995,18 @@ object ToolCallInterceptor {
     }
 
     /**
+     * 方向3单元测试入口：[detectMentionedFileToolNames] 是本类的 private 成员，
+     * 测试文件位于 app/src/test，与本文件不同源码集，无法直接调用 private 函数，
+     * 这个 internal 方法是测试类访问它的唯一入口，本身不含任何断言逻辑——
+     * 断言全部下放到 [DetectMentionedFileToolNamesTest] 里各自独立的 @Test 方法。
+     */
+    internal fun testDetectMentionedFileToolNames(
+        text: String,
+        userRequestText: String = "",
+    ): Set<String> =
+        detectMentionedFileToolNames(text, userRequestText)
+
+    /**
      * 方案 A 单元测试入口：驱动一次完整的 SentenceGate 生命周期
      * （feed 各 delta → feedRemaining → flush），返回最终放行的拼接文本。
      *
@@ -1530,8 +2023,10 @@ object ToolCallInterceptor {
         anyToolSucceeded: Boolean,
         pendingCalls: List<ToolCall> = emptyList(),
         skipFinalGateCheck: Boolean = false,
+        userRequestText: String = "",
     ): String {
-        val gate = SentenceGate(anyToolSucceeded, pendingCalls.toMutableList())
+        // @param userRequestText 第 3 层防线：用户本轮实际请求文本（默认空串，兼容旧测试）
+        val gate = SentenceGate(anyToolSucceeded, pendingCalls.toMutableList(), userRequestText)
         val sent = StringBuilder()
         for (delta in deltas) { gate.feed(delta).forEach { sent.append(it) } }
         gate.feedRemaining().forEach { sent.append(it) }
@@ -1602,12 +2097,57 @@ object ToolCallInterceptor {
     )
 
     /**
+     * Fix-落盘验证（拦截层兜底）：
+     *
+     * 对文件类工具的成功结果做二次验证——解析 content 末尾的 metaJson，
+     * 取 absolutePath 检查文件是否真实存在于磁盘且大小 > 0。
+     *
+     * 验证失败时把 success=true 改为 success=false，让 LLM 收到"文件没有生成成功"
+     * 的明确信号，而不是拿着假成功继续向用户谎报"已发送"。
+     *
+     * 非文件类工具直接原样返回，不额外开销。
+     * 文件类工具但 content 里没有 metaJson（如 zip_export 可能返回纯文本提示）也原样返回。
+     */
+    private suspend fun verifyFileProducingResult(result: ToolResult, toolName: String): ToolResult {
+        if (toolName !in FILE_PRODUCING_TOOLS) return result
+        if (!result.success) return result
+        val metaJson = extractExportedFileJson(result.content) ?: return result
+        val absPath = try {
+            org.json.JSONObject(metaJson).optString("absolutePath", "")
+        } catch (_: Throwable) { "" }
+        if (absPath.isEmpty()) return result
+        val file = File(absPath)
+        if (!file.exists() || file.length() == 0L) {
+            com.zaijian.zhoumuyun.util.AgentLog.error(
+                "ToolCall",
+                "✗ ${toolName} 落盘验证失败：文件不存在或大小为0（path=$absPath），" +
+                    "将 success 改为 false 防止 LLM 谎报已发送",
+            )
+            return ToolResult(
+                toolName = toolName,
+                success  = false,
+                content  = "[${toolName} 文件落盘验证失败：文件不存在或大小为0]",
+                error    = "file_verification_failed",
+            )
+        }
+        return result
+    }
+
+    /**
      * Fix-DupFileGen③：同一请求内，同一个 file_producing 工具允许成功执行的最大次数。
      * 取 2 = 1 次正常生成 + 1 次容忍模型的修订重试；超过即视为"换名反复生成"而拦截。
      * 权衡：如需支持"一次合法生成多个同类文件"（如用户明确要 3 个 Excel），可调高此值，
      * 或改为按用户消息中显式声明的文件数动态放宽。
      */
     private val MAX_FILE_TOOL_SUCCESSES_PER_REQUEST = 2
+
+    /**
+     * Fix-ConsecutiveFailureBreaker：同一工具在本请求内允许"连续"失败的最大次数。
+     * 取 2 与 MAX_FILE_TOOL_SUCCESSES_PER_REQUEST 同源同款——给模型 2 次机会自行
+     * 根据错误信息调整参数重试，第 3 次仍失败判定为"这条路走不通"，拦截并强制换策略。
+     * 计数按 toolName 独立维护、成功即清零，不影响其他工具，也不跨请求持久化。
+     */
+    private val MAX_CONSECUTIVE_TOOL_FAILURES = 2
 
     /**
      * 为文件类工具调用生成去重签名；非文件类工具返回 null（不参与去重）。
@@ -1892,6 +2432,12 @@ object ToolCallInterceptor {
         startTime: Long,
     ) {
         if (activityContext == null) return
+        // Fix-日志补全：降级链事件此前只写 DB 不写 AgentLog，导出的 agent_log.txt 里
+        // 看不到"为何重试/换工具/放弃"，排查工具反复失败缺因果。补一行可导出日志。
+        com.zaijian.zhoumuyun.util.AgentLog.warn(
+            "ToolCall",
+            "🔄 降级事件 $eventType（${toolName}）：$note",
+        )
         try {
             AppContainer.instance.agentActivityRepo.recordEvent(
                 characterId    = activityContext.characterId,
@@ -1923,6 +2469,12 @@ object ToolCallInterceptor {
         attemptsExhausted: Int,
     ) {
         if (activityContext == null) return
+        // Fix-日志补全：终态"工具彻底失败"此前只写 memory 不写 AgentLog，导出日志
+        // 看不到最终放弃状态。补一行可导出日志，含尝试次数。
+        com.zaijian.zhoumuyun.util.AgentLog.warn(
+            "ToolCall",
+            "⛔ 工具 ${toolName} 降级后仍失败，已放弃（尝试 $attemptsExhausted 次）：$failureReason",
+        )
         try {
             AppContainer.instance.memoryEngine.onToolFailureExhausted(
                 characterId       = activityContext.characterId,

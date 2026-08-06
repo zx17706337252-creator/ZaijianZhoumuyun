@@ -78,6 +78,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.zaijian.zhoumuyun.data.model.CharacterConfig
 import com.zaijian.zhoumuyun.data.model.DefaultCharacters
 import com.zaijian.zhoumuyun.data.model.DefaultPresenceStates
@@ -85,6 +86,8 @@ import com.zaijian.zhoumuyun.data.model.FloorEnum
 import com.zaijian.zhoumuyun.data.model.StatusType
 import com.zaijian.zhoumuyun.data.model.accentLight
 import com.zaijian.zhoumuyun.ui.component.BreathingAvatar
+import com.zaijian.zhoumuyun.ui.design.GhostGoldButton
+import com.zaijian.zhoumuyun.ui.design.GoldPrimaryButton
 import com.zaijian.zhoumuyun.ui.design.WorldCard
 import com.zaijian.zhoumuyun.ui.theme.AppTheme
 import com.zaijian.zhoumuyun.ui.theme.AppColors
@@ -95,6 +98,7 @@ import com.zaijian.zhoumuyun.ui.theme.GlassOpacity
 import com.zaijian.zhoumuyun.ui.theme.Palette
 import com.zaijian.zhoumuyun.ui.theme.Radius
 import com.zaijian.zhoumuyun.ui.theme.RingWidth
+import com.zaijian.zhoumuyun.ui.theme.SerifSC
 import com.zaijian.zhoumuyun.ui.theme.Spacing
 import com.zaijian.zhoumuyun.ui.theme.ZaijianTheme
 import com.zaijian.zhoumuyun.util.ZLog
@@ -179,6 +183,23 @@ internal fun IdentityPanel(
             color = colors.textSecondary,
         )
 
+        // ═══════════════════════════════════════════════════════
+        // UI 升级 v2.0（帧23 人设四组分组）：长表单按
+        //   核心气质 / 深层肌理❦仅你可见 / 相处规则 / 称谓
+        // 四组重新组织，每组前加金色组标题。字段全部保留，仅重排顺序。
+        // 高级 System Prompt 折叠区置于四组之后。
+        // ═══════════════════════════════════════════════════════
+
+        // ── 第1组：核心气质 ─────────────────────────────────
+        Text(
+            text       = "核心气质",
+            style      = type.cardTitle.copy(fontSize = 15.sp),
+            fontFamily = SerifSC,
+            fontWeight = FontWeight.Bold,
+            color      = colors.accentDeep,
+            modifier   = Modifier.padding(top = 20.dp, bottom = 8.dp),
+        )
+
         // ── 性格核心 ─────────────────────────────────────────
         IdentityField(
             label       = "性格核心",
@@ -209,44 +230,15 @@ internal fun IdentityPanel(
             minLines    = 2,
         )
 
-        // ── 关于你（用户身份：性别 + 关系称谓）★ v1.36 问题3 ──────
-        // 修复"角色统一用她称呼用户"：此前提示词从未告知模型用户是谁，
-        // 这里让 世界书 按角色分别配置，未设置的角色仍会以默认"男性"注入。
-        Spacer(Modifier.height(Spacing.xs))
-        UserIdentitySection(
-            userGender            = state.userGender,
-            userRoleLabelPrivate  = state.userRoleLabelPrivate,
-            userRoleLabelPublic   = state.userRoleLabelPublic,
-            publicPrivacyReason   = state.publicPrivacyReason,
-            accentColor           = accentColor,
-            onUserGenderChange           = onUserGenderChange,
-            onUserRoleLabelPrivateChange = onUserRoleLabelPrivateChange,
-            onUserRoleLabelPublicChange  = onUserRoleLabelPublicChange,
-            onPublicPrivacyReasonChange  = onPublicPrivacyReasonChange,
+        // ── 第2组：深层肌理 ❦ 仅你可见 ──────────────────────
+        Text(
+            text       = "深层肌理 ❦ 仅你可见",
+            style      = type.cardTitle.copy(fontSize = 15.sp),
+            fontFamily = SerifSC,
+            fontWeight = FontWeight.Bold,
+            color      = colors.accentDeep,
+            modifier   = Modifier.padding(top = 20.dp, bottom = 8.dp),
         )
-
-        // ── 禁忌（Boundaries）★ Phase 15 ────────────────────
-        ListEditSection(
-            title       = "绝对不会做的事",
-            hint        = "每条一项，例如「不评价用户的选择」",
-            items       = state.boundaries,
-            accentColor = accentColor,
-            onAdd       = onAddBoundary,
-            onRemove    = onRemoveBoundary,
-            onUpdate    = onUpdateBoundary,
-        )
-
-        // ── 核心信念（CoreBeliefs）★ Phase 15 ──────────────
-        ListEditSection(
-            title       = "核心信念",
-            hint        = "每条一项，例如「陪伴是无声的力量」",
-            items       = state.coreBeliefs,
-            accentColor = accentColor,
-            onAdd       = onAddCoreBelief,
-            onRemove    = onRemoveCoreBelief,
-            onUpdate    = onUpdateCoreBelief,
-        )
-
         // ── 角色内核（Phase 1 zaijian）────────────────────────
         Spacer(Modifier.height(Spacing.sm))
         Text(
@@ -323,6 +315,37 @@ internal fun IdentityPanel(
         )
         Spacer(Modifier.height(Spacing.sm))
 
+        // ── 第3组：相处规则 ──────────────────────────────────
+        Text(
+            text       = "相处规则",
+            style      = type.cardTitle.copy(fontSize = 15.sp),
+            fontFamily = SerifSC,
+            fontWeight = FontWeight.Bold,
+            color      = colors.accentDeep,
+            modifier   = Modifier.padding(top = 20.dp, bottom = 8.dp),
+        )
+        // ── 禁忌（Boundaries）★ Phase 15 ────────────────────
+        ListEditSection(
+            title       = "绝对不会做的事",
+            hint        = "每条一项，例如「不评价用户的选择」",
+            items       = state.boundaries,
+            accentColor = accentColor,
+            onAdd       = onAddBoundary,
+            onRemove    = onRemoveBoundary,
+            onUpdate    = onUpdateBoundary,
+        )
+
+        // ── 核心信念（CoreBeliefs）★ Phase 15 ──────────────
+        ListEditSection(
+            title       = "核心信念",
+            hint        = "每条一项，例如「陪伴是无声的力量」",
+            items       = state.coreBeliefs,
+            accentColor = accentColor,
+            onAdd       = onAddCoreBelief,
+            onRemove    = onRemoveCoreBelief,
+            onUpdate    = onUpdateCoreBelief,
+        )
+
         // ── 附加（NyxChat V18 A.1/A.2）：喜恶 + 人际关系行为逻辑 ──
         Text(
             text     = "喜恶与人际（注入行为层，权重等同情境规则）",
@@ -365,9 +388,10 @@ internal fun IdentityPanel(
                 else     -> "笔记"
             }
             Spacer(Modifier.height(Spacing.xs))
-            androidx.compose.material3.TextButton(onClick = onUndoLastNoteEdit) {
-                Text("↩ 撤销上次对「$undoLabel」的修改", style = type.caption, color = colors.accent)
-            }
+            GhostGoldButton(
+                text    = "↩ 撤销上次对「$undoLabel」的修改",
+                onClick = onUndoLastNoteEdit,
+            )
         }
         IdentityField(
             label         = "人设备忘录",
@@ -397,6 +421,32 @@ internal fun IdentityPanel(
             accentColor   = accentColor,
             minLines      = 2,
             softLimit     = 400,
+        )
+        Spacer(Modifier.height(Spacing.sm))
+
+        // ── 第4组：称谓 ──────────────────────────────────────
+        Text(
+            text       = "称谓",
+            style      = type.cardTitle.copy(fontSize = 15.sp),
+            fontFamily = SerifSC,
+            fontWeight = FontWeight.Bold,
+            color      = colors.accentDeep,
+            modifier   = Modifier.padding(top = 20.dp, bottom = 8.dp),
+        )
+        // ── 关于你（用户身份：性别 + 关系称谓）★ v1.36 问题3 ──────
+        // 修复"角色统一用她称呼用户"：此前提示词从未告知模型用户是谁，
+        // 这里让 世界书 按角色分别配置，未设置的角色仍会以默认"男性"注入。
+        Spacer(Modifier.height(Spacing.xs))
+        UserIdentitySection(
+            userGender            = state.userGender,
+            userRoleLabelPrivate  = state.userRoleLabelPrivate,
+            userRoleLabelPublic   = state.userRoleLabelPublic,
+            publicPrivacyReason   = state.publicPrivacyReason,
+            accentColor           = accentColor,
+            onUserGenderChange           = onUserGenderChange,
+            onUserRoleLabelPrivateChange = onUserRoleLabelPrivateChange,
+            onUserRoleLabelPublicChange  = onUserRoleLabelPublicChange,
+            onPublicPrivacyReasonChange  = onPublicPrivacyReasonChange,
         )
         Spacer(Modifier.height(Spacing.sm))
 
@@ -437,19 +487,21 @@ internal fun IdentityPanel(
         }
 
         // ── 保存按钮 ─────────────────────────────────────────
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(Radius.sm))
-                .background(accentColor)
-                .clickable { onSave() }
-                .padding(vertical = 12.dp),
-            contentAlignment = Alignment.Center,
-        ) {
-            Text(
-                text  = if (state.isSaved) "已保存 ✓" else "保存人设",
-                style = type.button,
-                color = androidx.compose.ui.graphics.Color.White,
+        // UI 升级 v2.0：手写 Box+背景色平涂 → 统一改用按钮族（金色军规 §1：
+        // 金色一律走渐变，禁止纯色平涂）。未保存用 GoldPrimaryButton（每屏≤1
+        // 主按钮，高 46.dp）；已保存用 GhostGoldButton 低权重反馈。
+        if (state.isSaved) {
+            GhostGoldButton(
+                text     = "已保存 ✓",
+                onClick  = onSave,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        } else {
+            GoldPrimaryButton(
+                text     = "保存人设",
+                onClick  = onSave,
+                modifier = Modifier.fillMaxWidth(),
+                height   = 46.dp,
             )
         }
 

@@ -8,7 +8,10 @@ import com.zaijian.zhoumuyun.data.db.dao.WorkflowStepResultDao
 import com.zaijian.zhoumuyun.data.repository.WorkflowRepository
 import com.zaijian.zhoumuyun.util.ZLog
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.json.JSONObject
+import java.util.concurrent.ConcurrentHashMap
 
 data class CiCdParams(
     val filesJson: String,
@@ -41,7 +44,33 @@ object CiCdPipelineRunner {
     private fun jsonMeta(vararg pairs: Pair<String, Any?>): String =
         JSONObject().apply { pairs.forEach { (k, v) -> put(k, v) } }.toString()
 
+    // P1-14 修复：按 jobId 分片的互斥锁。续跑路径（进程重启后 WorkManager 重新拉起
+    // Worker，或 App 启动补偿与 Worker 并发）可能对同一 job 同时执行 run()，若不带锁，
+    // 两个并发执行流都可能因 `alreadyDone("build_apk")==false`（一个在触发 git 后、
+    // fallback 落库前的窗口内）而重复触发 GitHub Actions 编译——非幂等副作用重复。
+    // 用 per-job Mutex 串行化同一 job 的执行，杜绝并发双重执行。
+    private val jobLocks = ConcurrentHashMap<String, Mutex>()
+
+    /**
+     * P1-14 修复：持 per-job 锁执行流水线，串行化同一 job 的并发 resume。
+     * 实际逻辑在 [runLocked]。
+     */
     suspend fun run(
+        context: Context,
+        jobId: String,
+        params: CiCdParams,
+        githubConfigStore: GithubConfigDataStore,
+        db: AppDatabase,
+        workflowJobDao: WorkflowJobDao,
+        workflowStepResultDao: WorkflowStepResultDao,
+    ): CiCdResult {
+        val lock = jobLocks.getOrPut(jobId) { Mutex() }
+        return lock.withLock {
+            runLocked(context, jobId, params, githubConfigStore, db, workflowJobDao, workflowStepResultDao)
+        }
+    }
+
+    private suspend fun runLocked(
         context: Context,
         jobId: String,
         params: CiCdParams,

@@ -24,6 +24,7 @@ object Palette {
     val Cream      = Color(0xFFF5F0E8)
     val Parchment  = Color(0xFFFBF7F0)
     val Border     = Color(0xFFE0D4C0)
+    val BorderStrong = Color(0xFFC9B896)  // UI v2.0 融合方案令牌 --border-strong
     val AccentSoft = Color(0xFFF0E8D8)
 
     // 批次7 7-3修复：parchmentSurface 装饰色 token（原硬编码在 ZaijianModifiers.kt）
@@ -142,8 +143,8 @@ object Palette {
     // Splash 启动页亮色模式背景
     val SplashLightBg        = Color(0xFFEEE8DC)
     // World/公馆场景氛围叠层（夜晚加深 / 白天提亮）
-    val MansionNightOverlay  = Color(0x44000000)
-    val MansionDayOverlay    = Color(0x0AFFFFFF)
+    val MansionNightOverlay  = Color(0x45101422)  // UI v2.0 校准：冷蓝夜纱 rgba(16,20,34,.27)，HTML 帧04 要求冷蓝非纯黑
+    val MansionDayOverlay    = Color(0x2914100A)  // UI v2.0 校准：白天压暗 rgba(20,16,10,.16) 底色暖墨
 
     // ── 精修方案 v1.3 第3.2节：仪式性强调色 ──────────────────
     // 关系阶段「重要/核心」、记忆置顶等稀缺时刻专用，平时不出现，用满则对比强烈。
@@ -154,6 +155,9 @@ object Palette {
 
     // ── P3-55 修复：成长指标绿色，统一主题常量，替代散落各处的 Color(0xFF7BAE7F) ──
     val GrowthGreen = Color(0xFF7BAE7F)
+
+    // ── UI 升级 v2.0：竞赛挑战橙色，成长Tab三段式配色 ──
+    val CompetitionOrange = Color(0xFFE89B4A)
 
     // ── P2-41 修复：MoodType 蜡烛色 token（原硬编码在 WorldOSComponents.candleColor）──
     val MoodExcited    = Color(0xFFFF8A65)    // 暖橙，兴奋
@@ -171,6 +175,7 @@ data class AppColors(
     val bgCard: Color,
     val bgElevated: Color,
     val border: Color,
+    val borderStrong: Color,   // UI v2.0：chip/标签描边强化色 #C9B896
     val borderSubtle: Color,
     val textPrimary: Color,
     val textSecondary: Color,
@@ -206,6 +211,7 @@ val LightColors = AppColors(
     bgCard        = Palette.Parchment,
     bgElevated    = Palette.ParchmentGlow,
     border        = Palette.Border,
+    borderStrong  = Palette.BorderStrong,
     borderSubtle  = Palette.Border.copy(alpha = 0.6f),
     textPrimary   = Palette.Ink900,
     textSecondary = Palette.Ink600,
@@ -229,6 +235,7 @@ val DarkColors = AppColors(
     bgCard        = Palette.NightCard,
     bgElevated    = Palette.NightElevated,
     border        = Palette.NightBorder,
+    borderStrong  = Palette.BorderStrong.copy(alpha = 0.7f),
     borderSubtle  = Palette.BorderSubtleDark,
     textPrimary   = Palette.NightText,
     textSecondary = Palette.NightTextSub,

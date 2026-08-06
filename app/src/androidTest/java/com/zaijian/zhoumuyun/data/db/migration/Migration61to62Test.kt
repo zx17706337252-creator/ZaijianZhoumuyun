@@ -217,6 +217,14 @@ class Migration61to62Test {
         MIGRATION_59_60.migrate(db)
         MIGRATION_60_61.migrate(db)
 
+        // 58.json 反映的是 entity 期望终态，自带 index_relationship_states_fromId_toId
+        // 唯一索引；但真实迁移历史上这个索引在 v47 被删、到 v62 才由 MIGRATION_61_62
+        // 重新补建（见 Migration61to62.kt 注释）。v58→v61 期间这个唯一约束不应存在，
+        // 否则下面插入 (charA,charB) 重复行这一步会在 INSERT 阶段就违反约束，测试
+        // 走不到"验证 MIGRATION_61_62 去重逻辑"这一步。与 testMigration61to62RecreatesDroppedIndexes
+        // 同款处理：先 DROP 掉这个索引，模拟"迁移链尚未补建索引"的真实历史状态。
+        db.execSQL("DROP INDEX IF EXISTS `index_relationship_states_fromId_toId`")
+
         // 插入测试数据（58.json 的 createSql 不含 DEFAULT 子句，所有 NOT NULL 列
         // 必须显式提供值；isInterCharacter 是 INTEGER，Boolean 存为 0/1）：
         // - (charA→charB) 2行重复，updatedAt 分别为 100、200，应保留 updatedAt=200 的行

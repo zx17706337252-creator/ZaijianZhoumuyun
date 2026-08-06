@@ -72,18 +72,21 @@ val DefaultTypography = AppTypography(
         letterSpacing = (-0.2).sp,
     ),
     body = TextStyle(
+        fontFamily = SansSC,
         fontWeight = FontWeight.Normal,
         fontSize = 14.sp,
         lineHeight = (14 * 1.6).sp,
         letterSpacing = 0.sp,
     ),
     caption = TextStyle(
+        fontFamily = SansSC,
         fontWeight = FontWeight.Normal,
         fontSize = 13.sp,
         lineHeight = (13 * 1.5).sp,
         letterSpacing = 0.sp,
     ),
     label = TextStyle(
+        fontFamily = SansSC,
         fontWeight = FontWeight.Normal,
         fontSize = 11.sp,
         lineHeight = (11 * 1.4).sp,
@@ -97,18 +100,21 @@ val DefaultTypography = AppTypography(
         letterSpacing = 0.sp,
     ),
     button = TextStyle(
+        fontFamily = SansSC,
         fontWeight = FontWeight.Medium,
         fontSize = 14.sp,
         lineHeight = 20.sp,
         letterSpacing = 0.1.sp,
     ),
     presence = TextStyle(
+        fontFamily = SansSC,
         fontWeight = FontWeight.Normal,
         fontSize = 13.sp,
         lineHeight = (13 * 1.5).sp,
         letterSpacing = 0.sp,
     ),
     bodyBold = TextStyle(
+        fontFamily = SansSC,
         fontWeight = FontWeight.Bold,
         fontSize = 14.sp,
         lineHeight = (14 * 1.6).sp,

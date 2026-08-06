@@ -116,6 +116,7 @@ enum class BotGenerationStatus {
     WAITING,      // 等待前序 Bot 完成
     GENERATING,   // 正在生成
     DONE,         // 本轮已完成
+    INTERRUPTED,  // 生成中被打断（用户中断/不想听时，回复不完整，v10 裁定补上的终态）
     IDLE,         // 本轮不发言
 }
 
@@ -269,6 +270,13 @@ class RoundtableViewModel(app: Application) : AndroidViewModel(app) {
     // 直接持有 AppContainer.instance.agentActivityRepo，现收敛到 ViewModel。
     private val agentActivityRepo get() = container.agentActivityRepo
     private var currentRoundtableId: String? = null
+    /**
+     * P1-2 修复：setMembers 的异步加载代际计数器。setMembers 在 viewModelScope.launch
+     * 里做挂起解析（resolveCharacterConfig / loadPersistedMessages），若用户快速切换
+     * 圆桌成员，两个协程会并发。代际计数器保证「后发请求」获胜——旧请求在挂起恢复后
+     * 若发现自己的代际已过期，直接放弃，不覆盖新请求的成员/消息/currentRoundtableId。
+     */
+    private var memberRoundtableGeneration = 0
 
     // ── 圆桌背景图 ────────────────────────────────────────────
     private val chatBgStore = com.zaijian.zhoumuyun.data.datastore.ChatBackgroundDataStore(app)
@@ -306,6 +314,7 @@ class RoundtableViewModel(app: Application) : AndroidViewModel(app) {
         roundtableMessageDao    = roundtableMessageDao,
         eventRepo               = eventRepo,
         skillRepo               = skillRepo,
+        agentActivityRepo       = agentActivityRepo,
         getCurrentRoundtableId  = { currentRoundtableId },
         isInterruptedRef        = { isInterrupted },
         viewModelScope          = viewModelScope,
@@ -350,6 +359,8 @@ class RoundtableViewModel(app: Application) : AndroidViewModel(app) {
         getCurrentRoundtableId = { currentRoundtableId },
         getIdleWatchJob       = { idleWatchJob },
         setIdleWatchJob       = { idleWatchJob = it },
+        // P1-4 修复：注入中断标记，让自发发言响应 interrupt()。
+        isInterruptedRef      = { isInterrupted },
         SPONTANEOUS_IDLE_MS   = SPONTANEOUS_IDLE_MS,
         REPLY_TIMEOUT_MS      = REPLY_TIMEOUT_MS,
     )
@@ -423,6 +434,13 @@ class RoundtableViewModel(app: Application) : AndroidViewModel(app) {
         agentActivityRepo.observeTimelineForCharacters(characterIds)
 
     fun setMembers(characterIds: List<Int>) {
+        // P1-2 修复：递增代际，让本次请求成为「最新请求」。
+        val generation = ++memberRoundtableGeneration
+        // P1-12 修复：roundtableId 的计算提前到 mothers/daughters 解析之前——
+        // 原实现里 newRoundtableId 直到下面 463 行才算出，但 blockedMemberIds/
+        // extraDaughterMembers 的 _uiState.update 在那之前就已经无条件重置了，
+        // 导致恢复持久化设置时机上不可能拿到 key。提前计算，供下面恢复用。
+        val newRoundtableId = characterIds.sorted().joinToString("_")
         viewModelScope.launch {
             val mothers   = mutableListOf<CharacterConfig>()
             val daughters = mutableListOf<CharacterConfig>()
@@ -438,22 +456,91 @@ class RoundtableViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 if (id >= 1000) daughters.add(cfg) else mothers.add(cfg)
             }
+            // 挂起解析期间若已有更新的 setMembers 请求，放弃本次，避免旧结果覆盖新角色。
+            if (generation != memberRoundtableGeneration) return@launch
+
+            // P1-12 修复：blockedMemberIds/extraDaughterMembers 原先是纯内存
+            // _uiState，每次 setMembers（如离开圆桌再进入）都被无条件重置——
+            // blockedMemberIds 恒置空集，extraDaughterMembers 恒只从导航参数
+            // characterIds 重建（拉入的女儿因为不在 characterIds 里直接丢失）。
+            // 现在改为：先从本圆桌（按 newRoundtableId 归属）持久化的设置里恢复，
+            // 而不是重置为空。extraDaughterMembers 额外与本次解析出的 daughters
+            // 去重合并，避免同一女儿在导航参数和持久化记录里各出现一次。
+            val restoredBlockedIds = loadBlockedMemberIds(newRoundtableId)
+            val restoredExtraDaughterIds = loadExtraDaughterIds(newRoundtableId)
+                .filter { it !in daughters.map { d -> d.id } }
+            val restoredDaughterConfigs = restoredExtraDaughterIds.mapNotNull { id ->
+                resolveCharacterConfig(id)
+            }
+            if (generation != memberRoundtableGeneration) return@launch
+
             _uiState.update {
                 it.copy(
                     allMotherMembers     = mothers.toImmutableList(),
-                    extraDaughterMembers = daughters.toImmutableList(),
-                    blockedMemberIds     = persistentSetOf(),
+                    extraDaughterMembers = (daughters + restoredDaughterConfigs).toImmutableList(),
+                    blockedMemberIds     = restoredBlockedIds.toImmutableSet(),
                     memberLoadErrors     = failedIds.toImmutableList(),
                 )
             }
-            val newRoundtableId = characterIds.sorted().joinToString("_")
+            if (generation != memberRoundtableGeneration) return@launch
             if (newRoundtableId != currentRoundtableId) {
                 currentRoundtableId = newRoundtableId
-                loadPersistedMessages(newRoundtableId)
+                loadPersistedMessages(newRoundtableId, generation)
             }
-            refreshAvailableDaughters()
+            refreshAvailableDaughtersIfLatest(generation)
+            if (generation != memberRoundtableGeneration) return@launch
             applyAvatarOverridesOnce()
         }
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  P1-12 修复：圆桌成员设置持久化（屏蔽成员 / 拉入的女儿）
+    //  按 roundtableId 分 key 存进已有的 "roundtable_settings" prefs，
+    //  与 schedule_mode/spontaneous_enabled 用同一份 SharedPreferences，
+    //  不引入新的持久化机制。值为逗号分隔的 characterId 列表。
+    // ──────────────────────────────────────────────────────────
+
+    private fun blockedMemberIdsKey(roundtableId: String) = "blocked_members_$roundtableId"
+    private fun extraDaughterIdsKey(roundtableId: String) = "extra_daughters_$roundtableId"
+
+    private fun loadBlockedMemberIds(roundtableId: String): Set<Int> =
+        prefs.getString(blockedMemberIdsKey(roundtableId), null)
+            ?.split(",")
+            ?.mapNotNull { it.toIntOrNull() }
+            ?.toSet()
+            ?: emptySet()
+
+    private fun loadExtraDaughterIds(roundtableId: String): List<Int> =
+        prefs.getString(extraDaughterIdsKey(roundtableId), null)
+            ?.split(",")
+            ?.mapNotNull { it.toIntOrNull() }
+            ?: emptyList()
+
+    private fun persistBlockedMemberIds(ids: Set<Int>) {
+        val roundtableId = currentRoundtableId ?: return
+        prefs.edit().putString(blockedMemberIdsKey(roundtableId), ids.joinToString(",")).apply()
+    }
+
+    private fun persistExtraDaughterIds(ids: List<Int>) {
+        val roundtableId = currentRoundtableId ?: return
+        prefs.edit().putString(extraDaughterIdsKey(roundtableId), ids.joinToString(",")).apply()
+    }
+
+    /** P1-2 修复：仅当代际仍最新时才刷新女儿候选池，避免陈旧请求覆盖其列表。 */
+    private suspend fun refreshAvailableDaughtersIfLatest(generation: Int) {
+        val ids = daughterCharacterRepo.getAllDaughterCharacterIds()
+        if (generation != memberRoundtableGeneration) return
+        val configs = ids.mapNotNull { id ->
+            try {
+                daughterCharacterRepo.getCharacterConfig(id)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                ZLog.w("RoundtableViewModel", "拉入候选女儿 $id 解析失败，跳过", e)
+                null
+            }
+        }
+        _uiState.update { it.copy(availableDaughterMembers = configs.toImmutableList()) }
     }
 
     private suspend fun applyAvatarOverridesOnce() {
@@ -496,11 +583,33 @@ class RoundtableViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private suspend fun loadPersistedMessages(roundtableId: String) {
+    /**
+     * P1-11 修复：原实现只在调用前（setMembers 里 464/470 行）做过代际校验，
+     * 但本函数内部 `withContext(Dispatchers.IO)` 挂起读 DB 期间，若用户快速
+     * 切换到另一个圆桌，挂起恢复后这两处 `_uiState.update` 此前没有再次校验
+     * 代际——旧圆桌（A）的历史消息可能在新圆桌（B）已经成为 currentRoundtableId
+     * 之后才落地，把 B 的界面覆盖成 A 的历史消息（串台）。
+     * 现在两处 update 前都补上 `generation != memberRoundtableGeneration` 校验，
+     * 若挂起期间已有更新的 setMembers 调用发生，直接放弃本次结果，不覆盖 UI。
+     */
+    private suspend fun loadPersistedMessages(roundtableId: String, generation: Int) {
         val persisted = withContext(Dispatchers.IO) {
             roundtableMessageDao.getByRoundtable(roundtableId)
         }
-        if (persisted.isEmpty()) return
+        if (generation != memberRoundtableGeneration) return
+        if (persisted.isEmpty()) {
+            // P1-1 修复：无历史消息的新圆桌也必须清空上一圆桌的残留消息，
+            // 否则切换到一个从没聊过的新圆桌时，界面仍显示上一个圆桌的完整对话
+            // （串台），且用户下一条消息会被追加到这份陈旧历史里。
+            _uiState.update {
+                it.copy(
+                    messages          = persistentListOf(),
+                    turnIndex         = 0,
+                    lastRoundSpeakers = persistentSetOf(),
+                )
+            }
+            return
+        }
         val messages = persisted.map { e ->
             RoundtableMessage(
                 id              = e.id,
@@ -534,6 +643,7 @@ class RoundtableViewModel(app: Application) : AndroidViewModel(app) {
             .filter { it.turnIndex == maxTurn && it.speakerId != "user" }
             .mapNotNull { it.speakerId.toIntOrNull() }
             .toSet()
+        if (generation != memberRoundtableGeneration) return
         _uiState.update {
             it.copy(
                 messages          = messages.toImmutableList(),
@@ -560,10 +670,14 @@ class RoundtableViewModel(app: Application) : AndroidViewModel(app) {
 
     fun blockMember(characterId: Int) {
         _uiState.update { it.copy(blockedMemberIds = (it.blockedMemberIds + characterId).toImmutableSet()) }
+        // P1-12 修复：持久化，退出圆桌再进入时能恢复屏蔽状态。
+        persistBlockedMemberIds(_uiState.value.blockedMemberIds)
     }
 
     fun unblockMember(characterId: Int) {
         _uiState.update { it.copy(blockedMemberIds = (it.blockedMemberIds - characterId).toImmutableSet()) }
+        // P1-12 修复：同上，持久化取消屏蔽后的结果。
+        persistBlockedMemberIds(_uiState.value.blockedMemberIds)
     }
 
     fun addDaughter(characterId: Int) {
@@ -572,6 +686,8 @@ class RoundtableViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val cfg = resolveCharacterConfig(characterId) ?: return@launch
             _uiState.update { it.copy(extraDaughterMembers = (it.extraDaughterMembers + cfg).toImmutableList()) }
+            // P1-12 修复：持久化拉入的女儿，退出圆桌再进入时不再丢失。
+            persistExtraDaughterIds(_uiState.value.extraDaughterMembers.map { it.id })
         }
     }
 
@@ -579,6 +695,8 @@ class RoundtableViewModel(app: Application) : AndroidViewModel(app) {
         _uiState.update {
             it.copy(extraDaughterMembers = it.extraDaughterMembers.filter { m -> m.id != characterId }.toImmutableList())
         }
+        // P1-12 修复：持久化移除结果。
+        persistExtraDaughterIds(_uiState.value.extraDaughterMembers.map { it.id })
     }
 
     fun setScheduleMode(mode: ScheduleMode) {

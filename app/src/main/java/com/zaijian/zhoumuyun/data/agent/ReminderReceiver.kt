@@ -40,6 +40,14 @@ class ReminderReceiver : BroadcastReceiver() {
         val reqId       = intent.getIntExtra("reminder_id", 0)
         val characterId = intent.getIntExtra("character_id", -1)
 
+        // P2-2-1 修复：提醒已触发即为"消费掉"，删除对应持久化文件，避免 filesDir/reminders/
+        // 无限增长。scheduleAlarm() 现在把真实 Long id（= 文件名）放进 reminder_id_long；
+        // 旧版本提醒（无此 extra）取默认 -1，跳过删除，后续由 BootReceiver 清扫兜底。
+        val reminderId = intent.getLongExtra("reminder_id_long", -1L)
+        if (reminderId > 0) {
+            java.io.File(context.filesDir, "reminders/${reminderId}.json").delete()
+        }
+
         // D-2 fix: 渠道已由 ZaijianApp.setupNotificationChannels() 在 onCreate() 统一创建，此处无需重复注册
 
         val builder = NotificationCompat.Builder(context, CHANNEL_ID)

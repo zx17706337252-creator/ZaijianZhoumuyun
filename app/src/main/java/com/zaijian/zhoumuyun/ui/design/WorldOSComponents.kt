@@ -1,6 +1,7 @@
 package com.zaijian.zhoumuyun.ui.design
 
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -33,6 +34,10 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -115,6 +120,11 @@ fun WorldCard(
     // 且 ownerAccent != null 时生效，模拟纸面渗染质感（双层不同扩散半径叠加），
     // 而不是单层平铺色块。目前只有 BriefingCharacterCard 打开这个开关。
     accentWash: Boolean = false,
+    // UI 升级 v2.0（帧20 我的页九宫格）：晕染圆心可配置，用"相对宽高的分数"表示
+    // （drawBehind 里已有 size，可直接乘）。默认 null = 右上角 `(1f, 0f)`（熔合规则
+    // §9 光源右上）。仅我的页九宫格传 `Offset(0.5f, 0f)` 顶部居中（HTML 帧20 要求
+    // `radial-gradient(... at 50% 0%)`）。其他 ~14 处 WorldCard 调用点不传，行为不变。
+    washCenterFraction: Offset? = null,
     // UI 升级 v2.0（融合方案 §4.2 L4 仪式层）：火漆刻字角标。
     // 传一个字（如 "珍"/"念"/"期"/"隙"/"缔"）即在右上角压一枚火漆印
     // （WaxSealBadge，径向高光三档 + 内圈刻痕 + 随机感微旋转）。
@@ -127,11 +137,13 @@ fun WorldCard(
     val isDark = colors.isDark
 
     // L1 光斑参数：light/dark 分别给值，不是同一套数值换皮肤（精修方案 v1.3 第1节结论）
-    val l1Alpha = if (isDark) 0.18f else 0.06f
+    // 视觉浓度增强：浅色光斑 0.06→0.09，让卡片左上角光感更明显
+    val l1Alpha = if (isDark) 0.22f else 0.09f
     val l1Color = if (isDark) colors.accent else Color.White
 
     // L2 黄铜描边透明度：浅色模式需要更高不透明度而非更深颜色（线条对比度低的补偿）
-    val l2Alpha = if (isDark) 0.22f else 0.35f
+    // 视觉浓度增强：浅色 0.35→0.45，配合 1.5dp 描边让金线更醒目
+    val l2Alpha = if (isDark) 0.28f else 0.45f
 
     // 阴影：精修方案 v1.3 第69行字面写"L2取代box-shadow"，但第259行又给了具体数值，
     // 两处矛盾。已用 v1.2 视觉预览 HTML（Zaijian_视觉精修预览_v1_2_双主题.html）核实：
@@ -145,9 +157,10 @@ fun WorldCard(
     // Compose 没有原生 box-shadow，且项目未确认 Compose BOM 版本是否支持新版
     // Modifier.dropShadow，这里用「叠一层做了模糊近似的半透明 Box，向下偏移」手动模拟，
     // 兼容所有 Compose 版本，不引入新 API 依赖。
-    val shadowColor   = if (isDark) Color.Black.copy(alpha = 0.55f) else Palette.Ink900.copy(alpha = 0.16f) // 批次7 7-1修复：裸色值 Color(0xFF2C2118) 改为引用 Palette.Ink900
-    val shadowOffsetY = if (isDark) 14.dp else 6.dp
-    val shadowBlur    = if (isDark) 30.dp else 16.dp
+    // 视觉浓度增强：阴影 alpha 上调、偏移和模糊加大，让卡片悬浮感更明显
+    val shadowColor   = if (isDark) Color.Black.copy(alpha = 0.62f) else Palette.Ink900.copy(alpha = 0.20f)
+    val shadowOffsetY = if (isDark) 18.dp else 8.dp
+    val shadowBlur    = if (isDark) 38.dp else 22.dp
 
     Box(
         modifier = modifier
@@ -157,7 +170,8 @@ fun WorldCard(
             // 模糊用 graphicsLayer + renderEffect 较新 API 风险大，这里改用更朴素的方式：
             // 画多层逐渐淡出的圆角矩形叠加，模拟模糊扩散的视觉效果，兼容所有 Compose 版本。
             .drawBehind {
-                val layers = 6
+                // 视觉浓度增强：阴影层数 6→8，扩散更柔和、层次更丰富
+                val layers = 8
                 for (i in layers downTo 1) {
                     val t = i.toFloat() / layers
                     val expand = shadowBlur.toPx() * t
@@ -198,9 +212,13 @@ fun WorldCard(
             .then(
                 if (accentWash && ownerAccent != null) {
                     Modifier.drawBehind {
-                        val corner = Offset(size.width, 0f)
-                        val washAlphaOuter = if (isDark) 0.16f else 0.10f
-                        val washAlphaInner = if (isDark) 0.10f else 0.06f
+                        val corner = Offset(
+                            size.width * (washCenterFraction?.x ?: 1f),
+                            size.height * (washCenterFraction?.y ?: 0f),
+                        )
+                        // 视觉浓度增强：accentWash alpha 上调，角色色晕染更明显
+                        val washAlphaOuter = if (isDark) 0.22f else 0.16f
+                        val washAlphaInner = if (isDark) 0.14f else 0.10f
                         drawRoundRect(
                             brush = Brush.radialGradient(
                                 colors = listOf(
@@ -233,7 +251,7 @@ fun WorldCard(
             // 两端亮、中段收敛，视线自然落在卡的左上。Compose 原生支持
             // Brush border，零新增依赖。暗色模式整体降 alpha（AppBrushes 内处理）。
             .border(
-                width = 1.dp,
+                width = 1.5.dp,
                 brush = AppBrushes.cardBorderGradient(isDark),
                 shape = RoundedCornerShape(cornerRadius),
             )
@@ -477,7 +495,8 @@ enum class AvatarRowFloor { SECOND, FIRST, BASEMENT }
 /**
  * 九个头像等分一行，按楼层分 3-3-3 组，组间距约为组内距的 1.5 倍，
  * 不加文字标签、不加分割线，仅靠间距疏密体现"三组人"（精修方案 v1.3 第5.5节）。
- * 选中态描边色取该角色 accentColor，而非统一金色。
+ * 选中态描边色默认取该角色 accentColor；若传入 selectedBorder（Brush）则改用
+ * 该渐变笔刷——UI 升级 v2.0 帧13 全局日程页用黄铜金环替代角色色单色边框。
  */
 @Composable
 fun AdaptiveAvatarRow(
@@ -486,6 +505,7 @@ fun AdaptiveAvatarRow(
     onSelect: (Int) -> Unit,
     modifier: Modifier = Modifier,
     avatarSize: Dp = AvatarSize.shelf,
+    selectedBorder: Brush? = null,
 ) {
     val grouped = items.groupBy { it.floor }
     val itemSpacing = Spacing.sm
@@ -512,8 +532,14 @@ fun AdaptiveAvatarRow(
                         modifier = Modifier
                             .clip(CircleShape)
                             .then(
-                                if (isSelected) Modifier.border(2.dp, item.accentColor, CircleShape)
-                                else Modifier
+                                if (isSelected) {
+                                    // UI 升级 v2.0 帧13：selectedBorder 传入时用黄铜渐变金环
+                                    if (selectedBorder != null) {
+                                        Modifier.border(2.dp, selectedBorder, CircleShape)
+                                    } else {
+                                        Modifier.border(2.dp, item.accentColor, CircleShape)
+                                    }
+                                } else Modifier
                             )
                             .clickable { onSelect(item.id) }
                     ) {
@@ -1184,4 +1210,266 @@ fun BrassBadge(
             modifier = Modifier.size(size * 0.47f),
         )
     }
+}
+
+
+// ═════════════════════════════════════════════════════════════
+//  VaultCard — 馆藏收藏卡（融合方案 §3.2 第10项，仅记忆/收藏场景）
+//
+//  外金内白双层描边 + 拱形卡头 + 115° 静态微光。
+//  与 WorldCard 的区别：VaultCard 是"被收藏的文物"专用底座，
+//  仪式感更强（双层金描边 + 拱形头 + 静态斜光），仅用于记忆置顶、
+//  家族珍藏等少数收藏语义场景，不替代 WorldCard 做日常卡片。
+// ═════════════════════════════════════════════════════════════
+
+/**
+ * 馆藏收藏卡：外金描边 + 内白描边 + 拱形卡头 + 静态微光。
+ *
+ * @param headerContent 拱形卡头内容（如角色色渐变 + 标题），高 64dp，拱形圆角
+ * @param bodyContent   卡身内容
+ * @param ownerAccent   角色色，用于卡头渐变与水彩晕染
+ * @param waxChar       火漆刻字（如"珍"），右上角压印
+ * @param modifier      布局修饰符
+ */
+@Composable
+fun VaultCard(
+    headerContent: @Composable () -> Unit,
+    bodyContent: @Composable () -> Unit,
+    modifier: Modifier = Modifier,
+    ownerAccent: Color? = null,
+    waxChar: String? = null,
+) {
+    val colors = ZaijianTheme.colors
+    val isDark = colors.isDark
+
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(Radius.sm))
+            // 外层金描边
+            .border(1.dp, Palette.Gold.copy(alpha = if (isDark) 0.6f else 0.7f), RoundedCornerShape(Radius.sm))
+            .background(colors.bgCard)
+            // 阴影
+            .drawBehind {
+                val layers = 5
+                val shadowColor = if (isDark) Color.Black.copy(alpha = 0.4f) else Palette.Ink900.copy(alpha = 0.10f)
+                for (i in layers downTo 1) {
+                    val t = i.toFloat() / layers
+                    val expand = 14.dp.toPx() * t
+                    drawRoundRect(
+                        color = shadowColor.copy(alpha = shadowColor.alpha * (1f - t) * 0.5f),
+                        topLeft = Offset(-expand / 2f, 7.dp.toPx() - expand / 2f),
+                        size = Size(size.width + expand, size.height + expand),
+                        cornerRadius = CornerRadius(Radius.sm.toPx() + expand / 2f),
+                    )
+                }
+            },
+    ) {
+        Column {
+            // 拱形卡头：44px 拱形圆角，角色色渐变底 + 静态 115° 微光
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(64.dp)
+                    .padding(5.dp)
+                    .clip(RoundedCornerShape(topStart = 39.dp, topEnd = 39.dp, bottomStart = 2.dp, bottomEnd = 2.dp))
+                    .background(
+                        if (ownerAccent != null) {
+                            Brush.linearGradient(
+                                colors = listOf(ownerAccent.brighten(0.15f), ownerAccent.copy(alpha = 0.85f)),
+                                start = Offset.Zero,
+                                end = Offset.Infinite,
+                            )
+                        } else {
+                            AppBrushes.goldGradient()
+                        }
+                    )
+                    // 静态 115° 微光斜带
+                    .drawBehind {
+                        val w = size.width
+                        drawRect(
+                            brush = Brush.linearGradient(
+                                colors = listOf(
+                                    Color.Transparent,
+                                    Color.White.copy(alpha = if (isDark) 0.10f else 0.22f),
+                                    Color.Transparent,
+                                ),
+                                start = Offset(w * 0.15f, 0f),
+                                end = Offset(w * 0.55f, size.height),
+                            ),
+                        )
+                    },
+                contentAlignment = Alignment.BottomStart,
+            ) {
+                Box(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                    headerContent()
+                }
+            }
+            // 卡身
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 5.dp, vertical = 5.dp)
+                    .clip(RoundedCornerShape(bottomStart = 7.dp, bottomEnd = 7.dp, topStart = 2.dp, topEnd = 2.dp))
+                    .border(0.5.dp, Palette.Gold.copy(alpha = 0.22f), RoundedCornerShape(7.dp))
+                    .background(colors.bgCard)
+                    .padding(14.dp),
+            ) {
+                bodyContent()
+            }
+        }
+
+        // 火漆角标（如有）
+        waxChar?.let { ch ->
+            WaxSealBadge(
+                char = ch,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .offset(x = (-9).dp, y = (-9).dp),
+            )
+        }
+    }
+}
+
+/** 角色色提亮（渐变高光端）：向白色插值。WorldOSComponents 内复用。 */
+private fun Color.brighten(fraction: Float): Color = Color(
+    red = red + (1f - red) * fraction,
+    green = green + (1f - green) * fraction,
+    blue = blue + (1f - blue) * fraction,
+    alpha = alpha,
+)
+
+
+// ═════════════════════════════════════════════════════════════
+//  ScrollVine — 卷草装饰（融合方案 §3.2 第7项，仅 WorldBar/题献/页框）
+//
+//  纯 Canvas 绘制的 S 形卷草曲线，1.5px 金色描边（currentColor 语义），
+//  不依赖 SVG 资源。三种形态：侧边（orn-side）、角落（orn-corner）、分隔（orn-div）。
+//  预算纪律：≤2 处/屏，仅公馆/书架 WorldBar 两侧 + 题献/页框特许。
+// ═════════════════════════════════════════════════════════════
+
+/** 卷草装饰形态 */
+enum class VineStyle { SIDE, CORNER, DIVIDER }
+
+/**
+ * 卷草装饰：Canvas 绘制的 S 形金色曲线。
+ *
+ * @param style 形态：SIDE=侧边横展、CORNER=角落 L 形、DIVIDER=居中分隔
+ * @param modifier 布局修饰符
+ * @param tint 金色色调，默认 Palette.Gold
+ */
+@Composable
+fun ScrollVine(
+    modifier: Modifier = Modifier,
+    style: VineStyle = VineStyle.SIDE,
+    tint: Color = Palette.Gold,
+) {
+    val alpha = if (ZaijianTheme.colors.isDark) 0.55f else 0.70f
+    val vineColor = tint.copy(alpha = alpha)
+
+    when (style) {
+        VineStyle.SIDE -> {
+            Canvas(
+                modifier = modifier.height(10.dp).width(52.dp),
+            ) {
+                val w = size.width
+                val h = size.height
+                val path = Path().apply {
+                    moveTo(0f, h * 0.5f)
+                    cubicTo(w * 0.2f, 0f, w * 0.35f, 0f, w * 0.5f, h * 0.5f)
+                    cubicTo(w * 0.65f, h, w * 0.8f, h, w, h * 0.5f)
+                }
+                drawPath(path, color = vineColor, style = Stroke(width = 1.5.dp.toPx(), cap = StrokeCap.Round))
+                // 末端小卷
+                drawCircle(vineColor, radius = 2.dp.toPx(), center = Offset(w * 0.5f, h * 0.5f))
+            }
+        }
+        VineStyle.CORNER -> {
+            Canvas(
+                modifier = modifier.size(48.dp),
+            ) {
+                val s = size.width
+                val path = Path().apply {
+                    moveTo(0f, s * 0.15f)
+                    cubicTo(s * 0.1f, 0f, s * 0.25f, 0f, s * 0.35f, s * 0.1f)
+                    cubicTo(s * 0.5f, s * 0.25f, s * 0.15f, s * 0.5f, 0f, s * 0.35f)
+                }
+                drawPath(path, color = vineColor, style = Stroke(width = 1.5.dp.toPx(), cap = StrokeCap.Round))
+            }
+        }
+        VineStyle.DIVIDER -> {
+            Canvas(
+                modifier = modifier.height(12.dp).width(84.dp),
+            ) {
+                val w = size.width
+                val h = size.height
+                val cy = h * 0.5f
+                // 左卷草
+                val leftPath = Path().apply {
+                    moveTo(0f, cy)
+                    cubicTo(w * 0.08f, 0f, w * 0.15f, 0f, w * 0.2f, cy)
+                }
+                drawPath(leftPath, color = vineColor, style = Stroke(width = 1.2.dp.toPx(), cap = StrokeCap.Round))
+                // 中线
+                drawLine(vineColor, Offset(w * 0.2f, cy), Offset(w * 0.8f, cy), strokeWidth = 0.8.dp.toPx(), cap = StrokeCap.Round)
+                // 右卷草（镜像）
+                val rightPath = Path().apply {
+                    moveTo(w, cy)
+                    cubicTo(w * 0.92f, 0f, w * 0.85f, 0f, w * 0.8f, cy)
+                }
+                drawPath(rightPath, color = vineColor, style = Stroke(width = 1.2.dp.toPx(), cap = StrokeCap.Round))
+                // 中心点
+                drawCircle(vineColor, radius = 2.5.dp.toPx(), center = Offset(w * 0.5f, cy))
+            }
+        }
+    }
+}
+
+
+// ═════════════════════════════════════════════════════════════
+//  WashiTape — 和纸胶带（融合方案 §3.3，仅时间线 + 书架预览）
+//
+//  半透明彩色胶带条，两端锯齿裁切，±4° 微旋转。
+//  预算：≤1 条/卡。
+// ═════════════════════════════════════════════════════════════
+
+/**
+ * 和纸胶带装饰。
+ *
+ * @param color 胶带颜色（角色色或固定色）
+ * @param modifier 布局修饰符（调用方控制定位）
+ * @param widthDp 胶带宽度
+ */
+@Composable
+fun WashiTape(
+    modifier: Modifier = Modifier,
+    color: Color = Palette.Gold.copy(alpha = 0.38f),
+    widthDp: Dp = 64.dp,
+) {
+    Box(
+        modifier = modifier
+            .width(widthDp)
+            .height(18.dp)
+            .graphicsLayer { rotationZ = -4f }
+            .drawBehind {
+                val w = size.width
+                val h = size.height
+                // 胶带主体
+                drawRect(color)
+                // 左端锯齿
+                val teeth = 4
+                val teethW = 3.dp.toPx()
+                for (i in 0 until teeth) {
+                    val y = h * i / teeth
+                    drawLine(
+                        color = color.copy(alpha = 0f),
+                        start = Offset(0f, y),
+                        end = Offset(teethW, y + h / teeth / 2f),
+                        strokeWidth = 0f,
+                    )
+                }
+            }
+            .clip(
+                RoundedCornerShape(0.dp)
+            ),
+    )
 }

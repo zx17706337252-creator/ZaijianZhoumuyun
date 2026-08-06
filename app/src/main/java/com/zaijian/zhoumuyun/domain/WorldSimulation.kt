@@ -22,6 +22,7 @@ import com.zaijian.zhoumuyun.data.db.entity.EventDomain
 import com.zaijian.zhoumuyun.data.db.entity.EventType
 import com.zaijian.zhoumuyun.data.db.entity.WorldEventEntity
 import com.zaijian.zhoumuyun.data.model.DefaultCharacters
+import com.zaijian.zhoumuyun.data.repository.CharacterStateRepository
 import com.zaijian.zhoumuyun.data.repository.MemoryRepository
 import com.zaijian.zhoumuyun.data.repository.MessageRepository
 import kotlinx.coroutines.CancellationException
@@ -92,6 +93,16 @@ class WorldSimulation(
     // 必填时的理由完全一致（见该文件 47-54 行注释）：改为必填后，遗漏会在
     // 编译期直接报错，而不是运行期静默漏处理一整类角色。
     private val daughterCharacterDao: com.zaijian.zhoumuyun.data.db.dao.DaughterCharacterDao,
+    // P1-5 修复：情绪单一真相来源只接了聊天/圆桌三处，Tier1（本文件）此前从不传
+    // characterState 给 refreshPresence，导致 Tier1 走旧的"目标进度+时段"启发式
+    // 猜 mood，与 chat 路径写入的真实 CharacterStateLayer 情绪互相矛盾（chat 路径
+    // 写完真实情绪，5 分钟后又被 Tier1 启发式覆盖）。
+    // 设为必填而非可空默认值：参考本文件 daughterCharacterDao 从可空改必填时的
+    // 教训（见上方 84-93 行注释）——可空默认值一旦有新调用方遗漏传参，会静默退化，
+    // 没有任何日志或报错提示；必填参数能让遗漏在编译期直接暴露。全项目排查后
+    // 确认只有两处实例化调用方（ZaijianApp.kt 前台常驻实例、
+    // ProactiveMessageWorker.kt 后台周期检查实例），已同步改动两处。
+    private val characterStateRepo: CharacterStateRepository,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var tier1Job: Job? = null
@@ -127,7 +138,12 @@ class WorldSimulation(
     }
 
     // S2问题6修复：Tier1 已刷新过的角色 ID，避免 runProjectDrivenBehavior 重复刷新
-    private val refreshedInTier1 = mutableSetOf<Int>()
+    // P1-15 修复：改用线程安全集合——runTier1（持 tier1Mutex）add、runTier2（持
+    // tier2Mutex，另一把锁）在 runProjectDrivenBehavior 里 contains，两把锁不同，
+    // 两协程可真正并发；普通 mutableSetOf 在 add 触发扩容期间被另一线程 contains
+    // 读取属未定义行为，可能抛 ConcurrentModificationException。ConcurrentHashMap
+    // 背书的 set 保证 add/contains/clear 并发安全。
+    private val refreshedInTier1 = java.util.concurrent.ConcurrentHashMap.newKeySet<Int>()
 
     /**
      * 每次 Tier tick 时调用，返回 DefaultCharacters + 已注册女儿的合并 ID 列表。
@@ -259,6 +275,11 @@ class WorldSimulation(
             delay(startupDelayMs)
             ZLog.d(TAG, "Tier 1 loop started")
             while (true) {
+                // P1-15 修复：常规 Tier1 循环每次 tick 前清空跟踪集。此前只在 Worker 路径
+                // runProactiveCheckForCharacters 清空，前台常驻实例的常规循环从不清空，
+                // 首次 tick 后 refreshedInTier1 永久累积全部角色 ID，使 runProjectDrivenBehavior
+                // 的 `charId !in refreshedInTier1` 恒为 false，项目驱动 Presence 刷新永久失效。
+                refreshedInTier1.clear()
                 try { runTier1() } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Throwable) { ZLog.w(TAG, "Tier1 error", e) }
                 delay(TIER1_INTERVAL_MS)
             }
@@ -329,14 +350,23 @@ class WorldSimulation(
             val prefs = ctx.worldSimDataStore.safeData().first()
 
             val lastTier2 = prefs[KEY_LAST_TIER2] ?: 0L
-            val tier2Rounds = ((now - lastTier2) / TIER2_INTERVAL_MS)
-                .toInt().coerceIn(0, MAX_OFFLINE_ROUNDS)
-            if (tier2Rounds > 0) {
-                ZLog.d(TAG, "Offline compensation: Tier2 × $tier2Rounds rounds")
-                repeat(tier2Rounds) {
-                    try { runTier2() } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Throwable) { ZLog.w(TAG, "Tier2 compensate error", e) }
+            // P2-4-2 修复：与下方 Tier3 的 lastTier3==0L 守卫对齐——首次启动或 DataStore
+            // 被清空时 lastTier2 默认 0L，直接补算会从 1970 年算起被 cap 到 MAX_OFFLINE_ROUNDS
+            // 一次性跑满。视为"无历史时间戳"，跳过补算、直接把 KEY_LAST_TIER2 落为 now。
+            if (lastTier2 == 0L) {
+                saveTimestamp(KEY_LAST_TIER2)
+            } else {
+                val tier2Rounds = ((now - lastTier2) / TIER2_INTERVAL_MS)
+                    .toInt().coerceIn(0, MAX_OFFLINE_ROUNDS)
+                if (tier2Rounds > 0) {
+                    ZLog.d(TAG, "Offline compensation: Tier2 × $tier2Rounds rounds")
+                    repeat(tier2Rounds) {
+                        try { runTier2() } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Throwable) { ZLog.w(TAG, "Tier2 compensate error", e) }
+                    }
+                    // P2-4-4 修复：补算完成后立即落时间戳，避免"补算后、常规循环首次 save 前被杀"
+                    // 导致下次启动对同一段离线区间重复补算（关系衰减/Goal 进度重复施加）。
+                    saveTimestamp(KEY_LAST_TIER2)
                 }
-                // 方案 3-9：不再保存时间戳，由 tier2Job 常规循环负责（delay=12s，补偿完成后 2s 内首次执行）
             }
 
             val lastTier3 = prefs[KEY_LAST_TIER3] ?: 0L
@@ -399,7 +429,9 @@ class WorldSimulation(
                         saveTrustAccumulator()
                     }
                 }
-                // 方案 3-9：不再保存时间戳，由 tier3Job 常规循环负责
+                // P2-4-4 修复：补算完成后立即落时间戳，避免"补算后、常规循环首次 save 前被杀"
+                // 导致下次启动对同一段离线区间重复补算（trust 衰减/curiosity 重复施加）。
+                saveTimestamp(KEY_LAST_TIER3)
             }
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
@@ -474,7 +506,9 @@ class WorldSimulation(
 
         allIds.forEach { charId ->
             try {
-                val snapshot = presenceEngine.refreshPresence(charId)
+                // P1-5 修复：传入真实 CharacterStateLayer，让 Tier1 与 chat/圆桌
+                // 三处统一走 toMoodType 换算，不再各算各的、互相矛盾。
+                val snapshot = presenceEngine.refreshPresence(charId, characterStateRepo.getState(charId))
                 refreshedInTier1.add(charId) // S2问题6修复：记录已刷新，避免后续重复
 
                 // Phase 4：情境感知主动消息（替代原有简单目标进展触发）
@@ -629,8 +663,9 @@ class WorldSimulation(
 
                     // 刷新 LEAD 角色 Presence（activity 体现项目状态）
                     // S2问题6修复：若该角色已在 runTier1 中被刷新过，跳过
+                    // P1-5 修复：同 runTier1，传入真实 CharacterStateLayer。
                     if (charId !in refreshedInTier1) {
-                        presenceEngine.refreshPresence(charId)
+                        presenceEngine.refreshPresence(charId, characterStateRepo.getState(charId))
                     }
 
                     ZLog.d(TAG, "Project-driven event for project=${project.title}, char=$charId")

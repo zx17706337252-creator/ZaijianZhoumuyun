@@ -63,6 +63,7 @@ import com.zaijian.zhoumuyun.ui.design.WorldCard
 import com.zaijian.zhoumuyun.ui.theme.AvatarSize
 import com.zaijian.zhoumuyun.ui.theme.AppTheme
 import com.zaijian.zhoumuyun.ui.theme.GlassOpacity
+import com.zaijian.zhoumuyun.ui.theme.AppBrushes
 import com.zaijian.zhoumuyun.ui.theme.Palette
 import com.zaijian.zhoumuyun.ui.theme.Radius
 import com.zaijian.zhoumuyun.ui.theme.Spacing
@@ -92,17 +93,32 @@ internal fun StatsRow(
             .fillMaxWidth()
             .padding(horizontal = Spacing.screenHorizontal),
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = Spacing.md),
-            horizontalArrangement = Arrangement.SpaceEvenly,
-        ) {
-            StatCell(value = totalMessages.toString(),  label = "次对话",   isLoading = isLoading)
-            StatDivider()
-            StatCell(value = completedTasks.toString(), label = "任务完成", isLoading = isLoading)
-            StatDivider()
-            StatCell(value = totalMemories.toString(),  label = "条记忆",   isLoading = isLoading)
+        Column {
+            // 拱檐装饰：卡顶金色渐变拱形檐口（半圆底角 + 0.5dp 发丝金线）
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(9.dp)
+                    .clip(RoundedCornerShape(bottomStartPercent = 50, bottomEndPercent = 50))
+                    .background(AppBrushes.goldGradient())
+                    .border(
+                        width = 0.5.dp,
+                        color = Palette.GoldLine,
+                        shape = RoundedCornerShape(bottomStartPercent = 50, bottomEndPercent = 50),
+                    ),
+            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = Spacing.md),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+            ) {
+                StatCell(value = totalMessages.toString(),  label = "次对话",   isLoading = isLoading)
+                StatDivider()
+                StatCell(value = completedTasks.toString(), label = "任务完成", isLoading = isLoading)
+                StatDivider()
+                StatCell(value = totalMemories.toString(),  label = "条记忆",   isLoading = isLoading)
+            }
         }
     }
 }

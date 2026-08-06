@@ -5,6 +5,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.zaijian.zhoumuyun.data.AppContainer
 import com.zaijian.zhoumuyun.data.repository.CharacterCapabilitySnapshot
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -40,16 +41,23 @@ class CapabilityPanelViewModel(application: Application) : AndroidViewModel(appl
     val uiState: StateFlow<CapabilityPanelUiState> = _uiState.asStateFlow()
 
     private var currentCharacterId: Int = -1
+    // P1-23 修复：持有当前加载 Job，切换角色时先取消旧 Job，避免慢查询的旧结果覆盖新角色。
+    private var loadJob: Job? = null
 
     /**
      * 加载角色能力快照。
-     * 重复传入相同 characterId 不会重新加载（幂等），需手动调 [refresh] 强制刷新。
+     * P2-7-3：原先"重复传入相同 characterId 且已有快照则早退（幂等）"导致任务→技能→能力
+     * 来回切（同 characterId）时展示陈旧快照，期间新产生的数据不出现。现去掉该早退，重进即
+     * 重新拉取；并发重复加载由下方 P1-23 的 loadJob?.cancel() 兜底，不会让旧结果覆盖新角色。
      */
     fun load(characterId: Int) {
-        if (currentCharacterId == characterId && _uiState.value.snapshot != null) return
         currentCharacterId = characterId
         _uiState.update { it.copy(isLoading = true, error = null) }
-        viewModelScope.launch {
+        // P1-23 修复：先取消上一次的加载（getCharacterCapabilities 是挂起慢查询，若
+        // load(A) 进行中再 load(B)，两个协程并发，后完成的 A 会覆盖当前 B 的快照）。
+        // 与同库 TimelineViewModel/FamilyListViewModel 等显式 cancel 旧 Job 的做法对齐。
+        loadJob?.cancel()
+        loadJob = viewModelScope.launch {
             try {
                 val snapshot = capabilityPanelRepo.getCharacterCapabilities(characterId)
                 _uiState.update {

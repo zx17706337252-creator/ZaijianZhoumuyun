@@ -22,7 +22,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -32,6 +31,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -51,6 +51,9 @@ import com.zaijian.zhoumuyun.ui.viewmodel.SkillListViewModel
 import com.zaijian.zhoumuyun.ui.viewmodel.SkillUiState
 import com.zaijian.zhoumuyun.util.TimeFormatUtils
 import com.zaijian.zhoumuyun.ui.design.AppIcons
+import com.zaijian.zhoumuyun.ui.design.DangerVelvetButton
+import com.zaijian.zhoumuyun.ui.design.GhostGoldButton
+import com.zaijian.zhoumuyun.ui.design.GoldPrimaryButton
 
 // ═══════════════════════════════════════════════════════════════
 //  Window C 缺口 2 · 技能管理面板 UI
@@ -555,16 +558,23 @@ private fun SkillEditDialog(
             }
         },
         confirmButton = {
-            TextButton(
-                onClick = {
-                    val cat = category.trim().takeIf { it.isNotEmpty() }
-                    onSave(name.trim(), shortDesc.trim(), fullContent.trim(), cat)
+            val canSave = name.isNotBlank() && shortDesc.isNotBlank() && fullContent.isNotBlank()
+            GoldPrimaryButton(
+                text     = "保存",
+                onClick  = {
+                    if (canSave) {
+                        val cat = category.trim().takeIf { it.isNotEmpty() }
+                        onSave(name.trim(), shortDesc.trim(), fullContent.trim(), cat)
+                    }
                 },
-                enabled = name.isNotBlank() && shortDesc.isNotBlank() && fullContent.isNotBlank(),
-            ) { Text("保存") }
+                modifier = Modifier.alpha(if (canSave) 1f else 0.4f),
+            )
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("取消") }
+            GhostGoldButton(
+                text    = "取消",
+                onClick = onDismiss,
+            )
         },
     )
 }
@@ -627,22 +637,29 @@ private fun ConfirmActionDialog(
             }
         },
         confirmButton = {
-            TextButton(
-                onClick = {
-                    when (action) {
-                        is PendingSkillAction.Deprecate ->
-                            skillListViewModel.deprecate(action.skill.id, reason.trim().ifEmpty { "用户手动废弃" })
-                        is PendingSkillAction.Restore ->
-                            skillListViewModel.restore(action.skill.id)
-                        is PendingSkillAction.Delete ->
-                            skillListViewModel.delete(action.skill.id)
-                    }
-                    onDismiss()
-                },
-            ) { Text(confirmLabel) }
+            val onConfirmClick: () -> Unit = {
+                when (action) {
+                    is PendingSkillAction.Deprecate ->
+                        skillListViewModel.deprecate(action.skill.id, reason.trim().ifEmpty { "用户手动废弃" })
+                    is PendingSkillAction.Restore ->
+                        skillListViewModel.restore(action.skill.id)
+                    is PendingSkillAction.Delete ->
+                        skillListViewModel.delete(action.skill.id)
+                }
+                onDismiss()
+            }
+            when (action) {
+                is PendingSkillAction.Deprecate, is PendingSkillAction.Delete ->
+                    DangerVelvetButton(text = confirmLabel, onClick = onConfirmClick)
+                is PendingSkillAction.Restore ->
+                    GoldPrimaryButton(text = confirmLabel, onClick = onConfirmClick)
+            }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("取消") }
+            GhostGoldButton(
+                text    = "取消",
+                onClick = onDismiss,
+            )
         },
     )
 }
